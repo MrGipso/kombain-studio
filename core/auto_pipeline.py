@@ -58,6 +58,10 @@ class _SceneAnalysisWorker(QThread):
                 context_length = 32768
             ttl_seconds = lm_ttl_seconds(self.settings)
 
+            style_anchor = self.settings.get("style_anchor") or self.project.metadata.get("style_anchor", "")
+            character_description = self.settings.get("character_description") or self.project.metadata.get("character_description", "")
+            niche = self.settings.get("niche") or self.project.metadata.get("niche", "documentary")
+
             t_segments = [
                 pipeline.TranscriptSegment(s.start, s.end, s.text)
                 for s in self.segments
@@ -66,7 +70,12 @@ class _SceneAnalysisWorker(QThread):
                 self.log.emit(f"Загружаю LM Studio model (context_length={context_length})")
                 pipeline.load_lm_studio_model(base_url, model, context_length)
                 self.log.emit("LM Studio загружен, анализирую сцены...")
-                scenes = pipeline.call_lm_studio_for_segments(base_url, model, t_segments, ttl_seconds=ttl_seconds)
+                scenes = pipeline.call_lm_studio_for_segments(
+                    base_url, model, t_segments, ttl_seconds=ttl_seconds,
+                    style_anchor=style_anchor,
+                    character_description=character_description,
+                    niche=niche,
+                )
             except Exception as exc:
                 self.log.emit(f"LM Studio недоступен: {exc}")
                 self.log.emit("Собираю сцены локально по таймкодам...")
@@ -102,11 +111,17 @@ class _ShotListWorker(QThread):
             model = self.settings.get("lm_model", "local-model")
             seg_data = self.project.read_json("transcript_segments") or []
             pipeline_segments = [pipeline.TranscriptSegment(**s) for s in seg_data]
+            style_anchor = self.settings.get("style_anchor") or self.project.metadata.get("style_anchor", "")
+            character_description = self.settings.get("character_description") or self.project.metadata.get("character_description", "")
+            niche = self.settings.get("niche") or self.project.metadata.get("niche", "documentary")
             self.log.emit(f"Генерирую шот-лист через LM Studio ({len(pipeline_segments)} сегментов)...")
             ttl_seconds = lm_ttl_seconds(self.settings)
             shots = pipeline.call_lm_studio_for_shots(
                 base_url, model, pipeline_scenes, image_pref,
                 segments=pipeline_segments, ttl_seconds=ttl_seconds,
+                style_anchor=style_anchor,
+                character_description=character_description,
+                niche=niche,
             )
 
             core_shots = [Shot(**s.__dict__) for s in shots]

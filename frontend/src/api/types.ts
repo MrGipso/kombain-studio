@@ -12,6 +12,9 @@ export interface ProjectDetail {
   asset_board: AssetCard[]
   segments: TranscriptSegment[]
   transcript: string
+  style_anchor: string
+  character_description: string
+  niche: string
 }
 
 export interface ProjectState {

@@ -2,11 +2,18 @@ import { useState, useEffect } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import { useSSE } from '../hooks/useSSE'
-import type { Scene } from '../api/types'
+import type { Scene, ProjectDetail } from '../api/types'
 
 interface Context {
   projectId: string
 }
+
+const NICHES = [
+  { value: 'documentary', label: 'Документальный' },
+  { value: 'stories', label: 'Сторителлинг / Истории' },
+  { value: 'crime', label: 'Криминал / Детектив' },
+  { value: 'educational', label: 'Образовательный' },
+]
 
 export default function Scenes() {
   const { projectId } = useOutletContext<Context>()
@@ -16,6 +23,10 @@ export default function Scenes() {
   const [logs, setLogs] = useState<string[]>([])
   const [running, setRunning] = useState(false)
   const [hasSegments, setHasSegments] = useState(false)
+  const [styleAnchor, setStyleAnchor] = useState('')
+  const [charDesc, setCharDesc] = useState('')
+  const [niche, setNiche] = useState('documentary')
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     api.getScenes(projectId).then((d) => {
@@ -24,9 +35,28 @@ export default function Scenes() {
       if (s.length > 0 && !selected) setSelected(s[0])
     }).catch(() => {})
     api.getProject(projectId).then((d) => {
-      setHasSegments('segments' in d && Array.isArray(d.segments) && d.segments.length > 0)
+      const proj = d as ProjectDetail
+      setHasSegments('segments' in proj && Array.isArray(proj.segments) && proj.segments.length > 0)
+      setStyleAnchor(proj.style_anchor || '')
+      setCharDesc(proj.character_description || '')
+      setNiche(proj.niche || 'documentary')
     }).catch(() => {})
   }, [projectId])
+
+  const handleSaveSettings = async () => {
+    setSaving(true)
+    try {
+      await api.updateProjectSettings(projectId, {
+        style_anchor: styleAnchor,
+        character_description: charDesc,
+        niche,
+      })
+      setLogs((prev) => [...prev, '✅ Стиль и персонаж сохранены'])
+    } catch (e) {
+      setLogs((prev) => [...prev, `❌ Ошибка: ${(e as Error).message}`])
+    }
+    setSaving(false)
+  }
 
   const handleAnalyze = () => {
     setRunning(true)
@@ -89,6 +119,50 @@ export default function Scenes() {
   return (
     <div className="p-8 space-y-6">
       <h1 className="text-2xl font-bold text-white">Сцены</h1>
+
+      {/* Style anchor + niche settings */}
+      <div className="bg-slate-900 rounded-xl p-5 border border-slate-800 space-y-4">
+        <h2 className="text-sm text-slate-500 uppercase tracking-wider">Визуальный стиль всего видео</h2>
+        <div className="grid grid-cols-[1fr_200px] gap-4">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Style anchor (общий стиль кадров, на английском)</label>
+            <textarea
+              value={styleAnchor}
+              onChange={(e) => setStyleAnchor(e.target.value)}
+              placeholder="Cyberpunk dystopia, neon lights reflecting on wet asphalt, rain, high contrast, cold blue and magenta palette"
+              className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500 h-20 resize-none"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Ниша</label>
+            <select
+              value={niche}
+              onChange={(e) => setNiche(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500"
+            >
+              {NICHES.map((n) => (
+                <option key={n.value} value={n.value}>{n.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">Описание персонажа (одинаковый во всех кадрах)</label>
+          <input
+            value={charDesc}
+            onChange={(e) => setCharDesc(e.target.value)}
+            placeholder="Главный герой: мужчина 35 лет, короткая стрижка, борода, кожаная куртка"
+            className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500"
+          />
+        </div>
+        <button
+          onClick={handleSaveSettings}
+          disabled={saving}
+          className="py-1.5 px-4 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-sm font-semibold disabled:opacity-50 cursor-pointer"
+        >
+          {saving ? '⏳...' : '💾 Сохранить настройки стиля'}
+        </button>
+      </div>
 
       <div className="flex gap-3">
         <button

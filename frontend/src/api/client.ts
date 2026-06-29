@@ -74,6 +74,14 @@ export const generateCard = (id: string, cardIndex: number, mode: string = 'rout
     method: 'POST',
   })
 
+// Project settings (style_anchor, etc.)
+export const updateProjectSettings = (id: string, data: { style_anchor: string; character_description: string; niche: string }) =>
+  r<{ style_anchor: string; character_description: string; niche: string }>(
+    `/projects/${encodeURIComponent(id)}/settings`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+
 // Settings
 export const getSettings = () => r<Settings>('/settings')
 export const updateSettings = (data: Partial<Settings>) =>

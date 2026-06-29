@@ -48,6 +48,9 @@ async def analyze_scenes(project_id: str):
         raise HTTPException(400, "No transcript segments. Run transcription first.")
 
     settings_dict = {f.name: getattr(project.settings, f.name) for f in project.settings.__dataclass_fields__.values()}
+    settings_dict["style_anchor"] = project.metadata.get("style_anchor", "")
+    settings_dict["character_description"] = project.metadata.get("character_description", "")
+    settings_dict["niche"] = project.metadata.get("niche", "documentary")
 
     async def event_stream():
         sub_id, q = sse.subscribe(project.dir.name)

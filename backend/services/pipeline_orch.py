@@ -141,11 +141,20 @@ def run_scene_analysis(
     ttl_seconds = _lm_unload_delay_seconds(settings)
     ttl = ttl_seconds if ttl_seconds and ttl_seconds > 0 else None
 
+    style_anchor = settings.get("style_anchor", "")
+    character_description = settings.get("character_description", "")
+    niche = settings.get("niche", "documentary")
+
     t_segments = [pipeline.TranscriptSegment(s["start"], s["end"], s["text"]) for s in segments_data]
 
     _ensure_lm_context(settings, log)
     log("Analyzing scenes via LM Studio...")
-    scenes = pipeline.call_lm_studio_for_segments(base_url, model, t_segments, ttl_seconds=ttl)
+    scenes = pipeline.call_lm_studio_for_segments(
+        base_url, model, t_segments, ttl_seconds=ttl,
+        style_anchor=style_anchor,
+        character_description=character_description,
+        niche=niche,
+    )
 
     _maybe_unload_lm(settings, "scene analysis finished", log)
 
@@ -174,6 +183,10 @@ def run_shot_generation(
     ttl_seconds = _lm_unload_delay_seconds(settings)
     ttl = ttl_seconds if ttl_seconds and ttl_seconds > 0 else None
 
+    style_anchor = settings.get("style_anchor", "")
+    character_description = settings.get("character_description", "")
+    niche = settings.get("niche", "documentary")
+
     segments_path = project_dir / "01_transcript_segments.json"
     if segments_path.exists():
         seg_data = json.loads(segments_path.read_text("utf-8"))
@@ -187,6 +200,9 @@ def run_shot_generation(
         base_url, model, pipeline_scenes, image_pref,
         segments=pipeline_segments, ttl_seconds=ttl,
         on_scene_shots=on_scene_shots,
+        style_anchor=style_anchor,
+        character_description=character_description,
+        niche=niche,
     )
 
     _maybe_unload_lm(settings, "shot list generation finished", log)

@@ -292,7 +292,7 @@ def build_scenes_from_segments(segments: list[TranscriptSegment], target_seconds
     return scenes
 
 
-def build_heuristic_shots(scenes: list[Scene], image_preference: str = "Auto") -> list[Shot]:
+def build_heuristic_shots(scenes: list[Scene], image_preference: str = "Auto", style_anchor: str = "") -> list[Shot]:
     shots: list[Shot] = []
     for scene in scenes:
         scene_start = timecode_to_seconds(scene.start)
@@ -331,7 +331,7 @@ def build_heuristic_shots(scenes: list[Scene], image_preference: str = "Auto") -
     return shots
 
 
-def choose_visual_route(text: str, screen_text: str = "", image_preference: str = "Auto") -> dict:
+def choose_visual_route(text: str, screen_text: str = "", image_preference: str = "Auto", style_anchor: str = "") -> dict:
     lower = f"{text} {screen_text}".lower()
     preferred_image_model = preferred_realistic_image_model(image_preference)
 
@@ -359,7 +359,7 @@ def choose_visual_route(text: str, screen_text: str = "", image_preference: str 
             "fallback": "Remotion graphic or SVG schema",
         }
 
-    prompt = make_realistic_prompt(text)
+    prompt = make_realistic_prompt(text, style_anchor=style_anchor)
     video_prompt = make_ltx_prompt(prompt)
     return {
         "visual_type": "ai_image_then_i2v",
@@ -398,23 +398,24 @@ def make_asset_query(text: str) -> str:
     return " ".join(dict.fromkeys(keywords)) or "documentary technology broll"
 
 
-def make_realistic_prompt(text: str, shot_type: str = "") -> str:
+def make_realistic_prompt(text: str, shot_type: str = "", style_anchor: str = "") -> str:
     hint = clean_visual_prompt_source(text)
     if len(hint) > 300:
         hint = hint[:297].rsplit(" ", 1)[0] + "..."
     shot = shot_type or _suggest_shot_type(hint)
+    anchor_suffix = f" Style: {style_anchor}." if style_anchor else ""
     templates = [
         f"Documentary editorial photograph, {shot}, natural lighting, "
-        f"rich textures and materials, sharp focus, ambient environment. Scene: {hint}",
+        f"rich textures and materials, sharp focus, ambient environment. Scene: {hint}.{anchor_suffix}",
         f"Cinematic documentary frame, {shot}, carefully composed with "
-        f"natural color palette, diffused lighting, documentary aesthetic. Scene: {hint}",
+        f"natural color palette, diffused lighting, documentary aesthetic. Scene: {hint}.{anchor_suffix}",
         f"Photorealistic documentary still, {shot}, grounded realistic details, "
         f"natural textures, cinematic lighting with shallow depth of field, "
-        f"high dynamic range, 16:9 composition, no text, no logos. Scene: {hint}",
+        f"high dynamic range, 16:9 composition, no text, no logos. Scene: {hint}.{anchor_suffix}",
         f"Environmental portrait photography, {shot}, ambient natural light, "
-        f"authentic documentary feel, rich color grading, editorial style. Scene: {hint}",
+        f"authentic documentary feel, rich color grading, editorial style. Scene: {hint}.{anchor_suffix}",
         f"Observational documentary frame, {shot}, available light photography, "
-        f"authentic textures, environmental context, photojournalism aesthetic. Scene: {hint}",
+        f"authentic textures, environmental context, photojournalism aesthetic. Scene: {hint}.{anchor_suffix}",
     ]
     return random.choice(templates)
 
@@ -797,11 +798,46 @@ def parse_lm_json_array(content: str, label: str = "LM Studio") -> list:
         "Повторите анализ; если повторяется, уменьшите длину транскрипции или выберите более стабильную модель."
     )
 
-def call_lm_studio(base_url: str, model: str, script_text: str, ttl_seconds: int | None = None) -> list[Scene]:
+def call_lm_studio(
+    base_url: str,
+    model: str,
+    script_text: str,
+    ttl_seconds: int | None = None,
+    style_anchor: str = "",
+    character_description: str = "",
+    niche: str = "documentary",
+) -> list[Scene]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
+    niche_prefix = {
+        "documentary": "документального",
+        "stories": "сторителлинг-канала",
+        "crime": "криминального детектива",
+        "educational": "образовательного",
+    }.get(niche, "документального")
+    style_block = (
+        f"\nОБЩИЙ ВИЗУАЛЬНЫЙ СТИЛЬ ВСЕХ СЦЕН: {style_anchor}\n"
+        if style_anchor else ""
+    )
+    character_block = (
+        f"ПЕРСОНАЖ (должен быть одинаков во всех сценах): {character_description}\n"
+        if character_description else ""
+    )
     prompt = (
-        "Ты продюсер документального YouTube-контента. Разбей русский дикторский текст "
-        "на сцены для монтажа. Верни только JSON-массив без markdown. Каждый объект: "
+        f"Ты режиссёр монтажа {niche_prefix} YouTube-контента.\n\n"
+        f"Разбей русский дикторский текст на сцены для монтажа.\n"
+        f"Для КАЖДОЙ сцены РАЗВЕРНИ текст в визуальную сцену:\n"
+        f"- Какую локацию, время суток, освещение мы видим?\n"
+        f"- Кто или что в кадре? (персонаж, объект, техника, природа)\n"
+        f"- Какое действие происходит?\n"
+        f"- С какого ракурса снят кадр? (общий план, средний, деталь, сверху)\n"
+        f"{style_block}"
+        f"{character_block}"
+        f"Правила:\n"
+        f"- visual_direction должен быть КОНКРЕТНЫМ: не просто 'Офис', а "
+        f"'Open-plan office, late afternoon, warm sunlight through venetian blinds, medium shot'\n"
+        f"- Не повторяй один и тот же тип кадра/локацию в соседних сценах\n"
+        f"- Чередуй: если сцена 1 — интерьер/крупный план, то сцена 2 — экстерьер/общий план\n"
+        f"Верни только JSON-массив без markdown. Каждый объект: "
         "title, voice_text, visual_direction, screen_text, music_note, retention_note. "
         "voice_text должен быть точным фрагментом исходного текста, без выдуманных фактов.\n\n"
         f"Текст:\n{clean_script_text(script_text)}"
@@ -854,15 +890,43 @@ def call_lm_studio_for_segments(
     model: str,
     segments: list[TranscriptSegment],
     ttl_seconds: int | None = None,
+    style_anchor: str = "",
+    character_description: str = "",
+    niche: str = "documentary",
 ) -> list[Scene]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
     compact_transcript = "\n".join(
         f"{index}|{segment.start}-{segment.end}|{segment.text.strip()}"
         for index, segment in enumerate(segments, start=1)
     )
+    niche_prefix = {
+        "documentary": "документального",
+        "stories": "сторителлинг-канала",
+        "crime": "криминального детектива",
+        "educational": "образовательного",
+    }.get(niche, "документального")
+    style_block = (
+        f"\nОБЩИЙ СТИЛЬ ВСЕХ СЦЕН: {style_anchor}\n"
+        if style_anchor else ""
+    )
+    character_block = (
+        f"ПЕРСОНАЖ (должен выглядеть одинаково во всех сценах): {character_description}\n"
+        if character_description else ""
+    )
     prompt = (
-        "Ты продюсер документального YouTube-контента. У тебя есть точная транскрибация "
-        "с таймкодами всего ролика. Сгруппируй соседние сегменты в смысловые сцены для монтажа.\n\n"
+        f"Ты режиссёр монтажа {niche_prefix} YouTube-контента.\n\n"
+        "У тебя есть точная транскрибация с таймкодами всего ролика. "
+        "Сгруппируй соседние сегменты в смысловые сцены для монтажа.\n\n"
+        "Для КАЖДОЙ сцены РАЗВЕРНИ текст в визуальную сцену:\n"
+        "- Какую локацию, время суток, освещение мы видим?\n"
+        "- Кто или что в кадре? (персонаж, объект, техника, природа)\n"
+        "- Какое действие происходит?\n"
+        "- С какого ракурса снят кадр? (общий план, средний, деталь, сверху, от первого лица)\n"
+        f"{style_block}"
+        f"{character_block}"
+        "ВАЖНО: visual_direction должен быть КОНКРЕТНЫМ. Не просто 'Офис', а "
+        "'Open-plan office, late afternoon, warm sunlight through venetian blinds, "
+        "dust particles floating in the air, medium shot of a designer working at a wide monitor'.\n\n"
         "Правила:\n"
         "1. Используй только соседние segment id, не меняй порядок.\n"
         "2. start сцены должен быть start первого сегмента, end сцены - end последнего сегмента.\n"
@@ -878,7 +942,8 @@ def call_lm_studio_for_segments(
         "9. ВАЖНО: Если несколько соседних сегментов об одной теме (технология, процесс, персонаж, место, "
         "событие) — объединяй их в ОДНУ сцену. Не разбивай логически единую тему на 2-3 мелкие сцены.\n"
         "10. title и visual_direction должны быть РАЗНЫМИ для каждой сцены — уникальный визуальный "
-        "ракурс и ключевая мысль.\n"
+        "ракурс и ключевая мысль. Хорошее разнообразие: сцена 1 — интерьер/крупный план, "
+        "сцена 2 — экстерьер/общий план, сцена 3 — деталь/макро.\n"
         "11. Для каждого сегмента придумывай конкретный visual_direction с описанием типа кадра.\n\n"
         "Формат транскрибации: id|start-end|text\n\n"
         f"{compact_transcript}"
@@ -949,6 +1014,9 @@ def stream_lm_studio_segments(
     segments: list[TranscriptSegment],
     on_scene: Callable[[Scene], None] | None = None,
     ttl_seconds: int | None = None,
+    style_anchor: str = "",
+    character_description: str = "",
+    niche: str = "documentary",
 ) -> list[Scene]:
     """Same as call_lm_studio_for_segments but streams scenes via on_scene callback
     as they arrive from LM Studio (server-sent events)."""
@@ -957,9 +1025,34 @@ def stream_lm_studio_segments(
         f"{index}|{segment.start}-{segment.end}|{segment.text.strip()}"
         for index, segment in enumerate(segments, start=1)
     )
+    niche_prefix = {
+        "documentary": "документального",
+        "stories": "сторителлинг-канала",
+        "crime": "криминального детектива",
+        "educational": "образовательного",
+    }.get(niche, "документального")
+    style_block = (
+        f"\nОБЩИЙ СТИЛЬ ВСЕХ СЦЕН: {style_anchor}\n"
+        if style_anchor else ""
+    )
+    character_block = (
+        f"ПЕРСОНАЖ (должен выглядеть одинаково во всех сценах): {character_description}\n"
+        if character_description else ""
+    )
     prompt = (
-        "Ты продюсер документального YouTube-контента. У тебя есть точная транскрибация "
-        "с таймкодами всего ролика. Сгруппируй соседние сегменты в смысловые сцены для монтажа.\n\n"
+        f"Ты режиссёр монтажа {niche_prefix} YouTube-контента.\n\n"
+        "У тебя есть точная транскрибация с таймкодами всего ролика. "
+        "Сгруппируй соседние сегменты в смысловые сцены для монтажа.\n\n"
+        "Для КАЖДОЙ сцены РАЗВЕРНИ текст в визуальную сцену:\n"
+        "- Какую локацию, время суток, освещение мы видим?\n"
+        "- Кто или что в кадре? (персонаж, объект, техника, природа)\n"
+        "- Какое действие происходит?\n"
+        "- С какого ракурса снят кадр? (общий план, средний, деталь, сверху, от первого лица)\n"
+        f"{style_block}"
+        f"{character_block}"
+        "ВАЖНО: visual_direction должен быть КОНКРЕТНЫМ. Не просто 'Офис', а "
+        "'Open-plan office, late afternoon, warm sunlight through venetian blinds, "
+        "dust particles floating in the air, medium shot of a designer working at a wide monitor'.\n\n"
         "Правила:\n"
         "1. Используй только соседние segment id, не меняй порядок.\n"
         "2. start сцены должен быть start первого сегмента, end сцены - end последнего сегмента.\n"
@@ -975,7 +1068,8 @@ def stream_lm_studio_segments(
         "9. ВАЖНО: Если несколько соседних сегментов об одной теме (технология, процесс, персонаж, место, "
         "событие) — объединяй их в ОДНУ сцену. Не разбивай логически единую тему на 2-3 мелкие сцены.\n"
         "10. title и visual_direction должны быть РАЗНЫМИ для каждой сцены — уникальный визуальный "
-        "ракурс и ключевая мысль.\n"
+        "ракурс и ключевая мысль. Хорошее разнообразие: сцена 1 — интерьер/крупный план, "
+        "сцена 2 — экстерьер/общий план, сцена 3 — деталь/макро.\n"
         "11. Для каждого сегмента придумывай конкретный visual_direction с описанием типа кадра.\n\n"
         "Формат транскрибации: id|start-end|text\n\n"
         f"{compact_transcript}"
@@ -1116,6 +1210,9 @@ def call_lm_studio_for_shots(
     ttl_seconds: int | None = None,
     segments: list | None = None,
     on_scene_shots: Callable[[list[Shot]], None] | None = None,
+    style_anchor: str = "",
+    character_description: str = "",
+    niche: str = "documentary",
 ) -> list[Shot]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
 
@@ -1166,10 +1263,13 @@ def call_lm_studio_for_shots(
 
     def _generate_sub_prompt(shot: Shot, scene: Scene, segs: list, start_s: float, end_s: float) -> Shot:
         seg_text = "\n".join(f"  {s.start} - {s.end} | \"{s.text}\"" for s in segs)
+        style_line = f"ОБЩИЙ СТИЛЬ: {style_anchor}\n" if style_anchor else ""
+        char_line = f"ПЕРСОНАЖ: {character_description}\n" if character_description else ""
         prompt = (
-            f"Ты visual director для документального YouTube-ролика.\n"
+            f"Ты visual director для YouTube-ролика.\n"
             f"Сцена: \"{scene.title}\"\n"
-            f"Направление: {scene.visual_direction}\n\n"
+            f"Направление: {scene.visual_direction}\n"
+            f"{style_line}{char_line}"
             f"Текст диктора на этом отрезке:\n{seg_text}\n\n"
             "Верни JSON-массив с одним объектом. Поля:\n"
             "- description (русский, для монтажёра, 1 предложение)\n"
@@ -1177,7 +1277,7 @@ def call_lm_studio_for_shots(
             "конкретные материалы/освещение/цвета, без абстракций)\n"
             "- video_prompt (английский, движение камеры/действие, present tense, 3-5 предложений)\n\n"
             "image_prompt правила:\n"
-            "- Документальный стиль, реализм, никаких абстракций\n"
+            "- Реалистический стиль, никаких абстракций\n"
             "- Конкретные материалы и текстуры (weathered metal, brushed aluminum, frosted glass)\n"
             "- Конкретное освещение (golden hour backlight, cold fluorescent overhead)\n"
             "- Варьируй первую фразу (Documentary editorial photograph of..., "
@@ -1339,18 +1439,27 @@ def call_lm_studio_for_shots(
                 for i, s in enumerate(scene_segs, start=1)
             )
             n_segs = len(scene_segs)
+            style_line = f"Общий стиль: {style_anchor}\n" if style_anchor else ""
+            char_line = f"Персонаж: {character_description}\n" if character_description else ""
             prompt = (
-                f"Ты visual director для документального YouTube-ролика.\n"
+                f"Ты visual director для YouTube-ролика.\n"
                 f"Сцена {scene.index}: \"{scene.title}\"\n"
                 f"Направление: {scene.visual_direction}\n"
-                f"Надпись: {scene.screen_text}\n\n"
+                f"Надпись: {scene.screen_text}\n"
+                f"{style_line}{char_line}"
                 f"Сегменты этой сцены ({n_segs} шт.):\n{seg_lines}\n\n"
-                "Сегменты — это КОНТЕКСТ для понимания сцены, а не список кадров.\n"
-                "Создай кадры по СМЫСЛУ, а не по количеству сегментов:\n"
-                "- 1 кадр = 1 уникальная визуальная идея / ракурс / подтема\n"
-                "- Если текст однородный — 3-5 кадров с РАЗНЫМИ ракурсами одной темы\n"
-                "  (общий → средний → деталь → неожиданный ракурс)\n"
-                "- Если текст многогранный — каждой подтеме отдельный кадр\n"
+                "ШАГ 1 — РАЗВЕРНИ текст в полную визуальную сцену:\n"
+                "  Из короткой фразы сделай конкретную сцену: "
+                "какая локация, время суток, освещение, кто/что в кадре, "
+                "какие материалы и текстуры, какая атмосфера.\n"
+                "  Пример: 'он просыпается и берёт телефон' → "
+                "спальня, утро, солнечный свет сквозь шторы, "
+                "мужчина 30 лет в футболке тянется к телефону на тумбочке, "
+                "мятое одеяло, деревянная мебель, тёплый свет.\n\n"
+                "ШАГ 2 — создай 3-6 кадров с РАЗНЫМИ ракурсами:\n"
+                "- Каждый кадр = уникальная визуальная идея\n"
+                "- Чередуй shot types (общий → деталь → средний → неожиданный)\n"
+                f"{' - Сохраняй консистентность: персонаж/объект/стиль одинаковы во всех кадрах\n' if style_anchor or character_description else ''}"
                 "- Не повторяй один концепт дважды в одной сцене\n"
                 "- Не пытайся покрыть каждый сегмент — покрывай каждую СМЫСЛОВУЮ ЕДИНИЦУ\n"
                 "- Типично: 3-6 кадров на сцену, независимо от количества сегментов\n"

@@ -100,6 +100,9 @@ class Project:
             "name": self.name,
             "preset": self.preset,
             "language": self.settings.whisper_language,
+            "style_anchor": self.metadata.get("style_anchor", ""),
+            "character_description": self.metadata.get("character_description", ""),
+            "niche": self.metadata.get("niche", "documentary"),
         }
         meta_path = self.dir / ".project.json"
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -149,6 +152,10 @@ def open_project(path: Path, settings: Settings | None = None) -> Project | None
     if meta_file.exists():
         try:
             meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            # ensure new fields exist
+            meta.setdefault("style_anchor", "")
+            meta.setdefault("character_description", "")
+            meta.setdefault("niche", "documentary")
             return Project(
                 name=meta.get("name", path.name),
                 dir=path,

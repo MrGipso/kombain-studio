@@ -20,6 +20,12 @@ class ProjectInfo(BaseModel):
     language: str = "ru"
 
 
+class ProjectSettingsUpdate(BaseModel):
+    style_anchor: str = ""
+    character_description: str = ""
+    niche: str = "documentary"
+
+
 class TranscriptSegment(BaseModel):
     start: str
     end: str

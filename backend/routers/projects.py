@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from core.config import load_settings, list_presets
 from core.project import Project, create_project, open_project, list_projects
 
-from backend.models.schemas import ProjectInfo, Settings
+from backend.models.schemas import ProjectInfo, ProjectSettingsUpdate, Settings
 
 router = APIRouter()
 
@@ -95,6 +95,38 @@ async def get_project(project_id: str):
         "asset_board": cards_data,
         "segments": segments_data,
         "transcript": transcript_text,
+        "style_anchor": project.metadata.get("style_anchor", ""),
+        "character_description": project.metadata.get("character_description", ""),
+        "niche": project.metadata.get("niche", "documentary"),
+    }
+
+
+class UpdateProjectSettingsRequest(BaseModel):
+    style_anchor: str = ""
+    character_description: str = ""
+    niche: str = "documentary"
+
+
+@router.put("/{project_id:str}/settings")
+async def update_project_settings(project_id: str, req: UpdateProjectSettingsRequest):
+    path = Path(project_id)
+    if not path.is_absolute():
+        s = _settings()
+        output_base = Path(s.output_base or "projects")
+        path = output_base / project_id
+    if not path.exists():
+        raise HTTPException(404, "Project not found")
+    project = open_project(path, _settings())
+    if not project:
+        raise HTTPException(404, "Project not found")
+    project.metadata["style_anchor"] = req.style_anchor
+    project.metadata["character_description"] = req.character_description
+    project.metadata["niche"] = req.niche
+    project.save_meta()
+    return {
+        "style_anchor": req.style_anchor,
+        "character_description": req.character_description,
+        "niche": req.niche,
     }
 
 
