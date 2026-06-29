@@ -127,6 +127,19 @@ export default function AssetBoard() {
     }
   }
 
+  const regeneratePrompt = async (index: number, target: 'image_prompt' | 'video_prompt') => {
+    setBusy(`prompt-${target}-${index}`)
+    try {
+      const result = await api.regeneratePrompt(projectId, index, target)
+      updateCardAt(index, result.card)
+    } catch (e) {
+      alert((e as Error).message)
+      await load()
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const batchGenerate = async (mode: 'route' | 'image' | 'video') => {
     const candidates = checkedIndexes.length ? checkedIndexes : visibleIndexes
     const targets = candidates.filter((index) => {
@@ -323,12 +336,18 @@ export default function AssetBoard() {
                   <textarea value={selected.description} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, description: e.target.value })} className="mt-1 h-16 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
                 </label>
                 <label className="block">
-                  <span className="text-xs text-slate-500">Image prompt</span>
-                  <textarea value={selected.image_prompt} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, image_prompt: e.target.value })} className="mt-1 h-24 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
+                  <span className="mb-1 flex items-center justify-between gap-3 text-xs text-slate-500">
+                    <span>Image prompt</span>
+                    <button type="button" onClick={() => selectedIndex !== null && regeneratePrompt(selectedIndex, 'image_prompt')} disabled={Boolean(busy)} className="rounded bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 border border-slate-700 disabled:opacity-45">Improve</button>
+                  </span>
+                  <textarea value={selected.image_prompt} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, image_prompt: e.target.value })} className="h-24 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
                 </label>
                 <label className="block">
-                  <span className="text-xs text-slate-500">Video prompt</span>
-                  <textarea value={selected.video_prompt} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, video_prompt: e.target.value })} className="mt-1 h-24 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
+                  <span className="mb-1 flex items-center justify-between gap-3 text-xs text-slate-500">
+                    <span>Video prompt</span>
+                    <button type="button" onClick={() => selectedIndex !== null && regeneratePrompt(selectedIndex, 'video_prompt')} disabled={Boolean(busy)} className="rounded bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 border border-slate-700 disabled:opacity-45">Improve</button>
+                  </span>
+                  <textarea value={selected.video_prompt} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, video_prompt: e.target.value })} className="h-24 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
                 </label>
                 <div className="grid grid-cols-2 gap-3">
                   <label className="block">

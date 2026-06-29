@@ -73,6 +73,12 @@ export const generateCard = (id: string, cardIndex: number, mode: string = 'rout
   r<{ ok: boolean; card?: AssetCard }>(`/projects/${encodeURIComponent(id)}/generate/${cardIndex}?mode=${mode}`, {
     method: 'POST',
   })
+export const regeneratePrompt = (id: string, cardIndex: number, target: 'image_prompt' | 'video_prompt') =>
+  r<{ ok: boolean; target: string; prompt: string; card: AssetCard }>(
+    `/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}/regenerate-prompt`, {
+    method: 'POST',
+    body: JSON.stringify({ target }),
+  })
 
 // Project settings (style_anchor, etc.)
 export const updateProjectSettings = (id: string, data: { style_anchor: string; character_description: string; niche: string }) =>
