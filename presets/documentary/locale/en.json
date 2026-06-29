@@ -1,0 +1,139 @@
+{
+  "ui": {
+    "app_title": "Pipeline Studio",
+    "project": "Project",
+    "no_project": "No project loaded",
+    "change_project": "Change project",
+    "new_project": "New project",
+    "open_project": "Open project",
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "browse": "Browse",
+    "refresh": "Refresh",
+    "delete": "Delete",
+    "edit": "Edit",
+    "generate": "Generate",
+    "stop": "Stop",
+    "clear": "Clear",
+    "progress": "Progress",
+    "language": "Language",
+    "preset": "Preset",
+
+    "tab_dashboard": "Dashboard",
+    "tab_transcription": "Transcription",
+    "tab_scenes": "Scenes",
+    "tab_shots": "Shots",
+    "tab_asset_board": "Asset Board",
+    "tab_preview": "Preview",
+    "tab_settings": "Settings",
+
+    "dashboard_title": "Project Overview",
+    "dashboard_all_shots": "Total shots",
+    "dashboard_generated": "Done",
+    "dashboard_in_progress": "In progress",
+    "dashboard_planned": "Planned",
+    "dashboard_failed": "Failed",
+    "dashboard_recent": "Recent activity",
+
+    "transcription_title": "Audio Transcription",
+    "transcription_audio": "Audio file",
+    "transcription_language": "Language",
+    "transcription_model": "Whisper model",
+    "transcription_start": "Transcribe",
+    "transcription_progress": "Transcribing...",
+    "transcription_done": "Done!",
+    "transcription_preview": "Transcript preview",
+
+    "scenes_title": "Scene Analysis",
+    "scenes_analyze": "Analyze scenes",
+    "scenes_use_lm": "Via LM Studio",
+    "scenes_use_heuristic": "Local draft (heuristics)",
+    "scenes_list": "Scene list",
+    "scenes_detail": "Scene details",
+    "scenes_export": "Export scenes",
+    "scenes_regenerate": "Regenerate",
+
+    "shots_title": "Shot List",
+    "shots_generate": "Generate shot list",
+    "shots_use_lm": "Via LM Studio",
+    "shots_use_heuristic": "Local draft (heuristics)",
+    "shots_list": "Shots by scene",
+    "shots_detail": "Shot details",
+    "shots_rebuild": "Build asset board",
+
+    "board_title": "Asset Board",
+    "board_all": "All",
+    "board_filter_status": "Filter by status",
+    "board_filter_route": "Filter by route",
+    "board_batch_generate": "Batch generate",
+    "board_generate_selected": "Generate selected",
+    "board_approve_selected": "Approve selected",
+    "board_queue": "Generation queue",
+
+    "preview_title": "Preview",
+    "preview_video": "Video player",
+    "preview_timeline": "Timeline",
+    "preview_export": "Export video",
+
+    "settings_title": "Settings",
+    "settings_services": "Services",
+    "settings_lm_studio": "LM Studio",
+    "settings_comfyui": "ComfyUI",
+    "settings_whisper": "Whisper",
+    "settings_ffmpeg": "FFmpeg",
+    "settings_project": "Default project",
+    "settings_save": "Save settings"
+  },
+
+  "prompts": {
+    "scene_system": "You are a documentary YouTube content producer. Split the Russian voiceover script into editing scenes. Return only a JSON array without markdown. Each object: title, voice_text, visual_direction, screen_text, music_note, retention_note. voice_text must be an exact fragment of the original text, no fabricated facts.\n\nText:\n{script_text}",
+    "scene_segments_system": "You are a documentary YouTube content producer. You have an exact timestamped transcript of the entire video. Group adjacent segments into meaningful editing scenes.\n\nRules:\n1. Use only adjacent segment ids, do not reorder.\n2. Scene start must be the start of the first segment, scene end must be the end of the last segment.\n3. Do not fabricate new voiceover text or facts.\n4. Return only a valid JSON array without markdown.\n5. Each object: title, segment_ids, purpose, visual_direction, screen_text, music_note, retention_note.\n6. segment_ids must be an array of numbers, e.g. [1,2,3,4].\n7. Do not return voice_text or rewrite the transcript.\n\nTranscript format: id|start-end|text\n\n{transcript}",
+    "shot_system": "You are an editor for a documentary YouTube video. Based on the scenes, create a shot list: specific video frames of 3-5 seconds each.\nMain principle: one shot = one visual technique. For documentary style, frequent cuts are essential — at least 2-3 shots per 10 seconds of scene.\n\nReturn only a valid JSON array. Each object must have: scene_index, start, end, visual_type, description, asset_query, image_model, video_model, image_prompt, video_prompt, screen_text, motion, priority, fallback.\n\nAllowed visual_type: ai_image_then_i2v, ai_typography_card, programmatic_schema, remotion_graphic, map_graphic, motion_text.\nAllowed image_model: empty string, krea2_turbo, ideogram4.\nAllowed video_model: empty string, ltx2.3_i2v.\n\nUser setting for realistic AI images: {image_preference}.\nIf set to Krea: use krea2_turbo for realistic frames without text.\nIf set to Ideogram: use ideogram4 for realistic frames without text.\nIf set to Auto: use krea2_turbo for regular realistic B-roll, ideogram4 for hero/hero compositions.\n\nRouting rules:\n- screen_text should be short: 2-7 words, in the same language as the voiceover.\n- description in the same language as the voiceover for the editor.\n- image_prompt and video_prompt should be in English for generators.\n- Ideogram4 only for rare poster cards with typography. Max 1 ai_typography_card per scene.\n- Regular screen text via motion_text or remotion_graphic, not Ideogram.\n- Krea2 for realistic images without text.\n- LTX2.3 only to animate already generated images.\n- For schemas, routes, maps use programmatic_schema, remotion_graphic or map_graphic.\n- For statistics, chapters and large captions prefer remotion_graphic or motion_text.\n- For B-roll prefer local_broll or stock_broll if a unique frame is not needed.\n- Do not fabricate facts, work only with voice_text content.\n- Shot timestamps must cover the scene sequentially and stay within the scene start/end.\n\nScenes JSON:\n{scenes_json}"
+  },
+
+  "heuristics": {
+    "visual_direction": [
+      {"keywords": ["satellite", "space", "starlink"], "direction": "Satellites, orbit, then sharp contrast with cables under the ocean."},
+      {"keywords": ["ocean", "underwater", "sea floor", "deep sea"], "direction": "Dark ocean, route map across the sea, submarine cable on the seabed."},
+      {"keywords": ["telegraph", "victoria", "19th", "xix"], "direction": "Archive maps, telegraph lines, old engravings and documents."},
+      {"keywords": ["cable", "fiber", "light"], "direction": "Cable macro-diagram, optical fiber, light pulses inside."},
+      {"keywords": ["ship", "vessel", "lay"], "direction": "Cable laying ship, cable hold, slow motion across the sea."},
+      {"keywords": ["anchor", "trawl", "fishing", "break"], "direction": "Anchor, fishing trawl, emergency point on map, alarming B-roll."},
+      {"keywords": ["bgp", "route", "reroute"], "direction": "Abstract network of routes, road map, lines re-routing around failure."},
+      {"keywords": ["google", "meta", "microsoft", "amazon"], "direction": "Data centers, server rows, Big Tech logic and global backbones."},
+      {"keywords": ["exchange", "millisecond", "latency"], "direction": "Financial charts, trading terminals, race for milliseconds."}
+    ],
+    "music_note": [
+      {"keywords": ["question", "why", "threat", "danger", "break", "damage"], "note": "Low tense background, short pause before key phrase."},
+      {"keywords": ["history", "telegraph", "19th", "1858"], "note": "Calm historical backing, soft tempo."},
+      {"keywords": ["final", "every time", "right now", "in light"], "note": "Wide final backing, slow build-up."}
+    ],
+    "retention_note": [
+      {"keywords": ["why", "question"], "note": "Open loop: viewer waits for answer."},
+      {"keywords": ["not satellite", "myth", "truth", "actually"], "note": "Myth debunking."},
+      {"keywords": ["strangest", "unexpected", "paradox"], "note": "Expectation reversal."}
+    ],
+    "asset_query": [
+      {"keywords": ["ocean"], "query": "deep ocean"},
+      {"keywords": ["cable"], "query": "submarine cable"},
+      {"keywords": ["data"], "query": "data center"},
+      {"keywords": ["server"], "query": "server room"},
+      {"keywords": ["ship", "vessel"], "query": "cable laying ship"},
+      {"keywords": ["satellite"], "query": "satellite orbit"},
+      {"keywords": ["exchange"], "query": "stock exchange"},
+      {"keywords": ["telegraph"], "query": "telegraph archive"}
+    ]
+  },
+
+  "errors": {
+    "context_too_long": "LM Studio rejected the request: the full transcript does not fit in the current context length.\nIncrease Context Length in LM Studio for full video analysis.",
+    "connection_failed": "Could not connect to LM Studio. Make sure the server is running and the URL is correct.",
+    "model_not_loaded": "LM Studio model is not loaded. Click 'Load model' first.",
+    "no_scenes": "No scenes yet. Run scene analysis first.",
+    "no_audio": "Audio file not found.",
+    "no_whisper": "whisper-cli.exe not found.",
+    "comfy_timeout": "ComfyUI timed out (30 min).",
+    "remotion_failed": "Remotion render failed with error."
+  }
+}

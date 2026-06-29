@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Timeline block transitions */
+.shot-block {
+  transition: left 0.15s ease, width 0.15s ease;
+}
+
+.trim-handle {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.shot-block:hover .trim-handle {
+  opacity: 1;
+}
+
+/* Dragging overlay */
+.dragging {
+  opacity: 0.8;
+  z-index: 50;
+}

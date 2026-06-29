@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Logs and runtime output
+*.log
+backend_out.log
+backend_err.log
+backend_stdout.txt
+backend_stderr.txt
+
+# Node dependencies
+node_modules/
+frontend/node_modules/
+remotion_graphics/node_modules/
+
+# Frontend/backend generated builds
+frontend/dist/
+backend/static/assets/
+backend/static/index.html
+
+# Heavy local models and bundled tools
+/models/
+/wishper/
+
+# Generated projects and media
+/projects/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+
+# Local machine settings
+content_pipeline_settings.json
+
+# OS/editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

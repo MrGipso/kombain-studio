@@ -1,0 +1,35 @@
+Remotion motion graphics layer
+
+Папка:
+H:\streamer\remotion_graphics
+
+Что внутри:
+- src/components/StatCard.tsx
+- src/components/FlowDiagram.tsx
+- src/components/ChapterTitle.tsx
+- scripts/render-job.mjs
+- examples/*.job.json
+
+Первичная установка зависимостей:
+
+cd /d H:\streamer\remotion_graphics
+npm install
+
+Пример рендера:
+
+npm run render-job -- examples/stat-card.job.json
+npm run render-job -- examples/flow-diagram.job.json
+npm run render-job -- examples/chapter-title.job.json
+npm run render-job -- examples/map-route.job.json
+npm run render-job -- examples/map-split.job.json
+npm run render-job -- examples/reroute-map.job.json
+
+Как это связано с основной программой:
+
+1. Сначала создается транскрипция.
+2. Потом сцены.
+3. Потом shot list в разделе "Видеоряд".
+4. В разделе "Remotion" создаются JSON jobs для кадров, где нужен motion graphics.
+5. Кнопка "Рендерить jobs" запускает npm run render-job для каждого job.
+
+Если в интерфейсе появляется сообщение, что node_modules нет, нужно один раз выполнить npm install.

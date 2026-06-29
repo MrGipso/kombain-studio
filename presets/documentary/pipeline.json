@@ -1,0 +1,129 @@
+{
+  "info": {
+    "name": "Documentary",
+    "description": "Документальные YouTube-ролики с дикторским голосом, AI-изображениями и motion-графикой",
+    "version": "1.0"
+  },
+
+  "pipeline": {
+    "transcriber": "whisper_cpp",
+    "analyzer": "lm_studio",
+    "generators": ["comfy", "remotion", "schema"]
+  },
+
+  "routes": [
+    {
+      "name": "motion_text",
+      "match": {"words": ["95", "миф", "вопрос", "не через", "интернет"]},
+      "visual_type": "motion_text",
+      "steps": [{"plugin": "remotion", "template": "ChapterTitle"}],
+      "fallback": "Remotion motion_text overlay",
+      "motion": "Remotion text reveal, subtle scale-in, clean documentary typography"
+    },
+    {
+      "name": "remotion_graphic",
+      "match": {"words": ["схема", "bgp", "маршрут", "5g", "вышка", "разрез", "волокн", "95"]},
+      "visual_type": "remotion_graphic",
+      "steps": [{"plugin": "remotion", "template": "auto"}],
+      "fallback": "Remotion graphic or SVG schema from schema_generator",
+      "motion": "animate lines and labels"
+    },
+    {
+      "name": "ai_image_then_i2v",
+      "match": {"words": ["кабель", "океан", "дно", "под водой", "кораб", "судно", "дата-центр", "бирж"]},
+      "visual_type": "ai_image_then_i2v",
+      "steps": [
+        {"plugin": "comfy", "workflow": "t2i_krea", "save_as": "image"},
+        {"plugin": "comfy", "workflow": "i2v_ltx", "input": "image", "save_as": "video"}
+      ],
+      "image_model": "auto",
+      "video_model": "ltx2.3_i2v",
+      "motion": "slow documentary camera movement",
+      "fallback": "local stock/B-roll if available",
+      "prompt_prefix": "Photorealistic cinematic documentary still, grounded realistic details, natural lighting, high dynamic range, 16:9 composition, no text, no logos. Scene idea: "
+    },
+    {
+      "name": "ai_image",
+      "match": {"words": ["телеграф", "1858", "виктория", "xix", "девятнадц"]},
+      "visual_type": "ai_image",
+      "steps": [{"plugin": "comfy", "workflow": "t2i_krea", "save_as": "image"}],
+      "image_model": "auto",
+      "motion": "slow pan over still",
+      "fallback": "public domain archival image",
+      "image_prompt": "Realistic historical documentary still of a nineteenth century transatlantic telegraph cable operation, old maps and ocean route context, archival mood, cinematic lighting, no text, no logos."
+    },
+    {
+      "name": "local_broll_or_ai_image",
+      "match": {"words": []},
+      "visual_type": "local_broll_or_ai_image",
+      "steps": [{"plugin": "comfy", "workflow": "t2i_krea", "save_as": "image"}],
+      "image_model": "auto",
+      "motion": "simple cut or slow push-in",
+      "fallback": "abstract documentary B-roll",
+      "is_default": true
+    }
+  ],
+
+  "model_preferences": {
+    "krea2_turbo": {"realism": "high", "supports_text": false},
+    "ideogram4": {"realism": "high", "supports_text": true}
+  },
+
+  "remotion_templates": {
+    "StatCard": {"match": ["%", "миллион", "тысяч", "миллиард"], "default_accent": "#38bdf8"},
+    "FlowDiagram": {"match": ["5g", "flow", "схема работы", "процесс", "этап"], "default_accent": "#38bdf8"},
+    "ChapterTitle": {"match": ["глава", "часть", "раздел", "заключение", "введение"], "default_accent": "#38bdf8"},
+    "MapRoute": {"match": ["маршрут", "путь", "кабель идет", "проходит"], "default_accent": "#38bdf8"},
+    "MapSplit": {"match": ["миф", "реальность", "правда", "vs", "сравнение"], "default_accent": "#38bdf8"},
+    "RerouteMap": {"match": ["bgp", "обход", "reroute", "авария", "повреждение"], "default_accent": "#38bdf8"}
+  },
+
+  "heuristics": {
+    "visual_direction": [
+      {"keywords": ["спутник", "starlink", "космос"], "direction": "Спутники, орбита, затем резкий контраст с кабелями под океаном."},
+      {"keywords": ["океан", "под водой", "дно", "глубин"], "direction": "Темный океан, карта маршрута через море, подводный кабель на дне."},
+      {"keywords": ["телеграф", "виктория", "xix", "девятнадц"], "direction": "Архивные карты, телеграфные линии, старые гравюры и документы."},
+      {"keywords": ["кабель", "волокн", "свет"], "direction": "Макро-схема кабеля, оптическое волокно, световые импульсы внутри."},
+      {"keywords": ["кораб", "судно", "проклад"], "direction": "Кабелеукладочное судно, трюм с кабелем, медленное движение по морю."},
+      {"keywords": ["якор", "трал", "рыболов", "рв"], "direction": "Якорь, рыболовный трал, аварийная точка на карте, тревожный B-roll."},
+      {"keywords": ["bgp", "маршрут", "обход"], "direction": "Абстрактная сеть маршрутов, карта дорог, линии перестраиваются в обход аварии."},
+      {"keywords": ["google", "meta", "microsoft", "amazon"], "direction": "Дата-центры, серверные ряды, логика Big Tech и глобальных магистралей."},
+      {"keywords": ["бирж", "миллисекунд", "задерж"], "direction": "Финансовые графики, биржевые терминалы, гонка за миллисекундами."}
+    ],
+    "music_note": [
+      {"keywords": ["вопрос", "почему", "угроза", "опасн", "рв", "поврежд"], "note": "Низкий напряженный фон, короткая пауза перед ключевой фразой."},
+      {"keywords": ["история", "телеграф", "девятнадц", "1858"], "note": "Спокойная историческая подложка, мягкий темп."},
+      {"keywords": ["финал", "каждый раз", "прямо сейчас", "в виде света"], "note": "Широкая финальная подложка, медленное нарастание."}
+    ],
+    "retention_note": [
+      {"keywords": ["почему", "вопрос"], "note": "Открытая петля: зритель ждет ответ."},
+      {"keywords": ["не спут", "миф", "правда", "на самом деле"], "note": "Разрушение мифа."},
+      {"keywords": ["самое странное", "неожидан", "парадокс"], "note": "Поворот ожиданий."}
+    ],
+    "asset_query": [
+      {"keywords": ["океан"], "query": "deep ocean"},
+      {"keywords": ["кабель"], "query": "submarine cable"},
+      {"keywords": ["дата"], "query": "data center"},
+      {"keywords": ["сервер"], "query": "server room"},
+      {"keywords": ["кораб", "судно"], "query": "cable laying ship"},
+      {"keywords": ["спут"], "query": "satellite orbit"},
+      {"keywords": ["бирж"], "query": "stock exchange"},
+      {"keywords": ["телеграф"], "query": "telegraph archive"}
+    ]
+  },
+
+  "comfy_workflows": {
+    "t2i_krea": {
+      "path_var": "COMFY_KREA_WORKFLOW",
+      "default": "H:\\image_krea2_turbo_t2i_api.json"
+    },
+    "t2i_ideogram": {
+      "path_var": "COMFY_IDEOGRAM_WORKFLOW",
+      "default": "H:\\image_ideogram4_t2i_api.json"
+    },
+    "i2v_ltx": {
+      "path_var": "COMFY_LTX_WORKFLOW",
+      "default": "H:\\Animal\\video-generation\\LTX23_GGUF_i2v_api.json"
+    }
+  }
+}

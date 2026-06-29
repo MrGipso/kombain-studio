@@ -1,0 +1,11 @@
+{
+  "output": "../projects/интернет-на-дне-океана/renders/remotion/example_map_split.mp4",
+  "props": {
+    "template": "MapSplit",
+    "durationSeconds": 7,
+    "title": "Не космос, а океан",
+    "subtitle": "Интернет кажется беспроводным, но держится на физической инфраструктуре",
+    "leftLabel": "Реальность: кабели",
+    "rightLabel": "Миф: спутники"
+  }
+}

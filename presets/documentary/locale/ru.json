@@ -1,0 +1,139 @@
+{
+  "ui": {
+    "app_title": "Pipeline Studio",
+    "project": "Проект",
+    "no_project": "Проект не загружен",
+    "change_project": "Сменить проект",
+    "new_project": "Новый проект",
+    "open_project": "Открыть проект",
+    "save": "Сохранить",
+    "cancel": "Отмена",
+    "close": "Закрыть",
+    "browse": "Обзор",
+    "refresh": "Обновить",
+    "delete": "Удалить",
+    "edit": "Редактировать",
+    "generate": "Генерировать",
+    "stop": "Стоп",
+    "clear": "Очистить",
+    "progress": "Прогресс",
+    "language": "Язык",
+    "preset": "Пресет",
+
+    "tab_dashboard": "Обзор",
+    "tab_transcription": "Транскрипция",
+    "tab_scenes": "Сцены",
+    "tab_shots": "Шоты",
+    "tab_asset_board": "Доска кадров",
+    "tab_preview": "Просмотр",
+    "tab_settings": "Настройки",
+
+    "dashboard_title": "Обзор проекта",
+    "dashboard_all_shots": "Всего шотов",
+    "dashboard_generated": "Готово",
+    "dashboard_in_progress": "В процессе",
+    "dashboard_planned": "Запланировано",
+    "dashboard_failed": "Ошибок",
+    "dashboard_recent": "Последние действия",
+
+    "transcription_title": "Транскрипция аудио",
+    "transcription_audio": "Аудиофайл",
+    "transcription_language": "Язык",
+    "transcription_model": "Модель Whisper",
+    "transcription_start": "Транскрибировать",
+    "transcription_progress": "Транскрипция...",
+    "transcription_done": "Готово!",
+    "transcription_preview": "Превью транскрипта",
+
+    "scenes_title": "Анализ сцен",
+    "scenes_analyze": "Анализировать сцены",
+    "scenes_use_lm": "Через LM Studio",
+    "scenes_use_heuristic": "Локальный черновик",
+    "scenes_list": "Список сцен",
+    "scenes_detail": "Детали сцены",
+    "scenes_export": "Экспортировать сцены",
+    "scenes_regenerate": "Перегенерировать",
+
+    "shots_title": "Список шотов",
+    "shots_generate": "Создать shot list",
+    "shots_use_lm": "Через LM Studio",
+    "shots_use_heuristic": "Локальный черновик",
+    "shots_list": "Шоты по сценам",
+    "shots_detail": "Детали шота",
+    "shots_rebuild": "Собрать доску кадров",
+
+    "board_title": "Доска кадров",
+    "board_all": "Все",
+    "board_filter_status": "Фильтр по статусу",
+    "board_filter_route": "Фильтр по роуту",
+    "board_batch_generate": "Пакетная генерация",
+    "board_generate_selected": "Генерировать выбранное",
+    "board_approve_selected": "Утвердить выбранное",
+    "board_queue": "Очередь генерации",
+
+    "preview_title": "Просмотр",
+    "preview_video": "Видеоплеер",
+    "preview_timeline": "Таймлайн",
+    "preview_export": "Экспорт видео",
+
+    "settings_title": "Настройки",
+    "settings_services": "Сервисы",
+    "settings_lm_studio": "LM Studio",
+    "settings_comfyui": "ComfyUI",
+    "settings_whisper": "Whisper",
+    "settings_ffmpeg": "FFmpeg",
+    "settings_project": "Проект по умолчанию",
+    "settings_save": "Сохранить настройки"
+  },
+
+  "prompts": {
+    "scene_system": "Ты продюсер документального YouTube-контента. Разбей русский дикторский текст на сцены для монтажа. Верни только JSON-массив без markdown. Каждый объект: title, voice_text, visual_direction, screen_text, music_note, retention_note. voice_text должен быть точным фрагментом исходного текста, без выдуманных фактов.\n\nТекст:\n{script_text}",
+    "scene_segments_system": "Ты продюсер документального YouTube-контента. У тебя есть точная транскрибация с таймкодами всего ролика. Сгруппируй соседние сегменты в смысловые сцены для монтажа.\n\nПравила:\n1. Используй только соседние segment id, не меняй порядок.\n2. start сцены должен быть start первого сегмента, end сцены - end последнего сегмента.\n3. Не выдумывай новый дикторский текст и факты.\n4. Верни только валидный JSON-массив без markdown.\n5. Каждый объект: title, segment_ids, purpose, visual_direction, screen_text, music_note, retention_note.\n6. segment_ids должны быть массивом чисел, например [1,2,3,4].\n7. Не возвращай voice_text и не переписывай транскрибацию.\n\nФормат транскрибации: id|start-end|text\n\n{transcript}",
+    "shot_system": "Ты режиссер монтажа документального YouTube-ролика. На основе сцен создай shot list: конкретные кадры видеоряда длительностью 3-5 секунд.\nГлавный принцип: один shot = один визуальный прием. Для документального стиля нужны частые смены кадров — минимум 2-3 кадра на каждые 10 секунд сцены.\n\nВерни только валидный JSON-массив. Каждый объект должен иметь поля: scene_index, start, end, visual_type, description, asset_query, image_model, video_model, image_prompt, video_prompt, screen_text, motion, priority, fallback.\n\nДопустимые visual_type: ai_image_then_i2v, ai_typography_card, programmatic_schema, remotion_graphic, map_graphic, motion_text.\nДопустимые image_model: empty string, krea2_turbo, ideogram4.\nДопустимые video_model: empty string, ltx2.3_i2v.\n\nНастройка пользователя для реалистичных AI-изображений: {image_preference}.\nЕсли настройка Krea: для реалистичных кадров без текста ставь image_model=krea2_turbo.\nЕсли настройка Ideogram: для реалистичных кадров без текста ставь image_model=ideogram4.\nЕсли настройка Auto: для обычного реалистичного B-roll ставь krea2_turbo, для постерных/hero-композиций можно ставить ideogram4.\n\nПравила маршрутизации:\n- screen_text всегда пиши на русском языке, коротко: 2-7 слов.\n- description пиши на русском языке для монтажера.\n- image_prompt и video_prompt пиши на английском языке для генераторов.\n- Ideogram4 используй только для редких постерных карточек с типографикой. Максимум 1 ai_typography_card на сцену.\n- Обычный экранный текст делай через motion_text или remotion_graphic, а не через Ideogram.\n- Krea2 используй для реалистичных изображений без текста.\n- LTX2.3 используй только чтобы анимировать уже сгенерированное изображение.\n- Для схем, маршрутов, BGP, 5G-flow, карт и разрезов используй programmatic_schema, remotion_graphic или map_graphic.\n- Для статистики, глав и крупных надписей предпочитай remotion_graphic или motion_text.\n- Для B-roll предпочитай local_broll или stock_broll, если не нужен уникальный кадр.\n- Не выдумывай факты, работай только с содержанием voice_text.\n- Таймкоды кадров должны покрывать сцену последовательно и оставаться внутри start/end сцены.\n\nСцены JSON:\n{scenes_json}"
+  },
+
+  "heuristics": {
+    "visual_direction": [
+      {"keywords": ["спутник", "starlink", "космос"], "direction": "Спутники, орбита, затем резкий контраст с кабелями под океаном."},
+      {"keywords": ["океан", "под водой", "дно", "глубин"], "direction": "Темный океан, карта маршрута через море, подводный кабель на дне."},
+      {"keywords": ["телеграф", "виктория", "xix", "девятнадц"], "direction": "Архивные карты, телеграфные линии, старые гравюры и документы."},
+      {"keywords": ["кабель", "волокн", "свет"], "direction": "Макро-схема кабеля, оптическое волокно, световые импульсы внутри."},
+      {"keywords": ["кораб", "судно", "проклад"], "direction": "Кабелеукладочное судно, трюм с кабелем, медленное движение по морю."},
+      {"keywords": ["якор", "трал", "рыболов", "рв"], "direction": "Якорь, рыболовный трал, аварийная точка на карте, тревожный B-roll."},
+      {"keywords": ["bgp", "маршрут", "обход"], "direction": "Абстрактная сеть маршрутов, карта дорог, линии перестраиваются в обход аварии."},
+      {"keywords": ["google", "meta", "microsoft", "amazon"], "direction": "Дата-центры, серверные ряды, логика Big Tech и глобальных магистралей."},
+      {"keywords": ["бирж", "миллисекунд", "задерж"], "direction": "Финансовые графики, биржевые терминалы, гонка за миллисекундами."}
+    ],
+    "music_note": [
+      {"keywords": ["вопрос", "почему", "угроза", "опасн", "рв", "поврежд"], "note": "Низкий напряженный фон, короткая пауза перед ключевой фразой."},
+      {"keywords": ["история", "телеграф", "девятнадц", "1858"], "note": "Спокойная историческая подложка, мягкий темп."},
+      {"keywords": ["финал", "каждый раз", "прямо сейчас", "в виде света"], "note": "Широкая финальная подложка, медленное нарастание."}
+    ],
+    "retention_note": [
+      {"keywords": ["почему", "вопрос"], "note": "Открытая петля: зритель ждет ответ."},
+      {"keywords": ["не спут", "миф", "правда", "на самом деле"], "note": "Разрушение мифа."},
+      {"keywords": ["самое странное", "неожидан", "парадокс"], "note": "Поворот ожиданий."}
+    ],
+    "asset_query": [
+      {"keywords": ["океан"], "query": "deep ocean"},
+      {"keywords": ["кабель"], "query": "submarine cable"},
+      {"keywords": ["дата"], "query": "data center"},
+      {"keywords": ["сервер"], "query": "server room"},
+      {"keywords": ["кораб", "судно"], "query": "cable laying ship"},
+      {"keywords": ["спут"], "query": "satellite orbit"},
+      {"keywords": ["бирж"], "query": "stock exchange"},
+      {"keywords": ["телеграф"], "query": "telegraph archive"}
+    ]
+  },
+
+  "errors": {
+    "context_too_long": "LM Studio отклонил запрос: вся транскрибация не помещается в текущий context length.\nДля полного анализа всего ролика одним запросом увеличь Context Length в LM Studio",
+    "connection_failed": "Не удалось подключиться к LM Studio. Проверь, что сервер запущен и URL указан правильно.",
+    "model_not_loaded": "Модель LM Studio не загружена. Нажми 'Загрузить модель'.",
+    "no_scenes": "Нет сцен. Сначала выполните этап анализа сцен.",
+    "no_audio": "Аудиофайл не найден.",
+    "no_whisper": "whisper-cli.exe не найден.",
+    "comfy_timeout": "ComfyUI превысил время ожидания (30 мин).",
+    "remotion_failed": "Remotion рендер завершился с ошибкой."
+  }
+}

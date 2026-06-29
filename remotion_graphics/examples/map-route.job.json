@@ -1,0 +1,15 @@
+{
+  "output": "../projects/интернет-на-дне-океана/renders/remotion/example_map_route.mp4",
+  "props": {
+    "template": "MapRoute",
+    "durationSeconds": 8,
+    "title": "Данные пересекают океан",
+    "subtitle": "Маршрут выглядит цифровым, но проходит через физический кабель",
+    "route": [
+      {"x": 1130, "y": 470, "label": "Европа"},
+      {"x": 960, "y": 425},
+      {"x": 760, "y": 455},
+      {"x": 600, "y": 500, "label": "США"}
+    ]
+  }
+}

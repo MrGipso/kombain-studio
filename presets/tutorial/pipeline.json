@@ -1,0 +1,125 @@
+{
+  "info": {
+    "name": "Tutorial",
+    "description": "Обучающие видео, туториалы, скринкасты и разборы кода",
+    "version": "1.0"
+  },
+
+  "pipeline": {
+    "transcriber": "whisper_cpp",
+    "analyzer": "lm_studio",
+    "generators": ["comfy", "remotion", "schema"]
+  },
+
+  "routes": [
+    {
+      "name": "code_screenshot",
+      "match": {"words": ["код", "функция", "класс", "метод", "import", "def", "api"]},
+      "visual_type": "local_broll_or_ai_image",
+      "steps": [{"plugin": "manual", "note": "Скриншот кода или экрана"}],
+      "motion": "static or slow zoom",
+      "fallback": "code screenshot placeholder"
+    },
+    {
+      "name": "diagram_explanation",
+      "match": {"words": ["схема", "архитектура", "диаграмма", "поток", "flow", "процесс"]},
+      "visual_type": "remotion_graphic",
+      "steps": [{"plugin": "remotion", "template": "FlowDiagram"}],
+      "fallback": "Remotion FlowDiagram or SVG schema",
+      "motion": "animate lines and labels"
+    },
+    {
+      "name": "result_demo",
+      "match": {"words": ["результат", "демо", "запуск", "вывод", "output", "пример работы"]},
+      "visual_type": "local_broll_or_ai_image",
+      "steps": [{"plugin": "manual", "note": "Запись экрана или демонстрация"}],
+      "motion": "screen recording",
+      "fallback": "screen recording placeholder"
+    },
+    {
+      "name": "comparison",
+      "match": {"words": ["сравнение", "разница", "vs", "против", "альтернатива"]},
+      "visual_type": "remotion_graphic",
+      "steps": [{"plugin": "remotion", "template": "MapSplit"}],
+      "fallback": "Remotion split comparison",
+      "motion": "split screen animation"
+    },
+    {
+      "name": "concept_card",
+      "match": {"words": ["термин", "понятие", "определение", "что такое", "это"]},
+      "visual_type": "motion_text",
+      "steps": [{"plugin": "remotion", "template": "ChapterTitle"}],
+      "fallback": "Remotion text overlay",
+      "motion": "text reveal"
+    },
+    {
+      "name": "stat_or_metric",
+      "match": {"words": ["%", "процент", "скорость", "время", "миллисекунд", "число"]},
+      "visual_type": "remotion_graphic",
+      "steps": [{"plugin": "remotion", "template": "StatCard"}],
+      "fallback": "Remotion StatCard",
+      "motion": "stat reveal"
+    },
+    {
+      "name": "generic_broll",
+      "match": {"words": []},
+      "visual_type": "local_broll_or_ai_image",
+      "steps": [{"plugin": "comfy", "workflow": "t2i_krea", "save_as": "image"}],
+      "image_model": "auto",
+      "motion": "simple cut or slow push-in",
+      "fallback": "abstract technology B-roll",
+      "is_default": true
+    }
+  ],
+
+  "model_preferences": {
+    "krea2_turbo": {"realism": "high", "supports_text": false},
+    "ideogram4": {"realism": "high", "supports_text": true}
+  },
+
+  "remotion_templates": {
+    "ChapterTitle": {"match": ["термин", "понятие", "глава", "определение"], "default_accent": "#22c55e"},
+    "FlowDiagram": {"match": ["схема", "архитектура", "flow", "процесс"], "default_accent": "#38bdf8"},
+    "MapSplit": {"match": ["сравнение", "vs", "разница"], "default_accent": "#f97316"},
+    "StatCard": {"match": ["%", "процент", "скорость"], "default_accent": "#a855f7"},
+    "TextOverlay": {"match": ["текст", "пояснение", "вывод"], "default_accent": "#22c55e"}
+  },
+
+  "heuristics": {
+    "visual_direction": [
+      {"keywords": ["код", "функция", "программа"], "direction": "Экран с кодом, подсветка синтаксиса, IDE."},
+      {"keywords": ["схема", "архитектура"], "direction": "Диаграмма связей, блок-схема, стрелки."},
+      {"keywords": ["сравнение", "vs", "альтернатива"], "direction": "Разделенный экран, два примера рядом."},
+      {"keywords": ["результат", "демо", "запуск"], "direction": "Скринкаст, запись экрана, терминал."},
+      {"keywords": ["термин", "понятие", "определение"], "direction": "Крупный заголовок, экранная подпись."}
+    ],
+    "music_note": [
+      {"keywords": ["вопрос", "почему", "проблем"], "note": "Спокойный фон, пауза перед объяснением."},
+      {"keywords": ["результат", "готово", "вывод"], "note": "Легкий подъем, финальный акцент."}
+    ],
+    "retention_note": [
+      {"keywords": ["почему", "зачем"], "note": "Открытая петля: зритель ждет ответа."},
+      {"keywords": ["важно", "ключевое", "запомните"], "note": "Акцент на ключевой мысли."}
+    ],
+    "asset_query": [
+      {"keywords": ["код"], "query": "code editor syntax"},
+      {"keywords": ["сервер"], "query": "server rack data center"},
+      {"keywords": ["сеть"], "query": "network diagram topology"}
+    ]
+  },
+
+  "comfy_workflows": {
+    "t2i_krea": {
+      "path_var": "COMFY_KREA_WORKFLOW",
+      "default": "H:\\image_krea2_turbo_t2i_api.json"
+    },
+    "t2i_ideogram": {
+      "path_var": "COMFY_IDEOGRAM_WORKFLOW",
+      "default": "H:\\image_ideogram4_t2i_api.json"
+    },
+    "i2v_ltx": {
+      "path_var": "COMFY_LTX_WORKFLOW",
+      "default": "H:\\Animal\\video-generation\\LTX23_GGUF_i2v_api.json"
+    }
+  }
+}

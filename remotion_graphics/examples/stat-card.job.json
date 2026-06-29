@@ -1,0 +1,11 @@
+{
+  "output": "../projects/интернет-на-дне-океана/renders/remotion/example_stat_card.mp4",
+  "props": {
+    "template": "StatCard",
+    "durationSeconds": 8,
+    "title": "Физический интернет",
+    "value": "95%+",
+    "label": "международного трафика идет по подводным кабелям",
+    "note": "Точная доля зависит от методики оценки, но порядок величины именно такой"
+  }
+}

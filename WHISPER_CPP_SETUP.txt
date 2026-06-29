@@ -1,0 +1,46 @@
+Настройка whisper.cpp для Content Pipeline
+
+1. Собери или скачай whisper.cpp для Windows.
+
+Нужен файл:
+tools\whisper.cpp\whisper-cli.exe
+
+Иногда в старых сборках исполняемый файл называется main.exe.
+Программа умеет искать и whisper-cli.exe, и main.exe.
+
+2. Скачай русскоязычную модель Whisper в формате ggml.
+
+Рекомендуемый старт:
+tools\whisper.cpp\models\ggml-small.bin
+
+Лучше качество, но медленнее:
+tools\whisper.cpp\models\ggml-medium.bin
+
+Не используй модели с .en для русской озвучки.
+
+3. Убедись, что есть ffmpeg.exe.
+
+Программа ищет ffmpeg в PATH и в:
+tools\ffmpeg\ffmpeg.exe
+
+4. Запусти:
+start_content_pipeline.bat
+
+5. В приложении:
+- выбери голосовую дорожку;
+- проверь пути к whisper-cli.exe, model .bin и ffmpeg.exe;
+- язык оставь ru;
+- нажми "Транскрибировать голос";
+- после появления текста нажми "Создать Production Pack".
+
+Результат появится в папке проекта:
+01_transcript.txt
+01_transcript_segments.json
+01_whisper_raw.json
+02_scenes.json
+03_edit_plan.csv
+04_subtitles_draft.srt
+04_subtitles_whisper.srt
+05_visual_prompts.md
+06_music_sfx_notes.md
+07_youtube_package.md
