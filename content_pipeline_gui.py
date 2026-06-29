@@ -405,17 +405,19 @@ def make_realistic_prompt(text: str, shot_type: str = "", style_anchor: str = ""
     shot = shot_type or _suggest_shot_type(hint)
     anchor_suffix = f" Style: {style_anchor}." if style_anchor else ""
     templates = [
-        f"Documentary editorial photograph, {shot}, natural lighting, "
-        f"rich textures and materials, sharp focus, ambient environment. Scene: {hint}.{anchor_suffix}",
-        f"Cinematic documentary frame, {shot}, carefully composed with "
-        f"natural color palette, diffused lighting, documentary aesthetic. Scene: {hint}.{anchor_suffix}",
-        f"Photorealistic documentary still, {shot}, grounded realistic details, "
-        f"natural textures, cinematic lighting with shallow depth of field, "
-        f"high dynamic range, 16:9 composition, no text, no logos. Scene: {hint}.{anchor_suffix}",
-        f"Environmental portrait photography, {shot}, ambient natural light, "
-        f"authentic documentary feel, rich color grading, editorial style. Scene: {hint}.{anchor_suffix}",
-        f"Observational documentary frame, {shot}, available light photography, "
-        f"authentic textures, environmental context, photojournalism aesthetic. Scene: {hint}.{anchor_suffix}",
+        f"Hyper-detailed close-up: {hint}. Rich textures and materials visible, "
+        f"natural ambient light, sharp focus on surfaces and details, realistic color palette.{anchor_suffix}",
+        f"Wide environmental view: {hint}. Natural everyday lighting, "
+        f"authentic materials and textures, real-world color grading, documentary observation style.{anchor_suffix}",
+        f"Medium composition: {hint}. Grounded realistic details, "
+        f"practical light sources casting natural shadows, "
+        f"realistic color temperature, no stylization, real-world textures.{anchor_suffix}",
+        f"Close-up on subject: {hint}. Ambient natural light, "
+        f"authentic textures visible, shallow depth of field, "
+        f"realistic color palette, no text, no logos.{anchor_suffix}",
+        f"Environmental context: {hint}. Available light photography, "
+        f"authentic textures and materials, documentary observation, "
+        f"real-world colors and atmosphere.{anchor_suffix}",
     ]
     return random.choice(templates)
 
@@ -1277,11 +1279,10 @@ def call_lm_studio_for_shots(
             "конкретные материалы/освещение/цвета, без абстракций)\n"
             "- video_prompt (английский, движение камеры/действие, present tense, 3-5 предложений)\n\n"
             "image_prompt правила:\n"
-            "- Реалистический стиль, никаких абстракций\n"
+            "- Промт начинается с КОНКРЕТНОГО ОБЪЕКТА, не с жанра. "
+            "ПЛОХО: 'Documentary photo of...' ХОРОШО: 'A dusty workbench with...'\n"
             "- Конкретные материалы и текстуры (weathered metal, brushed aluminum, frosted glass)\n"
             "- Конкретное освещение (golden hour backlight, cold fluorescent overhead)\n"
-            "- Варьируй первую фразу (Documentary editorial photograph of..., "
-            "Cinematic establishing shot of..., Detailed macro view of...)\n"
             "- Без клише 'cinematic lighting' и 'photorealistic'\n"
             "- Избегай unreal, fantasy, alien\n\n"
             "video_prompt правила:\n"
@@ -1386,23 +1387,26 @@ def call_lm_studio_for_shots(
         "'frosted glass', 'rough concrete', 'polished marble', 'aged copper patina'.\n"
         "- Konкретное освещение: 'golden hour backlight', 'cold fluorescent overhead', "
         "'warm tungsten desk lamp', 'harsh noon sun casting hard shadows'.\n"
-        "- Не начинай каждый промпт одинаково. Варьируй первую фразу: "
-        "'Documentary editorial photograph of...', 'Cinematic establishing shot of...', "
-        "'Detailed macro view of...', 'Wide environmental portrait of...'.\n"
-        "- Избегай клише: 'cinematic lighting' и 'photorealistic' в каждом промпте — "
-        "используй конкретные описания вместо общих слов.\n"
+        "- ЗАПРЕЩЕНО начинать промпт с абстрактного жанра: 'Documentary...', 'Cinematic...', "
+        "'Photorealistic...', 'Editorial...', 'Observational...' — это абстракция, а не промпт.\n"
+        "- Промт должен начинаться с КОНКРЕТНОГО ОБЪЕКТА ИЛИ СЦЕНЫ: "
+        "'A weathered wooden door...', 'Rain streaming down a window pane...', "
+        "'A middle-aged man in a stained apron...', 'Dust motes floating in...'.\n"
+        "- Избегай клише: 'cinematic lighting' и 'photorealistic' — "
+        "используй конкретные названия источников света и материалов.\n"
+        "- Не описывай жанр видео. Опиши ЧТО мы видим, а не КАК это снято.\n"
         "- Используй visual_direction из сцены как подсказку для визуального стиля.\n"
         "- Не добавляй текст на изображение (screen_text отдельным слоем).\n"
-        "- Избегай в промптах: 'unreal', 'fantasy', 'alien' — всё должно выглядеть как реальная документальная съёмка.\n\n"
-        "ПРИМЕР ХОРОШЕГО image_prompt (длинный, детальный, естественный язык):\n"
-        "\"Extreme macro shot of polished fiber optic cable cross-section under laboratory lighting, "
-        "brilliant blue and green light pulses visible through the transparent glass core, "
-        "razor-sharp focus on the cable center with soft bokeh in the background, "
-        "tiny dust particles floating in the air illuminated by the light, "
-        "cold blue and teal color palette, scientific documentary aesthetic, "
-        "shallow depth of field isolating the cable end.\"\n\n"
-        "ПРИМЕР ПЛОХОГО image_prompt (короткий, теговый — НЕ ДЕЛАЙ ТАК):\n"
-        "\"Fiber optic cable, close-up, blue light, documentary, cinematic.\"\n\n"
+        "- Всё должно выглядеть как реальная съёмка реального мира. Никаких 'unreal', 'fantasy', 'alien'.\n\n"
+        "ПРИМЕР ХОРОШЕГО image_prompt (начинается с объекта, а не жанра):\n"
+        "\"A 40-year-old man in a wrinkled denim shirt sits at a cluttered wooden desk, "
+        "morning light streams through a dusty window casting long diagonal shadows, "
+        "a cold cup of coffee and scattered papers cover the desk surface, "
+        "his tired eyes focused on a glowing laptop screen, "
+        "warm tungsten light from the desk lamp mixes with cool daylight, "
+        "rough concrete wall texture visible behind him, documentary realism.\"\n\n"
+        "ПРИМЕР ПЛОХОГО image_prompt (абстрактный, начинается с жанра — НЕ ДЕЛАЙ ТАК):\n"
+        "\"Cinematic documentary scene of a man working at his desk, moody lighting, photorealistic.\"\n\n"
         "ПРАВИЛА ДЛЯ video_prompt (LTX 2.3):\n"
         "- Описывай ЧТО ПРОИСХОДИТ на кадре, а не КАК ОН ВЫГЛЯДИТ (image_prompt уже даёт визуал).\n"
         "- Фокус: motion/действие, camera movement, audio.\n"
