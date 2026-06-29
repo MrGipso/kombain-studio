@@ -47,6 +47,60 @@ def card_source(card: AssetCard) -> Path | None:
     return None
 
 
+def card_overlay_text(card: AssetCard) -> str:
+    if not getattr(card, "text_overlay_enabled", False):
+        return ""
+    return (getattr(card, "text_overlay_text", "") or card.screen_text or "").strip()
+
+
+def ffmpeg_filter_path(path: Path) -> str:
+    return str(path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+
+
+def find_overlay_font() -> Path | None:
+    for font_path in (
+        Path(r"C:\Windows\Fonts\arial.ttf"),
+        Path(r"C:\Windows\Fonts\segoeui.ttf"),
+        Path(r"C:\Windows\Fonts\tahoma.ttf"),
+    ):
+        if font_path.exists():
+            return font_path
+    return None
+
+
+def overlay_filter(card: AssetCard, dst: Path) -> str:
+    text = card_overlay_text(card)
+    if not text:
+        return ""
+
+    text_path = dst.with_suffix(".overlay.txt")
+    text_path.write_text(text, encoding="utf-8")
+
+    position = (getattr(card, "text_overlay_position", "bottom") or "bottom").lower()
+    if position == "top":
+        box_y = "70"
+        text_y = "105"
+    elif position == "center":
+        box_y = "(ih-150)/2"
+        text_y = "(h-text_h)/2"
+    else:
+        box_y = "ih-190"
+        text_y = "h-150"
+
+    font = find_overlay_font()
+    font_part = f"fontfile='{ffmpeg_filter_path(font)}':" if font else ""
+    text_file = ffmpeg_filter_path(text_path)
+    return (
+        f"drawbox=x=0:y={box_y}:w=iw:h=150:color=black@0.45:t=fill,"
+        f"drawtext={font_part}textfile='{text_file}':fontcolor=white:fontsize=58:"
+        f"borderw=3:bordercolor=black:x=(w-text_w)/2:y={text_y}"
+    )
+
+
+def has_text_overlays(cards: list[AssetCard]) -> bool:
+    return any(card_overlay_text(card) for card in cards if card.approved)
+
+
 def run_ffmpeg(cmd: list[str], log_callback: Callable | None = None) -> bool:
     if log_callback:
         log_callback(f"Running: {' '.join(cmd)}")
@@ -112,15 +166,22 @@ def normalize_segment(
     src: Path,
     dst: Path,
     duration: int,
+    card: AssetCard,
     log_callback: Callable | None = None,
 ) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    vf = (
-        f"fps={FPS},"
-        f"scale={VIDEO_SIZE}:force_original_aspect_ratio=decrease,"
-        f"pad={VIDEO_SIZE}:(ow-iw)/2:(oh-ih)/2,"
-        f"tpad=stop_mode=clone:stop_duration={duration}"
-    )
+    filters = [
+        f"fps={FPS}",
+        f"scale={VIDEO_SIZE}:force_original_aspect_ratio=decrease",
+        f"pad={VIDEO_SIZE}:(ow-iw)/2:(oh-ih)/2",
+        f"tpad=stop_mode=clone:stop_duration={duration}",
+    ]
+    overlay = overlay_filter(card, dst)
+    if overlay:
+        if log_callback:
+            log_callback(f"Applying text overlay to shot {card.shot_index:03d}: {card_overlay_text(card)}")
+        filters.append(overlay)
+    vf = ",".join(filters)
     if src.suffix.lower() in IMAGE_EXTENSIONS:
         cmd = [
             ffmpeg, "-y", "-loop", "1", "-i", str(src),
@@ -160,7 +221,7 @@ def build_normalized_concat_file(
         dst = segments_dir / f"segment_{index:03d}_shot_{card.shot_index:03d}.mp4"
         if log_callback:
             log_callback(f"Normalizing shot {card.shot_index:03d} to {duration}s")
-        if not normalize_segment(ffmpeg, src, dst, duration, log_callback):
+        if not normalize_segment(ffmpeg, src, dst, duration, card, log_callback):
             return ""
         segment_paths.append(dst)
     return build_concat_file_from_paths(segment_paths, exports_dir)
@@ -205,11 +266,16 @@ def export_video(
     ffmpeg = shutil.which("ffmpeg.exe") or shutil.which("ffmpeg") or ffmpeg_path
     voice_audio = find_voice_audio(project_dir)
     voice_start = timeline_voice_start_seconds(project_dir)
+    overlays_enabled = has_text_overlays(cards)
     if voice_audio:
         if log_callback:
             log_callback(f"Using voice audio: {voice_audio}")
             if voice_start:
                 log_callback(f"Voice timeline offset: {voice_start}s")
+        concat_file = build_normalized_concat_file(cards, exports_dir, ffmpeg, log_callback)
+    elif overlays_enabled:
+        if log_callback:
+            log_callback("No voice audio found; exporting normalized video with timeline text overlays.")
         concat_file = build_normalized_concat_file(cards, exports_dir, ffmpeg, log_callback)
     else:
         if log_callback:

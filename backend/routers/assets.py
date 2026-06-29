@@ -64,7 +64,6 @@ def _generate_sync(pdir: Path, card_index: int, mode: str) -> dict[str, Any]:
         return {"ok": True, "card": card.__dict__}
     elif mode == "video":
         vid_path = cpg.generate_comfy_ltx_video(comfy_url, pdir, card)
-        vid_path = cpg.apply_number_overlay_to_video(vid_path, pdir, card, print)
         card.video_output = str(vid_path)
     else:
         raise ValueError(f"Unknown mode: {mode}")

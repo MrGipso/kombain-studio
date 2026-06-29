@@ -128,7 +128,13 @@ export default function AssetBoard() {
   }
 
   const batchGenerate = async (mode: 'route' | 'image' | 'video') => {
-    const targets = checkedIndexes.length ? checkedIndexes : visibleIndexes.filter((index) => cards[index].status !== 'approved')
+    const candidates = checkedIndexes.length ? checkedIndexes : visibleIndexes
+    const targets = candidates.filter((index) => {
+      const card = cards[index]
+      if (card.status === 'approved') return false
+      if (mode === 'image') return !card.image_output
+      return true
+    })
     for (const index of targets) {
       await generate(index, mode)
     }

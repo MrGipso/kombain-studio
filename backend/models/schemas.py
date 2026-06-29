@@ -90,6 +90,9 @@ class AssetCard(BaseModel):
     timeline_end: str = ""
     assigned_media: str = ""
     track: str = "video_1"
+    text_overlay_enabled: bool = False
+    text_overlay_text: str = ""
+    text_overlay_position: str = "bottom"
 
 
 class Settings(BaseModel):

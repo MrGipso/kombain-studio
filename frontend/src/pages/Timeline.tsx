@@ -47,6 +47,21 @@ function isImage(path: string) {
   return /\.(png|jpe?g|webp|bmp)$/i.test(path)
 }
 
+function overlayText(card: AssetCard | null) {
+  if (!card) return ''
+  return (card.text_overlay_text || card.screen_text || '').trim()
+}
+
+function hasOverlay(card: AssetCard | null) {
+  return Boolean(card?.text_overlay_enabled && overlayText(card))
+}
+
+function overlayPositionClass(position: string | undefined) {
+  if (position === 'top') return 'top-10'
+  if (position === 'center') return 'top-1/2 -translate-y-1/2'
+  return 'bottom-12'
+}
+
 const STATUS_COLORS: Record<string, string> = {
   planned: '#64748b',
   image_ready: '#8b5cf6',
@@ -417,7 +432,7 @@ export default function Timeline() {
 
           <section className="grid grid-cols-[minmax(420px,1fr)_320px] gap-4">
             <div className="rounded-lg bg-black border border-slate-800 overflow-hidden">
-              <div className="aspect-video flex items-center justify-center">
+              <div className="relative aspect-video flex items-center justify-center">
                 {currentMediaPath && isVideo(currentMediaPath) && (
                   <video key={currentMediaPath} ref={videoRef} src={mediaUrl(currentMediaPath)} muted playsInline className="h-full w-full object-contain" />
                 )}
@@ -432,6 +447,13 @@ export default function Timeline() {
                   </div>
                 )}
                 {!currentCard && <div className="text-sm text-slate-700">Нет кадров на timeline.</div>}
+                {hasOverlay(currentCard) && (
+                  <div className={`pointer-events-none absolute left-8 right-8 ${overlayPositionClass(currentCard?.text_overlay_position)}`}>
+                    <div className="mx-auto max-w-3xl rounded bg-black/55 px-6 py-3 text-center text-2xl font-semibold leading-tight text-white shadow-[0_0_0_1px_rgba(255,255,255,0.12)]">
+                      {overlayText(currentCard)}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -468,6 +490,22 @@ export default function Timeline() {
                     <span className="text-xs text-slate-500">Assigned media</span>
                     <input value={selectedCard.assigned_media || clipMediaPath(selectedCard)} onChange={(event) => updateCard(selectedIndex, { assigned_media: event.target.value })} className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-white outline-none focus:border-indigo-500" />
                   </label>
+
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 space-y-3">
+                    <label className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-white">Text overlay</span>
+                      <input type="checkbox" checked={Boolean(selectedCard.text_overlay_enabled)} onChange={(event) => updateCard(selectedIndex, { text_overlay_enabled: event.target.checked })} className="h-4 w-4 accent-indigo-500" />
+                    </label>
+                    <textarea value={selectedCard.text_overlay_text || selectedCard.screen_text} onChange={(event) => updateCard(selectedIndex, { text_overlay_text: event.target.value })} className="h-16 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
+                    <label className="block">
+                      <span className="text-xs text-slate-500">Position</span>
+                      <select value={selectedCard.text_overlay_position || 'bottom'} onChange={(event) => updateCard(selectedIndex, { text_overlay_position: event.target.value })} className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500">
+                        <option value="bottom">Bottom</option>
+                        <option value="center">Center</option>
+                        <option value="top">Top</option>
+                      </select>
+                    </label>
+                  </div>
 
                   <label className="block">
                     <span className="text-xs text-slate-500">Voice start</span>
@@ -529,7 +567,7 @@ export default function Timeline() {
         </aside>
       </div>
 
-      <section className="h-64 shrink-0 bg-slate-950 border-t border-slate-800">
+      <section className="h-80 shrink-0 bg-slate-950 border-t border-slate-800">
         <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800">
           <div className="text-sm font-semibold text-white">Timeline</div>
           <div className="flex items-center gap-3">
@@ -548,6 +586,7 @@ export default function Timeline() {
             <div className="absolute left-0 top-0 bottom-0 z-20 w-28 border-r border-slate-800 bg-slate-950">
               <div className="h-8 border-b border-slate-800 px-3 py-2 text-xs text-slate-500">Time</div>
               <div className="h-24 border-b border-slate-800 px-3 py-9 text-xs font-semibold text-slate-400">Video 1</div>
+              <div className="h-16 border-b border-slate-800 px-3 py-5 text-xs font-semibold text-slate-400">Text</div>
               <div className="h-20 px-3 py-7 text-xs font-semibold text-slate-400">Voice</div>
             </div>
 
@@ -603,6 +642,30 @@ export default function Timeline() {
                   )
                 })}
                 <div className="absolute top-0 bottom-0 z-30 w-px bg-red-400" style={{ left: playhead * zoom }} />
+              </div>
+
+              <div className="relative h-16 border-b border-slate-800 bg-slate-900/25">
+                {cards.map((card, index) => {
+                  const text = overlayText(card)
+                  if (!card.text_overlay_enabled || !text) return null
+                  const start = tcToSec(timelineStart(card))
+                  const end = tcToSec(timelineEnd(card))
+                  const width = Math.max(42, (end - start) * zoom)
+                  return (
+                    <button
+                      key={`text-${card.scene_index}-${card.shot_index}-${index}`}
+                      onClick={() => {
+                        setSelectedIndex(index)
+                        seek(start)
+                      }}
+                      className={`absolute top-3 h-10 rounded border border-fuchsia-500/70 bg-fuchsia-500/15 px-3 text-left text-xs text-fuchsia-100 overflow-hidden ${selectedIndex === index ? 'ring-2 ring-fuchsia-300' : ''}`}
+                      style={{ left: start * zoom, width }}
+                    >
+                      <div className="truncate font-semibold">Shot {card.shot_index}</div>
+                      <div className="truncate text-[11px] text-fuchsia-200/80">{text}</div>
+                    </button>
+                  )
+                })}
               </div>
 
               <div className="relative h-20 bg-slate-900/20" onMouseDown={(event) => {

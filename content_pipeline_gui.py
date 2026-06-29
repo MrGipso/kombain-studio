@@ -134,6 +134,9 @@ class AssetCard:
     timeline_end: str = ""
     assigned_media: str = ""
     track: str = "video_1"
+    text_overlay_enabled: bool = False
+    text_overlay_text: str = ""
+    text_overlay_position: str = "bottom"
 
 
 def slugify(text: str) -> str:
@@ -2082,6 +2085,9 @@ def load_asset_board(project_dir: Path) -> list[AssetCard]:
         "timeline_end": "",
         "assigned_media": "",
         "track": "video_1",
+        "text_overlay_enabled": False,
+        "text_overlay_text": "",
+        "text_overlay_position": "bottom",
     }
     for item in raw:
         data = {**field_defaults, **item}

@@ -114,6 +114,9 @@ export interface AssetCard {
   timeline_end: string
   assigned_media: string
   track: string
+  text_overlay_enabled: boolean
+  text_overlay_text: string
+  text_overlay_position: string
 }
 
 export interface Settings {
