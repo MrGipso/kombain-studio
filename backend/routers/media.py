@@ -4,7 +4,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from core.config import load_settings
@@ -100,7 +100,7 @@ async def serve_media(file_path: str):
         ".opus": "audio/ogg",
     }
     media_type = media_types.get(ext, "application/octet-stream")
-    return FileResponse(str(path), media_type=media_type)
+    return FileResponse(str(path), media_type=media_type, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @router.get("/projects/{project_id:str}/timeline-media")

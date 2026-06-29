@@ -21,8 +21,8 @@ const STATUS_COLORS: Record<string, string> = {
   skipped: '#64748b',
 }
 
-function mediaUrl(path: string) {
-  return `/api/media/${encodeURIComponent(path)}`
+function mediaUrl(path: string, v: number = 0) {
+  return `/api/media/${encodeURIComponent(path)}${v ? `?v=${v}` : ''}`
 }
 
 function bestMedia(card: AssetCard) {
@@ -41,6 +41,7 @@ export default function AssetBoard() {
   const [filterRoute, setFilterRoute] = useState('all')
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
+  const [mediaVersion, setMediaVersion] = useState(0)
 
   const load = async () => {
     const board = await api.getAssetBoard(projectId).catch(() => [] as AssetCard[])
@@ -127,7 +128,10 @@ export default function AssetBoard() {
     setBusy(`generate-${index}`)
     try {
       const result = await api.generateCard(projectId, index, mode)
-      if (result.card) updateCardAt(index, result.card)
+      if (result.card) {
+        updateCardAt(index, result.card)
+        setMediaVersion((v) => v + 1)
+      }
     } catch (e) {
       alert((e as Error).message)
       await load()
@@ -326,10 +330,10 @@ export default function AssetBoard() {
 
               <div className="aspect-video rounded-lg bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center">
                 {bestMedia(selected)?.type === 'video' && (
-                  <video src={mediaUrl(bestMedia(selected)!.path)} poster={selected.image_output ? mediaUrl(selected.image_output) : undefined} controls className="h-full w-full object-contain" />
+                  <video key={`${bestMedia(selected)!.path}-${mediaVersion}`} src={mediaUrl(bestMedia(selected)!.path, mediaVersion)} poster={selected.image_output ? mediaUrl(selected.image_output, mediaVersion) : undefined} controls className="h-full w-full object-contain" />
                 )}
                 {bestMedia(selected)?.type === 'image' && (
-                  <img src={mediaUrl(bestMedia(selected)!.path)} alt="" className="h-full w-full object-contain" />
+                  <img key={`${bestMedia(selected)!.path}-${mediaVersion}`} src={mediaUrl(bestMedia(selected)!.path, mediaVersion)} alt="" className="h-full w-full object-contain" />
                 )}
                 {!bestMedia(selected) && <div className="text-sm text-slate-700">Файл еще не создан</div>}
               </div>
