@@ -120,6 +120,16 @@ def _lm_prompt(endpoint: str, model: str, prompt: str) -> dict[str, Any]:
     return _extract_json_object(content)
 
 
+def _unload_lm_after_prompt(settings) -> dict[str, Any]:
+    model = str(settings.lm_model or "").strip()
+    if not model or model == "local-model":
+        return {"ok": False, "skipped": True, "message": "LM Studio model is not configured"}
+    try:
+        result = cpg.unload_lm_studio_model(settings.lm_url or "http://127.0.0.1:1234/v1", model)
+        return {"ok": True, "skipped": False, "result": result}
+    except Exception as exc:
+        return {"ok": False, "skipped": False, "message": cpg.explain_lm_studio_error(exc)}
+
 def _regenerate_prompt_sync(pdir: Path, card_index: int, target: str) -> dict[str, Any]:
     project = open_project(pdir, load_settings())
     if not project:
@@ -176,7 +186,8 @@ def _regenerate_prompt_sync(pdir: Path, card_index: int, target: str) -> dict[st
 
     setattr(card, target, new_prompt)
     cpg.write_asset_board(pdir, cards)
-    return {"ok": True, "target": target, "prompt": new_prompt, "card": card.__dict__}
+    unload = _unload_lm_after_prompt(settings)
+    return {"ok": True, "target": target, "prompt": new_prompt, "card": card.__dict__, "lm_unload": unload}
 
 @router.get("/{project_id:str}/asset-board")
 async def get_asset_board(project_id: str):
