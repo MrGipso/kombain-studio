@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "render-job": "node scripts/render-job.mjs",
+    "render-composition": "node scripts/render-composition.mjs",
     "preview": "remotion preview src/index.tsx",
     "render": "remotion render src/index.tsx MotionGraphic renders/example.mp4"
   },

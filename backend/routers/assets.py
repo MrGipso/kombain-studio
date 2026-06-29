@@ -316,6 +316,65 @@ async def generate_card(project_id: str, card_index: int, mode: str = "route"):
         raise HTTPException(500, str(e))
 
 
+def _render_composition_sync(pdir: Path) -> dict[str, Any]:
+    """Render all cards into a single video via Remotion VideoComposer."""
+    project = open_project(pdir, load_settings())
+    if not project:
+        raise RuntimeError("Project not found")
+
+    cards = cpg.load_asset_board(pdir)
+    if not cards:
+        raise RuntimeError("Asset board is empty")
+
+    composition = cpg.build_cuts_array(pdir, cards)
+    renders_dir = pdir / "renders" / "remotion"
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    output_path = str((renders_dir / "final_composition.mp4").resolve())
+
+    composition["output"] = output_path
+
+    cuts_path = pdir / "remotion_jobs" / "composition.json"
+    cuts_path.parent.mkdir(parents=True, exist_ok=True)
+    cuts_path.write_text(
+        json.dumps(composition, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+
+    remotion_dir = Path(__file__).resolve().parent.parent.parent / "remotion_graphics"
+    node = shutil.which("node.exe") or shutil.which("node")
+    if not node:
+        raise RuntimeError("node.exe not found in PATH")
+
+    proc = subprocess.Popen(
+        [node, "scripts/render-composition.mjs", str(cuts_path)],
+        cwd=remotion_dir,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    assert proc.stdout
+    for line in proc.stdout:
+        print(line.rstrip())
+    code = proc.wait()
+    if code != 0:
+        raise RuntimeError(f"Remotion render failed with code {code}")
+
+    if not Path(output_path).exists():
+        raise RuntimeError(f"Expected output not found: {output_path}")
+
+    return {"ok": True, "output": output_path, "cuts": len(composition["cuts"])}
+
+
+@router.post("/{project_id:str}/render")
+async def render_composition(project_id: str):
+    pdir = _resolve_project(project_id)
+    try:
+        result = await asyncio.to_thread(_render_composition_sync, pdir)
+        return result
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 def _render_remotion(pdir: Path, card: cpg.AssetCard, cards: list):
     shots_path = pdir / "04_shot_list.json"
     shots_data = json.loads(shots_path.read_text("utf-8"))

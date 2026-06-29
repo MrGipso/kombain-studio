@@ -183,6 +183,18 @@ export default function AssetBoard() {
     }
   }
 
+  const renderFinal = async () => {
+    setBusy('render')
+    try {
+      const result = await api.renderProject(projectId)
+      alert(`Render complete!\nOutput: ${result.output}\nCuts: ${result.cuts}`)
+    } catch (e) {
+      alert((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const toggleVisible = () => {
     setChecked((prev) => {
       const next = new Set(prev)
@@ -214,6 +226,9 @@ export default function AssetBoard() {
           </button>
           <button onClick={batchApprove} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold disabled:opacity-45">
             Approve
+          </button>
+          <button onClick={renderFinal} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold disabled:opacity-45">
+            Render Video
           </button>
         </div>
       </div>

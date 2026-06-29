@@ -80,6 +80,12 @@ export const regeneratePrompt = (id: string, cardIndex: number, target: 'image_p
     body: JSON.stringify({ target }),
   })
 
+export const renderProject = (id: string) =>
+  r<{ ok: boolean; output: string; cuts: number }>(
+    `/projects/${encodeURIComponent(id)}/render`, {
+    method: 'POST',
+  })
+
 // Project settings (style_anchor, etc.)
 export const updateProjectSettings = (id: string, data: { style_anchor: string; character_description: string; niche: string }) =>
   r<{ style_anchor: string; character_description: string; niche: string }>(

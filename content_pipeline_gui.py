@@ -2068,6 +2068,83 @@ def determine_asset_route(shot: Shot, remotion_template: str) -> str:
         return "graphic"
     return "image+video"
 
+
+def build_cuts_array(project_dir: Path, cards: list[AssetCard] | None = None) -> dict:
+    """Build a cuts array for Remotion VideoComposer from the asset board."""
+    if cards is None:
+        cards = load_asset_board(project_dir)
+    if not cards:
+        return {"cuts": [], "fps": 25}
+
+    cuts = []
+    has_audio = False
+
+    for card in cards:
+        in_sec = timecode_to_seconds(card.start)
+        out_sec = timecode_to_seconds(card.end)
+        if out_sec <= in_sec:
+            out_sec = in_sec + 3
+        cut_id = f"shot_{card.shot_index:03d}"
+
+        if card.video_output and Path(card.video_output).exists():
+            cuts.append({
+                "id": cut_id,
+                "type": "video",
+                "source": str(Path(card.video_output).resolve()),
+                "in_seconds": in_sec,
+                "out_seconds": out_sec,
+            })
+        elif card.remotion_output and Path(card.remotion_output).exists():
+            cuts.append({
+                "id": cut_id,
+                "type": "video",
+                "source": str(Path(card.remotion_output).resolve()),
+                "in_seconds": in_sec,
+                "out_seconds": out_sec,
+            })
+        elif card.image_output and Path(card.image_output).exists():
+            cuts.append({
+                "id": cut_id,
+                "type": "image",
+                "source": str(Path(card.image_output).resolve()),
+                "in_seconds": in_sec,
+                "out_seconds": out_sec,
+            })
+        elif card.remotion_template:
+            duration = max(2, out_sec - in_sec)
+            title = card.screen_text.strip() or card.scene_title.strip() or card.description
+            subtitle = card.description if card.screen_text else ""
+            cuts.append({
+                "id": cut_id,
+                "type": "template",
+                "template": card.remotion_template,
+                "templateProps": {
+                    "template": card.remotion_template,
+                    "durationSeconds": min(duration, 10),
+                    "title": title,
+                    "subtitle": subtitle,
+                    "fps": 25,
+                },
+                "in_seconds": in_sec,
+                "out_seconds": out_sec,
+            })
+        else:
+            text = card.screen_text.strip() or card.scene_title.strip() or card.description.strip() or f"Shot {card.shot_index}"
+            cuts.append({
+                "id": cut_id,
+                "type": "text",
+                "text": text,
+                "subtitle": card.description if card.screen_text else "",
+                "in_seconds": in_sec,
+                "out_seconds": out_sec,
+            })
+
+    return {
+        "cuts": cuts,
+        "fps": 25,
+        "audio": [],
+    }
+
 def load_asset_board(project_dir: Path) -> list[AssetCard]:
     path = project_dir / "06_asset_board.json"
     if not path.exists():
