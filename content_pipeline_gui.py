@@ -2069,6 +2069,59 @@ def determine_asset_route(shot: Shot, remotion_template: str) -> str:
     return "image+video"
 
 
+def _enrich_template_props(template: str, title: str, subtitle: str, card: AssetCard) -> dict:
+    """Return richer templateProps based on the template name and card data."""
+    base = {
+        "title": title,
+        "subtitle": subtitle,
+        "fps": 25,
+        "backgroundColor": "#0F172A",
+    }
+    if template in ("HeroTitle", "SectionTitle"):
+        return {**base, "title": title, "subtitle": subtitle, "accentColor": "#7C3AED"}
+    if template == "StatCardV2":
+        return {**base, "stat": title, "subtitle": subtitle, "accentColor": "#F59E0B"}
+    if template in ("BarChart", "LineChart"):
+        return {**base, "title": title, "chartData": [], "chartSeries": []}
+    if template == "PieChart":
+        return {**base, "title": title, "data": [], "donut": False, "showLegend": True}
+    if template == "KPIGrid":
+        return {**base, "title": title, "metrics": [], "columns": 3}
+    if template == "StatReveal":
+        return {**base, "data": [], "columns": 3, "accentColor": "#7C3AED"}
+    if template == "CalloutBox":
+        return {**base, "text": subtitle or title, "type": "info"}
+    if template == "ComparisonCard":
+        return {**base, "title": title, "leftLabel": subtitle, "rightLabel": card.description}
+    if template == "ProgressBar":
+        return {**base, "progress": 0.5, "label": title}
+    if template == "TextCard":
+        return {**base, "text": subtitle or title, "fontSize": 64, "color": "#F8FAFC"}
+    if template == "TerminalScene":
+        return {**base, "lines": [], "title": title}
+    if template == "ScreenshotScene":
+        return {**base, "title": title, "image": card.image_output or ""}
+    if template == "TitledVideo":
+        return {**base, "title": title, "src": card.video_output or ""}
+    if template == "ProductReveal":
+        return {**base, "title": title, "subtitle": subtitle}
+    if template == "CollageBurst":
+        return {**base, "title": title, "images": []}
+    if template == "LyricOverlay":
+        return {**base, "lyrics": []}
+    if template == "CaptionOverlay":
+        return {**base, "words": [], "highlightColor": "#7C3AED"}
+    return {
+        "template": template,
+        "durationSeconds": min(
+            max(2, timecode_to_seconds(card.end) - timecode_to_seconds(card.start)), 10
+        ),
+        "title": title,
+        "subtitle": subtitle,
+        "fps": 25,
+    }
+
+
 def build_cuts_array(project_dir: Path, cards: list[AssetCard] | None = None) -> dict:
     """Build a cuts array for Remotion VideoComposer from the asset board."""
     if cards is None:
@@ -2118,13 +2171,7 @@ def build_cuts_array(project_dir: Path, cards: list[AssetCard] | None = None) ->
                 "id": cut_id,
                 "type": "template",
                 "template": card.remotion_template,
-                "templateProps": {
-                    "template": card.remotion_template,
-                    "durationSeconds": min(duration, 10),
-                    "title": title,
-                    "subtitle": subtitle,
-                    "fps": 25,
-                },
+                "templateProps": _enrich_template_props(card.remotion_template, title, subtitle, card),
                 "in_seconds": in_sec,
                 "out_seconds": out_sec,
             })
