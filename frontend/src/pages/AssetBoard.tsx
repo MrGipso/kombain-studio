@@ -133,6 +133,7 @@ export default function AssetBoard() {
       const card = cards[index]
       if (card.status === 'approved') return false
       if (mode === 'image') return !card.image_output
+      if (mode === 'video') return !card.video_output
       return true
     })
     for (const index of targets) {
