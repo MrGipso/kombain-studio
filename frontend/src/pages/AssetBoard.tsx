@@ -89,6 +89,15 @@ export default function AssetBoard() {
     })
   }
 
+  const patchCardAt = (index: number, patch: Partial<AssetCard>) => {
+    setCards((prev) => {
+      if (index < 0 || index >= prev.length) return prev
+      const next = [...prev]
+      next[index] = { ...next[index], ...patch }
+      return next
+    })
+  }
+
   const saveSelected = async () => {
     if (selectedIndex === null || !selected) return
     setBusy('save')
@@ -131,7 +140,8 @@ export default function AssetBoard() {
     setBusy(`prompt-${target}-${index}`)
     try {
       const result = await api.regeneratePrompt(projectId, index, target)
-      updateCardAt(index, result.card)
+      if (result.card) updateCardAt(index, result.card)
+      patchCardAt(index, { [target]: result.prompt })
     } catch (e) {
       alert((e as Error).message)
       await load()

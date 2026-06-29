@@ -84,22 +84,45 @@ def _generate_sync(pdir: Path, card_index: int, mode: str) -> dict[str, Any]:
 
 
 def _extract_json_object(content: str) -> dict[str, Any]:
-    content = content.strip()
-    if content.startswith("```"):
-        content = content.strip("`")
-        if content.lower().startswith("json"):
-            content = content[4:].strip()
-    start = content.find("{")
-    end = content.rfind("}")
-    if start >= 0 and end > start:
-        content = content[start:end + 1]
-    data = json.loads(content)
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+
+    data_text = cleaned
+    starts = [(pos, opener) for pos, opener in ((cleaned.find("{"), "{"), (cleaned.find("["), "[")) if pos >= 0]
+    if starts:
+        start, opener = min(starts, key=lambda item: item[0])
+        closer = "}" if opener == "{" else "]"
+        end = cleaned.rfind(closer)
+        if end > start:
+            data_text = cleaned[start:end + 1]
+
+    data = json.loads(data_text)
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                return item
+        raise ValueError("LM Studio returned JSON array without an object")
     if not isinstance(data, dict):
         raise ValueError("LM Studio returned non-object JSON")
     return data
 
 
-def _lm_prompt(endpoint: str, model: str, prompt: str) -> dict[str, Any]:
+def _lm_unload_delay_seconds(settings) -> int | None:
+    auto_unload = getattr(settings, "lm_auto_unload", True)
+    if isinstance(auto_unload, str):
+        auto_unload = auto_unload.strip().lower() not in {"0", "false", "no", "off"}
+    if not auto_unload:
+        return None
+    try:
+        return max(0, int(str(getattr(settings, "lm_unload_delay", "0")).strip() or "0"))
+    except ValueError:
+        return 60
+
+
+def _lm_prompt(endpoint: str, model: str, prompt: str, ttl_seconds: int | None = None) -> dict[str, Any]:
     payload = {
         "model": model.strip() or "local-model",
         "messages": [
@@ -108,6 +131,7 @@ def _lm_prompt(endpoint: str, model: str, prompt: str) -> dict[str, Any]:
         ],
         "temperature": 0.35,
     }
+    cpg.add_lm_ttl(payload, ttl_seconds)
     request = urllib.request.Request(
         endpoint.rstrip("/") + "/chat/completions",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -120,7 +144,26 @@ def _lm_prompt(endpoint: str, model: str, prompt: str) -> dict[str, Any]:
     return _extract_json_object(content)
 
 
+def _prompt_from_lm_data(data: dict[str, Any], target: str) -> str:
+    keys = ["prompt", target]
+    if target == "image_prompt":
+        keys.extend(["image", "imagePrompt"])
+    else:
+        keys.extend(["video", "videoPrompt"])
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _unload_lm_after_prompt(settings) -> dict[str, Any]:
+    delay = _lm_unload_delay_seconds(settings)
+    if delay is None:
+        return {"ok": True, "skipped": True, "message": "LM Studio auto-unload disabled"}
+    if delay > 0:
+        return {"ok": True, "skipped": True, "delay": delay, "message": f"LM Studio TTL set ({delay}s)"}
+
     model = str(settings.lm_model or "").strip()
     if not model or model == "local-model":
         return {"ok": False, "skipped": True, "message": "LM Studio model is not configured"}
@@ -179,8 +222,15 @@ def _regenerate_prompt_sync(pdir: Path, card_index: int, target: str) -> dict[st
             f"Current video prompt, if any:\n{card.video_prompt}\n"
         )
 
-    data = _lm_prompt(settings.lm_url or "http://127.0.0.1:1234/v1", settings.lm_model or "local-model", prompt)
-    new_prompt = str(data.get("prompt", "")).strip()
+    delay = _lm_unload_delay_seconds(settings)
+    ttl = delay if delay and delay > 0 else None
+    data = _lm_prompt(
+        settings.lm_url or "http://127.0.0.1:1234/v1",
+        settings.lm_model or "local-model",
+        prompt,
+        ttl_seconds=ttl,
+    )
+    new_prompt = _prompt_from_lm_data(data, target)
     if not new_prompt:
         raise RuntimeError("LM Studio returned an empty prompt")
 
