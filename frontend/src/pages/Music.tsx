@@ -126,6 +126,13 @@ export default function Music() {
       toast.error(`Обрезка: ${(e as Error).message}`)
     }
   }
+  // Player behaviour: only one track plays at a time. When one starts, pause the rest.
+  const pauseOthers = (current: HTMLAudioElement) => {
+    document.querySelectorAll('audio').forEach((el) => {
+      if (el !== current) (el as HTMLAudioElement).pause()
+    })
+  }
+
   const previewRegion = (filename: string, start: number, end: number) => {
     const el = document.getElementById(`audio-${filename}`) as HTMLAudioElement | null
     if (!el) return
@@ -301,7 +308,10 @@ export default function Music() {
                         Удалить
                       </button>
                     </div>
-                    <audio id={`audio-${t.filename}`} controls src={t.url} className="w-full mt-2" />
+                    <audio
+                      id={`audio-${t.filename}`} controls src={t.url} className="w-full mt-2"
+                      onPlay={(e) => pauseOthers(e.currentTarget)}
+                    />
                     <div className="flex items-center gap-2 mt-2 flex-wrap">
                       <span className="text-xs text-slate-500">Участок:</span>
                       <input

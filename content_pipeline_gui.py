@@ -48,6 +48,7 @@ from core.style_presets import (
     get_video_style,
     style_director_brief,
 )
+from core.export import tiled_intervals
 
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
@@ -55,12 +56,16 @@ SETTINGS_PATH = Path(__file__).resolve().parent / "content_pipeline_settings.jso
 DEFAULT_COMFY_KREA_WORKFLOW = Path(r"H:\image_krea2_turbo_t2i_api.json")
 DEFAULT_COMFY_IDEOGRAM_WORKFLOW = Path(r"H:\image_ideogram4_t2i_api.json")
 DEFAULT_COMFY_LTX_WORKFLOW = Path(r"H:\Animal\video-generation\LTX23_GGUF_i2v_api.json")
+DEFAULT_COMFY_ACE_WORKFLOW = Path(__file__).resolve().parent / "Ace_step_1_5.json"
 COMFY_KREA_WORKFLOW = DEFAULT_COMFY_KREA_WORKFLOW
 COMFY_IDEOGRAM_WORKFLOW = DEFAULT_COMFY_IDEOGRAM_WORKFLOW
 COMFY_LTX_WORKFLOW = DEFAULT_COMFY_LTX_WORKFLOW
 SHOT_TARGET_SECONDS = 4
 SHOT_MAX_SECONDS = 40
 MAX_LTX_DURATION = 40
+# ACE-Step generates a bed of at most this many seconds; the export loops it to
+# fill the full video length.
+MAX_ACE_DURATION = 120
 
 APP_BG = "#f3f6fb"
 PANEL_BG = "#ffffff"
@@ -591,6 +596,7 @@ def build_heuristic_shots(
     style_anchor: str = "",
     video_style: str = DEFAULT_VIDEO_STYLE,
     character_description: str = "",
+    compose: bool = True,
 ) -> list[Shot]:
     shots: list[Shot] = []
     for scene in scenes:
@@ -634,6 +640,22 @@ def build_heuristic_shots(
                 )
             )
     repair_shot_prompts(shots)
+    # Apply the visual style exactly once, over the neutral bodies. Callers that
+    # run their own compose pass afterwards (e.g. the LLM shot-list path) pass
+    # compose=False to avoid double-applying the style.
+    if compose:
+        for s in shots:
+            s.image_prompt = compose_image_prompt(
+                video_style,
+                s.image_prompt or s.description,
+                character_description=character_description,
+                custom_notes=style_anchor,
+            )
+            s.video_prompt = compose_video_prompt(
+                video_style,
+                s.video_prompt or s.motion,
+                shot_description=s.description,
+            )
     return shots
 
 
@@ -647,20 +669,18 @@ def choose_visual_route(
 ) -> dict:
     lower = f"{text} {screen_text}".lower()
     preferred_image_model = preferred_realistic_image_model(image_preference)
-    prompt = compose_image_prompt(
-        video_style,
-        make_realistic_prompt(text, style_anchor=""),
-        character_description=character_description,
-        custom_notes=style_anchor,
-    )
-    video_prompt = compose_video_prompt(video_style, make_ltx_prompt(prompt), shot_description=text)
+    # Return NEUTRAL bodies only. build_heuristic_shots applies the style once via
+    # compose_* at the end, so we do NOT compose here (that would double-apply the
+    # style and bury the subject).
+    body = make_realistic_prompt(text)
+    video_body = make_ltx_prompt(body)
     return {
         "visual_type": "ai_image_then_i2v",
         "asset_query": make_asset_query(lower),
         "image_model": preferred_image_model,
         "video_model": "ltx2.3_i2v",
-        "image_prompt": prompt,
-        "video_prompt": video_prompt,
+        "image_prompt": body,
+        "video_prompt": video_body,
         "motion": "slow documentary camera movement",
         "fallback": "AI image-to-video generation",
     }
@@ -692,34 +712,20 @@ def make_asset_query(text: str) -> str:
 
 
 def make_realistic_prompt(text: str, shot_type: str = "", style_anchor: str = "") -> str:
+    # Build a NEUTRAL, concrete scene BODY only — a framing + the real scene.
+    # No "photorealistic", no style words: the visual style is applied exactly
+    # once, later, by compose_image_prompt. Baking realism/style here caused it
+    # to fight the selected style (e.g. photoreal body under a knit header).
+    # `style_anchor` is accepted for backward compatibility but intentionally
+    # not injected — style is a single responsibility of compose_image_prompt.
     hint = clean_visual_prompt_source(text)
     if len(hint) > 300:
         hint = hint[:297].rsplit(" ", 1)[0] + "..."
     shot = shot_type or _suggest_shot_type(hint)
-    # When a project style is set, lead with it and drop realism-forcing wording
-    # (which would fight non-photoreal styles like "cartoon").
-    if (style_anchor or "").strip():
-        return (
-            f"{style_anchor} style: {hint}. {shot} composition, "
-            f"consistent {style_anchor} look, clear shapes and colors, no text, no logos."
-        )
-    anchor_suffix = ""
-    templates = [
-        f"Hyper-detailed close-up: {hint}. Rich textures and materials visible, "
-        f"natural ambient light, sharp focus on surfaces and details, realistic color palette.{anchor_suffix}",
-        f"Wide environmental view: {hint}. Natural everyday lighting, "
-        f"authentic materials and textures, real-world color grading, documentary observation style.{anchor_suffix}",
-        f"Medium composition: {hint}. Grounded realistic details, "
-        f"practical light sources casting natural shadows, "
-        f"realistic color temperature, no stylization, real-world textures.{anchor_suffix}",
-        f"Close-up on subject: {hint}. Ambient natural light, "
-        f"authentic textures visible, shallow depth of field, "
-        f"realistic color palette, no text, no logos.{anchor_suffix}",
-        f"Environmental context: {hint}. Available light photography, "
-        f"authentic textures and materials, documentary observation, "
-        f"real-world colors and atmosphere.{anchor_suffix}",
-    ]
-    return random.choice(templates)
+    return (
+        f"{shot} of {hint}, a real recognizable place shown with clear shapes, "
+        f"colours and its own landmarks"
+    )
 
 
 def _suggest_shot_type(text: str) -> str:
@@ -741,11 +747,10 @@ def _suggest_shot_type(text: str) -> str:
     if any(w in lower for w in ("hand", "рука", "палец", "fingers", "инструмент", "tool")):
         return "extreme close-up of hands at work"
     if any(w in lower for w in ("историческ", "archive", "архив", "старин", "old", "antique", "винтаж")):
-        return "vintage archival still with sepia tones"
-    return "medium documentary shot"
+        return "vintage archival still"
     if any(w in lower for w in ("terminal", "screen", "бирж", "stock")):
-        return "close-up of glowing screens"
-    return "medium documentary shot"
+        return "medium shot of glowing screens"
+    return "medium establishing shot"
 
 
 def make_ltx_prompt(image_prompt: str, motion_hint: str = "") -> str:
@@ -770,20 +775,34 @@ def apply_style_anchor(prompt: str, style_anchor: str) -> str:
 
 
 def _suggest_motion(text: str) -> str:
+    # Honest, FORM-BASED default only. We do NOT guess a subject's action from
+    # keywords (that invents motion that may contradict the image). We only pick a
+    # camera behaviour that fits the shot's framing; ambient motion is added by the
+    # caller and the subject is kept still. Used strictly as a last-resort fallback
+    # when the model gave no usable motion.
     lower = text.lower()
-    if any(w in lower for w in ("macro", "detail", "волокн")):
-        return "holds steady on the macro detail, then slowly pulls back to reveal context"
-    if any(w in lower for w in ("underwater", "океан", "под водой")):
-        return "slowly drifts forward through the water, tracking the subject"
-    if any(w in lower for w in ("ship", "судно", "кораб")):
-        return "slowly orbits around the vessel, capturing its scale against the sea"
-    if any(w in lower for w in ("data center", "сервер", "terminal")):
-        return "glides smoothly between rows, revealing depth and scale"
-    if any(w in lower for w in ("tower", "вышка", "antenna")):
-        return "slowly tilts upward, revealing the full structure against the sky"
-    if any(w in lower for w in ("cable", "кабель")):
-        return "slowly pushes in along the cable, revealing internal fiber structure"
-    return "slowly pushes in, revealing depth and fine detail"
+    if any(w in lower for w in ("wide", "aerial", "establishing", "landscape", "overview", "panorama", "vista")):
+        return "slowly drifts across the scene, letting the space and its landmarks read"
+    if any(w in lower for w in ("close-up", "close up", "macro", "extreme", "detail")):
+        return "gently pushes in on the detail and holds, keeping the subject stable"
+    return "slowly pushes in and holds steady, letting the scene settle"
+
+
+def _motion_is_weak(shot) -> bool:
+    """A shot's motion is 'weak' when the model gave nothing usable: empty or a
+    couple of words. Used only to decide whether to retry ONCE for better motion —
+    it does NOT judge 'too little movement' (a still scene is a valid answer)."""
+    m = ((getattr(shot, "video_prompt", "") or "") + " " + (getattr(shot, "motion", "") or "")).strip()
+    if not m:
+        return True
+    return len(m.split()) < 4
+
+
+def _motions_mostly_weak(shots) -> bool:
+    if not shots:
+        return False
+    weak = sum(1 for s in shots if _motion_is_weak(s))
+    return weak > len(shots) / 2
 
 
 def clean_visual_prompt_source(text: str) -> str:
@@ -814,22 +833,24 @@ def prompt_has_too_much_transcript(prompt: str) -> bool:
 
 
 def rebuild_image_prompt_for_shot(shot: Shot) -> str:
-    source = shot.description or shot.asset_query or shot.screen_text or "documentary technology visual"
+    # Emergency rebuild when the model's prompt is unusable (too much raw
+    # transcript). Returns a NEUTRAL concrete BODY only — no "photorealistic",
+    # no forced style — so that compose_image_prompt can apply the selected style
+    # exactly once on top. (Typography cards are the one intentional exception.)
+    source = shot.description or shot.asset_query or shot.screen_text or "a simple real scene"
     source = clean_visual_prompt_source(source)
     if shot.asset_query and shot.asset_query.lower() not in source.lower():
         source = f"{source}, {shot.asset_query}"
     shot_type = _suggest_shot_type(source)
     if shot.visual_type == "ai_typography_card":
         return (
-            "Clean cinematic editorial title card, premium documentary style, strong composition, "
+            "Clean cinematic editorial title card, strong composition, "
             "high contrast, 16:9 layout, minimal visual clutter. "
             f"Visible text, exactly: \"{shot.screen_text}\". Visual idea: {source}"
         )
     return (
-        f"Photorealistic documentary still, {shot_type}, grounded realistic details, "
-        "natural textures, cinematic lighting with shallow depth of field, "
-        "high dynamic range, 16:9 composition, no text, no logos. "
-        f"Scene: {source}"
+        f"{shot_type} of {source}, a real recognizable place shown with clear "
+        f"shapes, colours and its own landmarks"
     )
 
 
@@ -1699,16 +1720,18 @@ def call_lm_studio_for_shots(
         "rough concrete wall texture visible behind him, documentary realism.\"\n\n"
         "ПРИМЕР ПЛОХОГО image_prompt (абстрактный, начинается с жанра — НЕ ДЕЛАЙ ТАК):\n"
         "\"Cinematic documentary scene of a man working at his desk, moody lighting, photorealistic.\"\n\n"
-        "ПРАВИЛА ДЛЯ video_prompt (LTX 2.3):\n"
-        "- Описывай ЧТО ПРОИСХОДИТ на кадре, а не КАК ОН ВЫГЛЯДИТ (image_prompt уже даёт визуал).\n"
-        "- Фокус: motion/действие, camera movement, audio.\n"
-        "- Используй present tense: 'The camera slowly pushes in', 'wind moves through the scene'.\n"
-        "- Camera movements: 'slow dolly in', 'subtle tracking shot', 'gentle pan left', "
-        "'handheld documentary feel', 'slow orbit around the subject'.\n"
-        "- Audio: ambient sounds, music mood. Примеры: 'ocean waves in background', "
-        "'wind howling softly', 'industrial machinery humming'.\n"
-        "- 3-5 предложений в одном абзаце.\n"
-        "- Не описывай внешний вид — модель видит картинку.\n\n"
+        "ПРАВИЛА ДЛЯ video_prompt (LTX 2.3 image-to-video):\n"
+        "- Опиши ДВИЖЕНИЕ, которое реально подходит ЭТОМУ кадру. Картинка уже задаёт вид — не описывай внешность.\n"
+        "- ГЛАВНОЕ ПРАВИЛО: если в кадре есть субъект/объект, который логично что-то делает — дай ОДНО маленькое конкретное действие "
+        "(вязаная кукла наклоняет голову; индикатор загрузки крутится; рука поправляет предмет; лампа мигает). "
+        "Если кадр по смыслу статичный (пейзаж, общий план, объект без действия) — НЕ выдумывай действие: опиши движение среды "
+        "(свет, ткань, вода, частицы, пар) и лёгкое движение камеры. И то и другое — правильный ответ.\n"
+        "- Всегда добавляй ОДНО движение среды и ОДНО движение камеры (present tense): "
+        "'the camera slowly pushes in', 'gentle pan left', 'subtle tracking shot', 'slow dolly in'.\n"
+        "- Движение маленькое и естественное: это handmade stop-motion, сильное движение персонажа = морфинг/«плавящаяся» пряжа. Не проси бег, прыжки, резкие жесты.\n"
+        "- НЕ оставляй video_prompt пустым и не пиши общими словами вроде 'brings the shot to life' — привяжи движение к тому, что видно в кадре.\n"
+        "- Можно указать audio/ambience одной фразой: 'soft room tone', 'ocean waves in background', 'quiet machinery hum'.\n"
+        "- 2-4 предложения в одном абзаце, на английском.\n\n"
         "ПРАВИЛА МАРШРУТИЗАЦИИ:\n"
         "- screen_text на русском, 2-7 слов.\n"
         "- description на русском для монтажера.\n"
@@ -1769,23 +1792,40 @@ def call_lm_studio_for_shots(
             # then fall back to heuristic shots for THIS scene and keep going —
             # one flaky scene must not abort the whole shot list.
             scene_shots: list[Shot] | None = None
+            weak_motion = False
             for attempt in range(2):
                 try:
-                    attempt_prompt = prompt if attempt == 0 else (
-                        prompt + "\n\nВЕРНИ СТРОГО валидный JSON-массив и НИЧЕГО больше: "
-                        "без markdown, без текста до или после массива, все строки в кавычках."
-                    )
-                    raw = _lm_chat(attempt_prompt)
+                    extra = ""
+                    if attempt == 1:
+                        extra = (
+                            "\n\nВЕРНИ СТРОГО валидный JSON-массив и НИЧЕГО больше: "
+                            "без markdown, без текста до или после массива, все строки в кавычках."
+                        )
+                        if weak_motion:
+                            extra += (
+                                "\n\nВАЖНО про video_prompt: в КАЖДОМ кадре опиши конкретное движение, "
+                                "подходящее именно этому кадру — одно маленькое действие субъекта, если в кадре есть "
+                                "кто/что действует, иначе движение среды (свет, ткань, вода, частицы) плюс лёгкое "
+                                "движение камеры. Не оставляй поле пустым и не пиши общими фразами."
+                            )
+                    raw = _lm_chat(prompt + extra)
                     parsed = _parse_shots(raw, offset=len(all_shots))
                     if parsed:
+                        # Soft motion gate: if the model left motion empty/boilerplate on
+                        # the first try, keep this result as a fallback but retry ONCE
+                        # asking specifically for concrete per-shot motion.
+                        if attempt == 0 and _motions_mostly_weak(parsed):
+                            scene_shots = parsed
+                            weak_motion = True
+                            continue
                         scene_shots = parsed
                         break
                 except Exception:
-                    scene_shots = None
+                    pass
             if not scene_shots:
                 if log_callback:
                     log_callback(f"Сцена {scene.index} \"{scene.title}\": LLM вернул битый JSON — использую запасную раскадровку.")
-                scene_shots = build_heuristic_shots([scene], image_preference=image_preference, style_anchor=style_anchor, video_style=video_style, character_description=character_description)
+                scene_shots = build_heuristic_shots([scene], image_preference=image_preference, style_anchor=style_anchor, video_style=video_style, character_description=character_description, compose=False)
 
             for s in scene_shots:
                 s.scene_index = scene.index
@@ -1823,6 +1863,11 @@ def call_lm_studio_for_shots(
         shots = _parse_shots(raw_shots)
 
     shots = clamp_shots_to_scenes(shots, scenes)
+    # Re-tile timecodes so shots run back-to-back with no gaps/overlaps within the
+    # timeline (root fix: the LLM assigns loose per-shot times; here we make them a
+    # clean partition so the board, timeline preview and final render all agree).
+    scenes_end = max((timecode_to_seconds(sc.end) for sc in scenes), default=None) if scenes else None
+    shots = retile_shots_contiguous(shots, total_end=scenes_end)
     normalize_shot_routes(shots, image_preference=image_preference)
     repair_shot_prompts(shots)
     # Enforce the selected style on every frame, regardless of how the LLM
@@ -1834,13 +1879,37 @@ def call_lm_studio_for_shots(
             character_description=character_description,
             custom_notes=style_anchor,
         )
+        # If the model gave no usable motion, fall back to an honest form-based
+        # default derived from the shot type (via make_ltx_prompt) rather than one
+        # generic line for every clip.
         s.video_prompt = compose_video_prompt(
             video_style,
-            s.video_prompt or s.motion,
+            s.video_prompt or s.motion or make_ltx_prompt(s.image_prompt),
             shot_description=s.description,
         )
     return shots
 
+
+
+def retile_shots_contiguous(shots: list[Shot], total_end: int | None = None) -> list[Shot]:
+    """Rewrite shot start/end so the shots tile the timeline with NO gaps and NO
+    overlaps: each shot runs until the next shot's start, the first covers the
+    lead-in from 0, and the last runs to total_end. Only the timecodes change —
+    generated media stays linked by shot index/output path, so this is safe to run
+    on an already-generated project without regenerating anything."""
+    if not shots:
+        return shots
+    ordered = sorted(shots, key=lambda s: timecode_to_seconds(s.start))
+    starts = [timecode_to_seconds(s.start) for s in ordered]
+    if total_end is None:
+        last_end = max((timecode_to_seconds(s.end) for s in ordered), default=0)
+        total_end = max(last_end, starts[-1] + 1)
+    intervals = tiled_intervals(starts, total_end)
+    for index, (shot, (start_sec, end_sec)) in enumerate(zip(ordered, intervals), start=1):
+        shot.start = seconds_to_timecode(start_sec)
+        shot.end = seconds_to_timecode(end_sec)
+        shot.index = index
+    return ordered
 
 
 def clamp_shots_to_scenes(shots: list[Shot], scenes: list[Scene]) -> list[Shot]:
@@ -2734,6 +2803,67 @@ def generate_comfy_ltx_video(base_url: str, project_dir: Path, card: AssetCard) 
         raise RuntimeError("ComfyUI finished, but no video output was found")
     return comfy_download_output(base_url, outputs[-1], project_dir / "assets" / "videos", card.shot_index, "ltx2_3")
 
+
+def prepare_music_workflow(tags: str, bpm: int, seconds: int, lyrics: str = "") -> dict:
+    """Load the ACE-Step workflow and inject the music brief. ACE-Step takes a tag
+    string (genre/mood/instruments), optional lyrics, tempo and a target length."""
+    workflow_path = configured_workflow_path("comfy_ace_workflow", DEFAULT_COMFY_ACE_WORKFLOW)
+    if not workflow_path.exists():
+        raise FileNotFoundError(f"Music workflow not found: {workflow_path}")
+    workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+    seconds = int(max(15, min(seconds, MAX_ACE_DURATION)))
+    text_node = workflow["94"]["inputs"]
+    text_node["tags"] = tags.strip() or "cinematic ambient background, soft, unobtrusive"
+    # Force instrumental: an empty lyrics field does NOT guarantee "no vocals" —
+    # ACE-Step needs "[instrumental]" to reliably skip singing. This is a music bed
+    # under a narrator, so vocals must never appear.
+    text_node["lyrics"] = lyrics.strip() or "[instrumental]"
+    text_node["bpm"] = int(bpm) if bpm else text_node.get("bpm", 90)
+    text_node["duration"] = seconds
+    workflow["98"]["inputs"]["seconds"] = seconds
+    workflow["107"]["inputs"]["filename_prefix"] = "content_pipeline/music/track"
+    # The xl-turbo model is distilled for 8 steps; more just costs time, no gain.
+    ksampler = workflow.get("3", {}).get("inputs")
+    if isinstance(ksampler, dict) and "steps" in ksampler:
+        ksampler["steps"] = 8
+    set_workflow_seed_values(workflow)
+    return workflow
+
+
+def generate_comfy_music(
+    base_url: str,
+    project_dir: Path,
+    tags: str,
+    bpm: int = 90,
+    seconds: int = 90,
+    lyrics: str = "",
+) -> Path:
+    """Generate a background music bed with ACE-Step and save it to music/.
+    Project-level audio (like the voice track), not a per-shot asset."""
+    workflow = prepare_music_workflow(tags, bpm, seconds, lyrics)
+    prompt_id = comfy_queue_prompt(base_url, workflow)
+    history = comfy_wait_for_history(base_url, prompt_id, timeout_seconds=1800)
+    outputs = comfy_collect_outputs(history, ("audio",))
+    if not outputs:
+        raise RuntimeError("ComfyUI finished, but no audio output was found")
+    music_dir = project_dir / "music"
+    music_dir.mkdir(parents=True, exist_ok=True)
+    # Save each track under a unique name so generations accumulate into a library
+    # instead of overwriting the previous one.
+    item = outputs[-1]
+    filename = item.get("filename", "")
+    if not filename:
+        raise RuntimeError(f"ComfyUI audio output has no filename: {item}")
+    ext = Path(filename).suffix or ".mp3"
+    target = music_dir / f"track_{time.strftime('%Y%m%d_%H%M%S')}{ext}"
+    query = urllib.parse.urlencode({
+        "filename": filename,
+        "subfolder": item.get("subfolder", ""),
+        "type": item.get("type", "output"),
+    })
+    with urllib.request.urlopen(f"{comfy_base_url(base_url)}/view?{query}", timeout=120) as response:
+        target.write_bytes(response.read())
+    return target
 
 
 def screen_text_has_number(text: str) -> bool:

@@ -168,6 +168,8 @@ def _lm_music_brief(base_url: str, model: str, notes: list[str], topic: str, ttl
         "tags = a comma-separated ACE-Step style string: genre, mood, instruments, "
         "texture (e.g. 'cinematic ambient documentary, warm strings, soft piano, "
         "subtle low pulse, calm, unobtrusive, instrumental, no vocals').\n"
+        "Do NOT put tempo, BPM or musical key inside tags — those are separate fields. "
+        "Tags describe only style, mood, instruments and texture.\n"
         "No lyrics, no vocals. bpm is a single integer (usually 70-110 for docs).\n\n"
         f"Topic: {topic}\n"
         f"Scene mood notes:\n- " + "\n- ".join(n for n in notes if n) + "\n"
