@@ -10,7 +10,8 @@ const NAV_ITEMS = [
   { to: 'shots', label: 'Кадры', icon: '04' },
   { to: 'board', label: 'Asset Board', icon: '05' },
   { to: 'timeline', label: 'Timeline', icon: '06' },
-  { to: 'preview', label: 'Preview', icon: '07' },
+  { to: 'music', label: 'Музыка', icon: '07' },
+  { to: 'preview', label: 'Preview', icon: '08' },
 ]
 
 export default function ProjectLayout() {

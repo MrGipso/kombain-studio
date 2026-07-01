@@ -38,6 +38,29 @@ export interface ProjectState {
   steps: Record<string, boolean>
 }
 
+export interface MusicTrack {
+  filename: string
+  url: string
+  tags: string
+  bpm: number
+  duration: number
+  created: number
+  trim_start?: number
+  trim_end?: number
+}
+
+export interface MusicState {
+  music_tags: string
+  music_bpm: number
+  music_duration: number
+  music_enabled: boolean
+  music_volume_db: number
+  music_duck: boolean
+  music_selected?: string
+  tracks?: MusicTrack[]
+  track_url?: string
+}
+
 export interface TimelineMediaItem {
   card_index: number
   shot_index: number

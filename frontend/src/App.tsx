@@ -7,6 +7,7 @@ import Scenes from './pages/Scenes'
 import Shots from './pages/Shots'
 import Timeline from './pages/Timeline'
 import AssetBoard from './pages/AssetBoard'
+import Music from './pages/Music'
 import Preview from './pages/Preview'
 import Settings from './pages/Settings'
 import { ToastProvider } from './components/Toast'
@@ -24,6 +25,7 @@ export default function App() {
             <Route path="shots" element={<Shots />} />
             <Route path="board" element={<AssetBoard />} />
             <Route path="timeline" element={<Timeline />} />
+            <Route path="music" element={<Music />} />
             <Route path="preview" element={<Preview />} />
           </Route>
           <Route path="/settings" element={<Settings />} />

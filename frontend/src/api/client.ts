@@ -1,4 +1,4 @@
-import type { ProjectInfo, ProjectDetail, ProjectState, AssetCard, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle } from './types'
+import type { ProjectInfo, ProjectDetail, ProjectState, AssetCard, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle, MusicState } from './types'
 
 const BASE = '/api'
 
@@ -166,8 +166,33 @@ export function streamSSE(
   return controller
 }
 
+// Music (project-level background audio)
+export const getMusic = (id: string) => r<MusicState>(`/projects/${encodeURIComponent(id)}/music`)
+export const updateMusicSettings = (id: string, data: MusicState) =>
+  r<MusicState>(`/projects/${encodeURIComponent(id)}/music/settings`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+export const generateMusicBrief = (id: string) =>
+  r<MusicState>(`/projects/${encodeURIComponent(id)}/music/brief`, { method: 'POST' })
+export const selectMusicTrack = (id: string, filename: string) =>
+  r<MusicState>(`/projects/${encodeURIComponent(id)}/music/select`, {
+    method: 'PUT',
+    body: JSON.stringify({ filename }),
+  })
+export const deleteMusicTrack = (id: string, filename: string) =>
+  r<MusicState>(`/projects/${encodeURIComponent(id)}/music/track/${encodeURIComponent(filename)}`, {
+    method: 'DELETE',
+  })
+export const saveMusicTrim = (id: string, filename: string, trim_start: number, trim_end: number) =>
+  r<MusicState>(`/projects/${encodeURIComponent(id)}/music/trim`, {
+    method: 'PUT',
+    body: JSON.stringify({ filename, trim_start, trim_end }),
+  })
+
 // SSE event endpoints
 export const startTranscription = (id: string) => `/projects/${encodeURIComponent(id)}/transcribe`
 export const startSceneAnalysis = (id: string) => `/projects/${encodeURIComponent(id)}/analyze-scenes`
 export const startShotGeneration = (id: string) => `/projects/${encodeURIComponent(id)}/generate-shots`
+export const startMusicGeneration = (id: string) => `/projects/${encodeURIComponent(id)}/music/generate`
 export const startExport = (id: string) => `/projects/${encodeURIComponent(id)}/export`
