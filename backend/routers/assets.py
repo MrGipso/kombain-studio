@@ -51,18 +51,19 @@ def _generate_sync(pdir: Path, card_index: int, mode: str) -> dict[str, Any]:
     card.status = "generating"
     cpg.write_asset_board(pdir, cards)
 
-    if mode == "route":
-        if card.route == "remotion":
-            _render_remotion(pdir, card, cards)
-        elif card.route == "graphic" and card.visual_type == "motion_text":
-            _render_motion_text(pdir, card, cards)
-        else:
-            if card.image_model:
-                img_path = cpg.generate_comfy_image(comfy_url, pdir, card)
-                card.image_output = str(img_path)
-            if card.route == "image+video" and card.video_model:
-                vid_path = cpg.generate_comfy_ltx_video(comfy_url, pdir, card)
-                card.video_output = str(vid_path)
+    if mode in {"route", "graphic"}:
+        card.route = "image+video"
+        card.visual_type = "ai_image_then_i2v"
+        if not card.image_model:
+            card.image_model = cpg.preferred_realistic_image_model(project.settings.image_model_preference)
+        if not card.video_model:
+            card.video_model = "ltx2.3_i2v"
+        if card.image_model:
+            img_path = cpg.generate_comfy_image(comfy_url, pdir, card)
+            card.image_output = str(img_path)
+        if card.video_model:
+            vid_path = cpg.generate_comfy_ltx_video(comfy_url, pdir, card)
+            card.video_output = str(vid_path)
     elif mode == "image":
         img_path = cpg.generate_comfy_image(comfy_url, pdir, card)
         card.image_output = str(img_path)
@@ -185,11 +186,11 @@ def _regenerate_prompt_sync(pdir: Path, card_index: int, target: str) -> dict[st
 
     card = cards[card_index]
     settings = load_settings()
+    video_style = project.metadata.get("video_style", "knitted")
     style_anchor = project.metadata.get("style_anchor", "")
     character_description = project.metadata.get("character_description", "")
-    niche = project.metadata.get("niche", "documentary")
     base_context = (
-        f"Niche: {niche}\n"
+        f"Video style: {video_style}\n"
         f"Scene title: {card.scene_title}\n"
         f"Short description: {card.description}\n"
         f"Screen text: {card.screen_text}\n"
@@ -202,9 +203,10 @@ def _regenerate_prompt_sync(pdir: Path, card_index: int, target: str) -> dict[st
 
     if target == "image_prompt":
         prompt = (
-            "Create one strong English image-generation prompt for a realistic documentary YouTube frame.\n"
+            "Create one strong English image-generation prompt for Krea 2 in the selected video style.\n"
             "Use the short description as the source of truth, then enrich it with concrete subject, location, materials, lighting, camera angle, composition, colors, and atmosphere.\n"
-            "Do not add readable text, logos, UI labels, fantasy, unreal, or abstract wording.\n"
+            "Translate abstract ideas into simple visible props/actions that fit the selected style.\n"
+            "Do not add readable text, logos, UI labels, LoRA names, or trigger phrases.\n"
             "Start with the concrete visible subject, not with 'documentary photo' or 'cinematic'.\n"
             "Return JSON: {\"prompt\": \"...\"}.\n\n"
             f"Context:\n{base_context}\n"
@@ -213,7 +215,7 @@ def _regenerate_prompt_sync(pdir: Path, card_index: int, target: str) -> dict[st
     else:
         prompt = (
             "Create one strong English video-generation prompt for an image-to-video model.\n"
-            "Focus on what changes over time: camera movement, subject motion, environmental motion, pacing, and subtle documentary realism.\n"
+            "Focus on what changes over time: camera movement, subject motion, environmental motion, pacing, and style-safe subtle animation.\n"
             "Do not repeat the full visual appearance from the image prompt; assume the image already defines the look.\n"
             "Use present tense. Avoid text/logos and avoid asking for subtitles.\n"
             "Return JSON: {\"prompt\": \"...\"}.\n\n"
@@ -233,6 +235,16 @@ def _regenerate_prompt_sync(pdir: Path, card_index: int, target: str) -> dict[st
     new_prompt = _prompt_from_lm_data(data, target)
     if not new_prompt:
         raise RuntimeError("LM Studio returned an empty prompt")
+
+    if target == "image_prompt":
+        new_prompt = cpg.compose_image_prompt(
+            video_style,
+            new_prompt,
+            character_description=character_description,
+            custom_notes=style_anchor,
+        )
+    else:
+        new_prompt = cpg.compose_video_prompt(video_style, new_prompt, shot_description=card.description)
 
     setattr(card, target, new_prompt)
     cpg.write_asset_board(pdir, cards)
@@ -316,111 +328,6 @@ async def generate_card(project_id: str, card_index: int, mode: str = "route"):
         raise HTTPException(500, str(e))
 
 
-def _render_composition_sync(pdir: Path) -> dict[str, Any]:
-    """Render all cards into a single video via Remotion VideoComposer."""
-    project = open_project(pdir, load_settings())
-    if not project:
-        raise RuntimeError("Project not found")
-
-    cards = cpg.load_asset_board(pdir)
-    if not cards:
-        raise RuntimeError("Asset board is empty")
-
-    composition = cpg.build_cuts_array(pdir, cards)
-    renders_dir = pdir / "renders" / "remotion"
-    renders_dir.mkdir(parents=True, exist_ok=True)
-    output_path = str((renders_dir / "final_composition.mp4").resolve())
-
-    composition["output"] = output_path
-
-    cuts_path = pdir / "remotion_jobs" / "composition.json"
-    cuts_path.parent.mkdir(parents=True, exist_ok=True)
-    cuts_path.write_text(
-        json.dumps(composition, ensure_ascii=False, indent=2), encoding="utf-8",
-    )
-
-    remotion_dir = Path(__file__).resolve().parent.parent.parent / "remotion_graphics"
-    node = shutil.which("node.exe") or shutil.which("node")
-    if not node:
-        raise RuntimeError("node.exe not found in PATH")
-
-    proc = subprocess.Popen(
-        [node, "scripts/render-composition.mjs", str(cuts_path)],
-        cwd=remotion_dir,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-    )
-    assert proc.stdout
-    for line in proc.stdout:
-        print(line.rstrip())
-    code = proc.wait()
-    if code != 0:
-        raise RuntimeError(f"Remotion render failed with code {code}")
-
-    if not Path(output_path).exists():
-        raise RuntimeError(f"Expected output not found: {output_path}")
-
-    return {"ok": True, "output": output_path, "cuts": len(composition["cuts"])}
-
-
-@router.post("/{project_id:str}/render")
-async def render_composition(project_id: str):
-    pdir = _resolve_project(project_id)
-    try:
-        result = await asyncio.to_thread(_render_composition_sync, pdir)
-        return result
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
-def _render_remotion(pdir: Path, card: cpg.AssetCard, cards: list):
-    shots_path = pdir / "04_shot_list.json"
-    shots_data = json.loads(shots_path.read_text("utf-8"))
-    shots = [cpg.Shot(**item) for item in shots_data]
-    shot = next((s for s in shots if s.index == card.shot_index), None)
-    if not shot:
-        raise RuntimeError(f"Shot {card.shot_index} not found")
-    renders_dir = pdir / "renders" / "remotion"
-    job = cpg.remotion_job_for_shot(shot, renders_dir)
-    if not job:
-        raise RuntimeError("No Remotion job for this card")
-    _exec_remotion(pdir, card, cards, job)
-
-
-def _render_motion_text(pdir: Path, card: cpg.AssetCard, cards: list):
-    renders_dir = pdir / "renders" / "remotion"
-    job = cpg.remotion_motion_text_job_for_card(card, renders_dir)
-    _exec_remotion(pdir, card, cards, job)
-
-
-def _exec_remotion(pdir: Path, card: cpg.AssetCard, cards: list, job: dict):
-    jobs_dir = pdir / "remotion_jobs"
-    jobs_dir.mkdir(parents=True, exist_ok=True)
-    template = job["props"]["template"]
-    job_path = jobs_dir / f"shot_{card.shot_index:03d}_{template}.json"
-    job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), "utf-8")
-
-    remotion_dir = Path(__file__).resolve().parent.parent.parent / "remotion_graphics"
-    node = shutil.which("node.exe") or shutil.which("node")
-    if not node:
-        raise RuntimeError("node.exe not found in PATH")
-    script = remotion_dir / "scripts" / "render-job.mjs"
-    proc = subprocess.Popen(
-        [node, str(script), str(job_path)], cwd=remotion_dir,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-    )
-    assert proc.stdout
-    for line in proc.stdout:
-        print(line.rstrip())
-    code = proc.wait()
-    if code != 0:
-        raise RuntimeError(f"Remotion failed with code {code}")
-    output = Path(job.get("output", ""))
-    if not output.exists():
-        raise RuntimeError(f"Expected output not found: {output}")
-    card.remotion_output = str(output)
-    card.status = "generated"
-    cpg.write_asset_board(pdir, cards)
+# Remotion rendering and the /render composition endpoint were removed:
+# the pipeline is now pure AI video (ComfyUI image -> LTX i2v), assembled by
+# the ffmpeg export on the Preview page.

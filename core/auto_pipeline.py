@@ -60,26 +60,56 @@ class _SceneAnalysisWorker(QThread):
 
             style_anchor = self.settings.get("style_anchor") or self.project.metadata.get("style_anchor", "")
             character_description = self.settings.get("character_description") or self.project.metadata.get("character_description", "")
-            niche = self.settings.get("niche") or self.project.metadata.get("niche", "documentary")
+            video_style = self.settings.get("video_style") or self.project.metadata.get("video_style", "knitted")
 
             t_segments = [
                 pipeline.TranscriptSegment(s.start, s.end, s.text)
                 for s in self.segments
             ]
+            embed_model = self.settings.get("lm_embed_model", "text-embedding-nomic-embed-text-v1.5")
+            seg_min = int(self.project.metadata.get("seg_min_seconds", 20) or 20)
+            seg_max = int(self.project.metadata.get("seg_max_seconds", 90) or 90)
+            seg_sensitivity = float(self.project.metadata.get("seg_sensitivity", 0.6) or 0.6)
+            seg_target = int(self.project.metadata.get("seg_target_scenes", 0) or 0)
             try:
-                self.log.emit(f"Загружаю LM Studio model (context_length={context_length})")
-                pipeline.load_lm_studio_model(base_url, model, context_length)
-                self.log.emit("LM Studio загружен, анализирую сцены...")
-                scenes = pipeline.call_lm_studio_for_segments(
-                    base_url, model, t_segments, ttl_seconds=ttl_seconds,
-                    style_anchor=style_anchor,
-                    character_description=character_description,
-                    niche=niche,
+                # PRIMARY: deterministic boundaries via embeddings; LLM only labels.
+                self.log.emit("Сегментация сцен по эмбеддингам...")
+                scenes = pipeline.build_scenes_by_embedding(
+                    t_segments, base_url, embed_model, fallback=False, ttl_seconds=ttl_seconds,
+                    min_seconds=seg_min, max_seconds=seg_max, sensitivity=seg_sensitivity, target_scenes=seg_target,
                 )
+                # Free the embedding model from VRAM (same auto-unload policy) before
+                # loading the chat model for labelling.
+                if lm_unload_delay_seconds(self.settings) == 0 and embed_model:
+                    try:
+                        pipeline.unload_lm_studio_model(base_url, embed_model)
+                        self.log.emit(f"Эмбеддинг-модель выгружена: {embed_model}")
+                    except Exception as exc:
+                        self.log.emit(f"Выгрузка эмбеддинг-модели: {pipeline.explain_lm_studio_error(exc)}")
+                self.log.emit(f"Границы по эмбеддингам: {len(scenes)} сцен; озаглавливаю через LLM...")
+                try:
+                    pipeline.load_lm_studio_model(base_url, model, context_length)
+                    scenes = pipeline.enrich_scenes_with_lm(
+                        scenes, base_url, model, ttl_seconds=ttl_seconds,
+                        style_anchor=style_anchor,
+                        character_description=character_description,
+                        video_style=video_style,
+                    )
+                except Exception as exc:
+                    self.log.emit(f"LLM-озаглавливание не удалось ({exc}); эвристические заголовки")
             except Exception as exc:
-                self.log.emit(f"LM Studio недоступен: {exc}")
-                self.log.emit("Собираю сцены локально по таймкодам...")
-                scenes = pipeline.build_scenes_from_segments(t_segments)
+                self.log.emit(f"Эмбеддинги недоступны ({exc}); группирую сцены через LLM...")
+                try:
+                    pipeline.load_lm_studio_model(base_url, model, context_length)
+                    scenes = pipeline.call_lm_studio_for_segments(
+                        base_url, model, t_segments, ttl_seconds=ttl_seconds,
+                        style_anchor=style_anchor,
+                        character_description=character_description,
+                        video_style=video_style,
+                    )
+                except Exception as exc2:
+                    self.log.emit(f"LLM-группировка не удалась ({exc2}); режу по длительности")
+                    scenes = pipeline.build_scenes_from_segments(t_segments)
 
             core_scenes = [Scene(**s.__dict__) for s in scenes]
             scenes_data = [s.__dict__ for s in core_scenes]
@@ -113,7 +143,7 @@ class _ShotListWorker(QThread):
             pipeline_segments = [pipeline.TranscriptSegment(**s) for s in seg_data]
             style_anchor = self.settings.get("style_anchor") or self.project.metadata.get("style_anchor", "")
             character_description = self.settings.get("character_description") or self.project.metadata.get("character_description", "")
-            niche = self.settings.get("niche") or self.project.metadata.get("niche", "documentary")
+            video_style = self.settings.get("video_style") or self.project.metadata.get("video_style", "knitted")
             self.log.emit(f"Генерирую шот-лист через LM Studio ({len(pipeline_segments)} сегментов)...")
             ttl_seconds = lm_ttl_seconds(self.settings)
             shots = pipeline.call_lm_studio_for_shots(
@@ -121,7 +151,7 @@ class _ShotListWorker(QThread):
                 segments=pipeline_segments, ttl_seconds=ttl_seconds,
                 style_anchor=style_anchor,
                 character_description=character_description,
-                niche=niche,
+                video_style=video_style,
             )
 
             core_shots = [Shot(**s.__dict__) for s in shots]

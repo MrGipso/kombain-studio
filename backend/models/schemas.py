@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 class ProjectMeta(BaseModel):
     name: str
-    preset: str = "documentary"
+    preset: str = "universal"
     language: str = "ru"
     dir: str = ""
 
@@ -16,14 +16,14 @@ class ProjectMeta(BaseModel):
 class ProjectInfo(BaseModel):
     name: str
     dir: str
-    preset: str = "documentary"
+    preset: str = "universal"
     language: str = "ru"
 
 
 class ProjectSettingsUpdate(BaseModel):
+    video_style: str = "knitted"
     style_anchor: str = ""
     character_description: str = ""
-    niche: str = "documentary"
 
 
 class TranscriptSegment(BaseModel):
@@ -93,11 +93,17 @@ class AssetCard(BaseModel):
     text_overlay_enabled: bool = False
     text_overlay_text: str = ""
     text_overlay_position: str = "bottom"
+    text_overlay_style: str = "subtitle"
+    text_overlay_x: float = 50.0
+    text_overlay_y: float = 86.0
+    text_overlay_enter: str = "fade"
+    text_overlay_exit: str = "fade"
 
 
 class Settings(BaseModel):
     lm_url: str = "http://127.0.0.1:1234/v1"
     lm_model: str = "local-model"
+    lm_embed_model: str = "text-embedding-nomic-embed-text-v1.5"
     lm_context: str = "32768"
     comfy_url: str = "http://127.0.0.1:8188"
     comfy_krea_workflow: str = ""

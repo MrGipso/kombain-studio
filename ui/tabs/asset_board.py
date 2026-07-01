@@ -106,7 +106,7 @@ class AssetBoardTab(QWidget):
 
         self.filter_route = QComboBox()
         self.filter_route.addItems(
-            ["Все роуты", "image+video", "remotion", "graphic"]
+            ["Все роуты", "image+video", "image"]
         )
         self.filter_route.currentTextChanged.connect(self.refresh_table)
 
@@ -191,7 +191,7 @@ class AssetBoardTab(QWidget):
 
         row2 = QHBoxLayout()
         self.route_combo = QComboBox()
-        self.route_combo.addItems(["image+video", "remotion", "graphic"])
+        self.route_combo.addItems(["image+video", "image"])
         row2.addWidget(QLabel("Route:"))
         row2.addWidget(self.route_combo)
         col1.addLayout(row2)
@@ -285,7 +285,6 @@ class AssetBoardTab(QWidget):
             ("▶ Route", "#38bdf8", lambda: self.start_generation("route")),
             ("🖼️ Image", "#38bdf8", lambda: self.start_generation("image")),
             ("🎬 Video", "#38bdf8", lambda: self.start_generation("video")),
-            ("🎨 Graphic", "#38bdf8", lambda: self.start_generation("graphic")),
             ("✅ Approve", "#22c55e", lambda: self.set_status("approved")),
             ("⚠️ Fix", "#f97316", lambda: self.set_status("needs_review")),
             ("⏭️ Skip", "#64748b", lambda: self.set_status("skipped")),
@@ -416,15 +415,12 @@ class AssetBoardTab(QWidget):
                 outputs.append(f"🖼️ {card.image_output}")
             if card.video_output:
                 outputs.append(f"🎬 {card.video_output}")
-            if card.remotion_output:
-                outputs.append(f"🎨 {card.remotion_output}")
             self.outputs.setText("\n".join(outputs) if outputs else "Outputs: not generated yet")
             self.update_preview(card)
 
     def _preview_candidate(self, card: AssetCard) -> tuple[Path | None, str]:
         for value, kind in (
             (card.video_output, "video"),
-            (card.remotion_output, "video"),
             (card.image_output, "image"),
         ):
             if value:

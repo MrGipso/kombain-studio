@@ -41,10 +41,23 @@ def card_duration(card: AssetCard) -> int:
 
 
 def card_source(card: AssetCard) -> Path | None:
-    for value in (card.assigned_media, card.video_output, card.remotion_output, card.image_output):
+    for value in (card.assigned_media, card.video_output, card.image_output):
         if value and Path(value).exists():
             return Path(value)
     return None
+
+
+# Single source of truth for "is this card part of the final video".
+# A card is included when it has usable media AND was not explicitly excluded.
+# This replaces the old `approved` whitelist so the timeline preview, the
+# Timeline preview and this ffmpeg export agree on what ships.
+EXCLUDED_STATUSES = {"skipped", "rejected"}
+
+
+def card_included(card: AssetCard) -> bool:
+    if (getattr(card, "status", "") or "").lower() in EXCLUDED_STATUSES:
+        return False
+    return card_source(card) is not None
 
 
 def card_overlay_text(card: AssetCard) -> str:
@@ -68,6 +81,55 @@ def find_overlay_font() -> Path | None:
     return None
 
 
+def _clamp_float(value, default: float, low: float, high: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(low, min(high, number))
+
+
+def _overlay_style(card: AssetCard) -> dict:
+    style = (getattr(card, "text_overlay_style", "subtitle") or "subtitle").lower()
+    styles = {
+        "subtitle": {"fontsize": 54, "borderw": 3, "shadowx": 2, "shadowy": 2, "default_y": 86, "x": "(w-text_w)/2"},
+        "title": {"fontsize": 86, "borderw": 4, "shadowx": 3, "shadowy": 3, "default_y": 48, "x": "(w-text_w)/2"},
+        "caption": {"fontsize": 44, "borderw": 3, "shadowx": 2, "shadowy": 2, "default_y": 78, "x": "w*0.07"},
+        "label": {"fontsize": 50, "borderw": 3, "shadowx": 2, "shadowy": 2, "default_y": 18, "x": "w*0.07"},
+        "quote": {"fontsize": 66, "borderw": 4, "shadowx": 3, "shadowy": 3, "default_y": 50, "x": "(w-text_w)/2"},
+    }
+    return styles.get(style, styles["subtitle"])
+
+
+def _overlay_xy(card: AssetCard, style_cfg: dict) -> tuple[str, str]:
+    position = (getattr(card, "text_overlay_position", "bottom") or "bottom").lower()
+    if position == "manual":
+        x = _clamp_float(getattr(card, "text_overlay_x", 50), 50, 0, 100)
+        y = _clamp_float(getattr(card, "text_overlay_y", style_cfg["default_y"]), style_cfg["default_y"], 0, 100)
+        return f"(w-text_w)*{x / 100:.4f}", f"(h-text_h)*{y / 100:.4f}"
+    if position == "top":
+        return style_cfg["x"], "h*0.12"
+    if position == "center":
+        return "(w-text_w)/2", "(h-text_h)/2"
+    return style_cfg["x"], "h*0.82"
+
+
+def _overlay_alpha(card: AssetCard) -> str:
+    enter = (getattr(card, "text_overlay_enter", "fade") or "none").lower()
+    exit_ = (getattr(card, "text_overlay_exit", "fade") or "none").lower()
+    duration = max(0.2, float(card_duration(card)))
+    fade = min(0.35, duration / 3)
+    fade_in = fade if enter == "fade" else 0.0
+    fade_out = fade if exit_ == "fade" else 0.0
+    if fade_in and fade_out:
+        return f"if(lt(t,{fade_in:.3f}),t/{fade_in:.3f},if(gt(t,{duration - fade_out:.3f}),({duration:.3f}-t)/{fade_out:.3f},1))"
+    if fade_in:
+        return f"if(lt(t,{fade_in:.3f}),t/{fade_in:.3f},1)"
+    if fade_out:
+        return f"if(gt(t,{duration - fade_out:.3f}),({duration:.3f}-t)/{fade_out:.3f},1)"
+    return "1"
+
+
 def overlay_filter(card: AssetCard, dst: Path) -> str:
     text = card_overlay_text(card)
     if not text:
@@ -76,29 +138,22 @@ def overlay_filter(card: AssetCard, dst: Path) -> str:
     text_path = dst.with_suffix(".overlay.txt")
     text_path.write_text(text, encoding="utf-8")
 
-    position = (getattr(card, "text_overlay_position", "bottom") or "bottom").lower()
-    if position == "top":
-        box_y = "70"
-        text_y = "105"
-    elif position == "center":
-        box_y = "(ih-150)/2"
-        text_y = "(h-text_h)/2"
-    else:
-        box_y = "ih-190"
-        text_y = "h-150"
-
+    style_cfg = _overlay_style(card)
+    x_expr, y_expr = _overlay_xy(card, style_cfg)
     font = find_overlay_font()
     font_part = f"fontfile='{ffmpeg_filter_path(font)}':" if font else ""
     text_file = ffmpeg_filter_path(text_path)
+    alpha = _overlay_alpha(card).replace(",", r"\,")
     return (
-        f"drawbox=x=0:y={box_y}:w=iw:h=150:color=black@0.45:t=fill,"
-        f"drawtext={font_part}textfile='{text_file}':fontcolor=white:fontsize=58:"
-        f"borderw=3:bordercolor=black:x=(w-text_w)/2:y={text_y}"
+        f"drawtext={font_part}textfile='{text_file}':fontcolor=white:"
+        f"fontsize={style_cfg['fontsize']}:borderw={style_cfg['borderw']}:bordercolor=black@0.72:"
+        f"shadowx={style_cfg['shadowx']}:shadowy={style_cfg['shadowy']}:shadowcolor=black@0.55:"
+        f"x={x_expr}:y={y_expr}:alpha='{alpha}'"
     )
 
 
 def has_text_overlays(cards: list[AssetCard]) -> bool:
-    return any(card_overlay_text(card) for card in cards if card.approved)
+    return any(card_overlay_text(card) for card in cards if card_included(card))
 
 
 def run_ffmpeg(cmd: list[str], log_callback: Callable | None = None) -> bool:
@@ -144,10 +199,10 @@ def build_concat_file_from_paths(paths: list[Path], output_path: Path) -> str:
 
 
 def build_concat_file(cards: list[AssetCard], output_path: Path) -> str:
-    """Build a legacy FFmpeg concat file from approved generated outputs."""
+    """Build a legacy FFmpeg concat file from included generated outputs."""
     lines = []
     for card in cards:
-        if not card.approved:
+        if not card_included(card):
             continue
         src = card_source(card)
         if src:
@@ -209,11 +264,11 @@ def build_normalized_concat_file(
 ) -> str:
     segments_dir = exports_dir / "_normalized_segments"
     segment_paths: list[Path] = []
-    approved = sorted(
-        [card for card in cards if card.approved],
+    included = sorted(
+        [card for card in cards if card_included(card)],
         key=lambda card: timecode_to_seconds(card.timeline_start or card.start),
     )
-    for index, card in enumerate(approved, start=1):
+    for index, card in enumerate(included, start=1):
         src = card_source(card)
         if not src:
             continue
@@ -233,7 +288,7 @@ def export_video(
     log_callback: Callable | None = None,
     output_name: str = "final_cut.mp4",
 ) -> Path | None:
-    """Export the final video by concatenating approved card outputs."""
+    """Export the final video by concatenating included card outputs (media present, not excluded)."""
     board_path = project_dir / "06_asset_board.json"
     if not board_path.exists():
         board_path = project_dir / "asset_board.json"
@@ -244,19 +299,20 @@ def export_video(
 
     try:
         board_data = json.loads(board_path.read_text(encoding="utf-8"))
-        cards = [AssetCard(**item) for item in board_data]
+        legacy_defaults = {"remotion_template": "", "remotion_output": ""}
+        cards = [AssetCard(**{**legacy_defaults, **item}) for item in board_data]
     except (json.JSONDecodeError, OSError) as exc:
         if log_callback:
             log_callback(f"Failed to read asset board: {exc}")
         return None
 
-    approved = sorted(
-        [c for c in cards if c.approved],
+    included = sorted(
+        [c for c in cards if card_included(c)],
         key=lambda card: timecode_to_seconds(card.timeline_start or card.start),
     )
-    if not approved:
+    if not included:
         if log_callback:
-            log_callback("No approved cards to export.")
+            log_callback("No cards to export (need generated media that isn't excluded).")
         return None
 
     exports_dir = project_dir / "exports"
@@ -284,7 +340,7 @@ def export_video(
 
     if not concat_file:
         if log_callback:
-            log_callback("No generated outputs found for approved cards.")
+            log_callback("No generated outputs found for included cards.")
         return None
 
     if voice_audio:
@@ -316,3 +372,5 @@ def export_video(
     if log_callback:
         log_callback(f"Export complete: {output_path}")
     return output_path
+
+

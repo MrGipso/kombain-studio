@@ -12,6 +12,7 @@ PRESETS_DIR = ROOT / "presets"
 class Settings:
     lm_url: str = "http://127.0.0.1:1234/v1"
     lm_model: str = "local-model"
+    lm_embed_model: str = "text-embedding-nomic-embed-text-v1.5"
     lm_context: str = "32768"
     comfy_url: str = "http://127.0.0.1:8188"
     comfy_krea_workflow: str = ""

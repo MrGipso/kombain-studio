@@ -216,6 +216,9 @@ class ShotListWorker(QThread):
             model = self.settings.get("lm_model", "local-model")
             seg_data = self.project.read_json("transcript_segments") or []
             pipeline_segments = [pipeline.TranscriptSegment(**s) for s in seg_data]
+            style_anchor = self.settings.get("style_anchor") or self.project.metadata.get("style_anchor", "")
+            character_description = self.settings.get("character_description") or self.project.metadata.get("character_description", "")
+            video_style = self.settings.get("video_style") or self.project.metadata.get("video_style", "knitted")
 
             def _on_scene_shots(raw_shots):
                 core = [Shot(**s.__dict__) for s in raw_shots]
@@ -226,6 +229,9 @@ class ShotListWorker(QThread):
                 base_url, model, pipeline_scenes, image_pref,
                 segments=pipeline_segments, on_scene_shots=_on_scene_shots,
                 ttl_seconds=ttl_seconds,
+                style_anchor=style_anchor,
+                character_description=character_description,
+                video_style=video_style,
             )
 
             core_shots = [Shot(**s.__dict__) for s in shots]
@@ -267,21 +273,22 @@ class AssetGeneratorWorker(QThread):
             pipeline.write_asset_board(self.project.dir, cards)
             self.log.emit(f"Генерация кадра {card.shot_index:03d} via {self.mode}")
 
-            if self.mode == "route":
-                if card.route == "remotion":
-                    self._render_remotion(card, cards)
-                    return
-                if card.route == "graphic" and card.visual_type == "motion_text":
-                    self._render_motion_text(card, cards)
-                    return
+            if self.mode in {"route", "graphic"}:
+                card.route = "image+video"
+                card.visual_type = "ai_image_then_i2v"
+                card.remotion_template = ""
+                card.remotion_output = ""
+                if not card.image_model:
+                    card.image_model = pipeline.preferred_realistic_image_model(self.project.settings.image_model_preference)
+                if not card.video_model:
+                    card.video_model = "ltx2.3_i2v"
                 generated_any = False
                 if card.image_model:
                     image_path = pipeline.generate_comfy_image(self.comfy_url, self.project.dir, card)
                     card.image_output = str(image_path)
                     generated_any = True
-                if card.route == "image+video" and card.video_model:
+                if card.video_model:
                     video_path = pipeline.generate_comfy_ltx_video(self.comfy_url, self.project.dir, card)
-                    video_path = pipeline.apply_number_overlay_to_video(video_path, self.project.dir, card, self._log)
                     card.video_output = str(video_path)
                     generated_any = True
                 if not generated_any:
@@ -299,11 +306,7 @@ class AssetGeneratorWorker(QThread):
                 card.approved = False
             elif self.mode == "video":
                 video_path = pipeline.generate_comfy_ltx_video(self.comfy_url, self.project.dir, card)
-                video_path = pipeline.apply_number_overlay_to_video(video_path, self.project.dir, card, self._log)
                 card.video_output = str(video_path)
-            elif self.mode == "graphic":
-                self._render_motion_text(card, cards)
-                return
             else:
                 raise RuntimeError(f"Unknown mode: {self.mode}")
 
@@ -325,57 +328,14 @@ class AssetGeneratorWorker(QThread):
             self.failed.emit(str(exc))
 
     def _render_remotion(self, card, cards):
-        shots_path = self.project.dir / "04_shot_list.json"
-        shots = [pipeline.Shot(**item) for item in json.loads(shots_path.read_text("utf-8"))]
-        shot = next((item for item in shots if item.index == card.shot_index), None)
-        if not shot:
-            raise RuntimeError(f"Кадр {card.shot_index:03d} не найден.")
-        renders_dir = self.project.dir / "renders" / "remotion"
-        job = pipeline.remotion_job_for_shot(shot, renders_dir)
-        if not job:
-            raise RuntimeError("No Remotion job for this card.")
-        self._execute_remotion_job(card, cards, job)
+        raise RuntimeError("Remotion rendering was removed; use AI video generation instead.")
 
     def _render_motion_text(self, card, cards):
-        renders_dir = self.project.dir / "renders" / "remotion"
-        job = pipeline.remotion_motion_text_job_for_card(card, renders_dir)
-        self._execute_remotion_job(card, cards, job)
-
-    def _execute_remotion_job(self, card, cards, job):
-        jobs_dir = self.project.dir / "remotion_jobs"
-        jobs_dir.mkdir(parents=True, exist_ok=True)
-        template = job["props"]["template"]
-        job_path = jobs_dir / f"shot_{card.shot_index:03d}_{template}.json"
-        job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), "utf-8")
-
-        remotion_dir = Path(__file__).resolve().parent.parent / "remotion_graphics"
-        node_modules = remotion_dir / "node_modules"
-        if not node_modules.exists():
-            raise RuntimeError(f"Remotion deps missing. Run npm install in {remotion_dir}")
-        node = shutil.which("node.exe") or shutil.which("node")
-        if not node:
-            raise RuntimeError("node.exe not found in PATH.")
-        script = remotion_dir / "scripts" / "render-job.mjs"
-        command = [node, str(script), str(job_path)]
-        self.log.emit(" ".join(command))
-        process = subprocess.Popen(
-            command, cwd=remotion_dir,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace",
-        )
-        assert process.stdout is not None
-        for line in process.stdout:
-            self.log.emit(line.rstrip())
-        code = process.wait()
-        if code != 0:
-            raise RuntimeError(f"Remotion failed with code {code}")
-        output = Path(job.get("output", ""))
-        if not output.exists():
-            raise RuntimeError(f"Expected output not found: {output}")
-        card.remotion_output = str(output)
-        card.status = "generated"
-        pipeline.write_asset_board(self.project.dir, cards)
-        self.done.emit(cards)
+        raise RuntimeError("Remotion motion-text rendering was removed; use AI video generation instead.")
 
     def _log(self, message: str):
         self.log.emit(message)
+
+
+
+

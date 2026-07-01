@@ -8,26 +8,10 @@
   "pipeline": {
     "transcriber": "whisper_cpp",
     "analyzer": "lm_studio",
-    "generators": ["comfy", "remotion", "schema"]
+    "generators": ["comfy"]
   },
 
   "routes": [
-    {
-      "name": "motion_text",
-      "match": {"words": ["95", "миф", "вопрос", "не через", "интернет"]},
-      "visual_type": "motion_text",
-      "steps": [{"plugin": "remotion", "template": "ChapterTitle"}],
-      "fallback": "Remotion motion_text overlay",
-      "motion": "Remotion text reveal, subtle scale-in, clean documentary typography"
-    },
-    {
-      "name": "remotion_graphic",
-      "match": {"words": ["схема", "bgp", "маршрут", "5g", "вышка", "разрез", "волокн", "95"]},
-      "visual_type": "remotion_graphic",
-      "steps": [{"plugin": "remotion", "template": "auto"}],
-      "fallback": "Remotion graphic or SVG schema from schema_generator",
-      "motion": "animate lines and labels"
-    },
     {
       "name": "ai_image_then_i2v",
       "match": {"words": ["кабель", "океан", "дно", "под водой", "кораб", "судно", "дата-центр", "бирж"]},
@@ -67,15 +51,6 @@
   "model_preferences": {
     "krea2_turbo": {"realism": "high", "supports_text": false},
     "ideogram4": {"realism": "high", "supports_text": true}
-  },
-
-  "remotion_templates": {
-    "StatCard": {"match": ["%", "миллион", "тысяч", "миллиард"], "default_accent": "#38bdf8"},
-    "FlowDiagram": {"match": ["5g", "flow", "схема работы", "процесс", "этап"], "default_accent": "#38bdf8"},
-    "ChapterTitle": {"match": ["глава", "часть", "раздел", "заключение", "введение"], "default_accent": "#38bdf8"},
-    "MapRoute": {"match": ["маршрут", "путь", "кабель идет", "проходит"], "default_accent": "#38bdf8"},
-    "MapSplit": {"match": ["миф", "реальность", "правда", "vs", "сравнение"], "default_accent": "#38bdf8"},
-    "RerouteMap": {"match": ["bgp", "обход", "reroute", "авария", "повреждение"], "default_accent": "#38bdf8"}
   },
 
   "heuristics": {

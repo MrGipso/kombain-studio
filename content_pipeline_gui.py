@@ -41,6 +41,13 @@ from tkinter.scrolledtext import ScrolledText
 from tkinter import ttk
 
 import schema_generator
+from core.style_presets import (
+    DEFAULT_VIDEO_STYLE,
+    compose_image_prompt,
+    compose_video_prompt,
+    get_video_style,
+    style_director_brief,
+)
 
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
@@ -137,6 +144,11 @@ class AssetCard:
     text_overlay_enabled: bool = False
     text_overlay_text: str = ""
     text_overlay_position: str = "bottom"
+    text_overlay_style: str = "subtitle"
+    text_overlay_x: float = 50.0
+    text_overlay_y: float = 86.0
+    text_overlay_enter: str = "fade"
+    text_overlay_exit: str = "fade"
 
 
 def slugify(text: str) -> str:
@@ -295,7 +307,291 @@ def build_scenes_from_segments(segments: list[TranscriptSegment], target_seconds
     return scenes
 
 
-def build_heuristic_shots(scenes: list[Scene], image_preference: str = "Auto", style_anchor: str = "") -> list[Shot]:
+def _lm_embeddings(base_url: str, model: str, texts: list[str], timeout: int = 120, ttl_seconds: int | None = None) -> list[list[float]]:
+    """Fetch embeddings from an OpenAI-compatible endpoint (LM Studio /v1/embeddings).
+    Raises on failure so the caller can fall back to a heuristic. `ttl_seconds`
+    sets LM Studio's idle auto-unload TTL for the embedding model (JIT), same
+    mechanism as the chat model."""
+    endpoint = base_url.rstrip("/") + "/embeddings"
+    payload = {"model": model, "input": texts}
+    add_lm_ttl(payload, ttl_seconds)
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    items = sorted(data.get("data", []), key=lambda d: d.get("index", 0))
+    embeddings = [item["embedding"] for item in items]
+    if len(embeddings) != len(texts):
+        raise ValueError(f"embedding count mismatch: {len(embeddings)} != {len(texts)}")
+    return embeddings
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _mean_vec(vecs: list[list[float]]) -> list[float]:
+    n = len(vecs)
+    dim = len(vecs[0])
+    return [sum(v[d] for v in vecs) / n for d in range(dim)]
+
+
+def _merge_segments_into_units(
+    segments: list[TranscriptSegment], min_words: int = 12, max_unit_seconds: float = 14.0
+) -> list[list[TranscriptSegment]]:
+    """Group tiny whisper segments into utterance-sized units (sentence-ish) so
+    embeddings are computed on meaningful chunks, not 2-3 second fragments."""
+    units: list[list[TranscriptSegment]] = []
+    current: list[TranscriptSegment] = []
+    words = 0
+    unit_start = 0.0
+    for seg in segments:
+        if not current:
+            unit_start = timecode_to_seconds(seg.start)
+        current.append(seg)
+        words += len((seg.text or "").split())
+        dur = timecode_to_seconds(seg.end) - unit_start
+        ends_sentence = (seg.text or "").rstrip().endswith((".", "!", "?", "…"))
+        if (words >= min_words and ends_sentence) or dur >= max_unit_seconds:
+            units.append(current)
+            current = []
+            words = 0
+    if current:
+        units.append(current)
+    return units
+
+
+def _block_similarity(embs: list[list[float]], gap: int, window: int) -> float:
+    """TextTiling block comparison: cosine between the mean embedding of `window`
+    units before the gap and `window` units after it."""
+    left = embs[max(0, gap - window + 1): gap + 1]
+    right = embs[gap + 1: gap + 1 + window]
+    if not left or not right:
+        return 1.0
+    return _cosine_sim(_mean_vec(left), _mean_vec(right))
+
+
+def _depth_scores(gap_scores: list[float]) -> list[float]:
+    """For each gap, how deep its similarity valley is vs the nearest peaks on
+    both sides. High depth = strong topic boundary."""
+    n = len(gap_scores)
+    depths = [0.0] * n
+    for i in range(n):
+        l = i
+        while l > 0 and gap_scores[l - 1] >= gap_scores[l]:
+            l -= 1
+        r = i
+        while r < n - 1 and gap_scores[r + 1] >= gap_scores[r]:
+            r += 1
+        depths[i] = (gap_scores[l] - gap_scores[i]) + (gap_scores[r] - gap_scores[i])
+    return depths
+
+
+def build_scenes_by_embedding(
+    segments: list[TranscriptSegment],
+    base_url: str,
+    model: str = "text-embedding-nomic-embed-text-v1.5",
+    min_seconds: int = 20,
+    max_seconds: int = 90,
+    sensitivity: float = 0.6,
+    fallback: bool = True,
+    ttl_seconds: int | None = None,
+    target_scenes: int = 0,
+    window: int = 2,
+    min_unit_words: int = 12,
+    log_callback=None,
+) -> list[Scene]:
+    """Deterministic topic segmentation (windowed TextTiling):
+
+    1. Merge tiny whisper segments into utterance-sized units (cleaner embeddings).
+    2. Embed units; for each gap compute block similarity over a window of units.
+    3. Compute depth scores (valley depth) and cut where depth exceeds a cutoff
+       (sensitivity-controlled) — or pick the top boundaries to hit `target_scenes`.
+    4. Enforce min/max scene duration (merge too-short, split too-long at the
+       strongest internal gap).
+
+    If embeddings are unavailable: `fallback=True` → duration heuristic; else re-raise.
+    """
+    if not segments:
+        return []
+
+    units = _merge_segments_into_units(segments, min_words=min_unit_words)
+    unit_texts = [" ".join((s.text or "").strip() for s in u).strip() or " " for u in units]
+    try:
+        embs = _lm_embeddings(base_url, model, unit_texts, ttl_seconds=ttl_seconds)
+    except Exception:
+        if fallback:
+            return build_scenes_from_segments(segments)
+        raise
+
+    if len(units) <= 1:
+        flat = [s for u in units for s in u] or segments
+        return [make_scene_from_segments(1, flat)]
+
+    n_gaps = len(units) - 1
+    w = max(1, int(window))
+    gaps = [_block_similarity(embs, i, w) for i in range(n_gaps)]
+    depths = _depth_scores(gaps)
+
+    import statistics
+    if target_scenes and target_scenes > 1:
+        order = sorted(range(n_gaps), key=lambda i: depths[i], reverse=True)
+        chosen = set(order[: max(0, int(target_scenes) - 1)])
+    else:
+        mean_d = statistics.fmean(depths) if depths else 0.0
+        std_d = statistics.pstdev(depths) if len(depths) > 1 else 0.0
+        # Higher sensitivity -> lower cutoff -> more boundaries.
+        cutoff = mean_d + (0.5 - sensitivity) * std_d
+        chosen = {i for i in range(n_gaps) if depths[i] > 0 and depths[i] >= cutoff}
+
+    # Build unit-groups split at chosen gaps.
+    groups: list[list[int]] = []
+    start = 0
+    for i in range(n_gaps):
+        if i in chosen:
+            groups.append(list(range(start, i + 1)))
+            start = i + 1
+    groups.append(list(range(start, len(units))))
+
+    def gdur(g: list[int]) -> float:
+        return timecode_to_seconds(units[g[-1]][-1].end) - timecode_to_seconds(units[g[0]][0].start)
+
+    # MERGE: scenes shorter than min_seconds fold into a neighbour.
+    changed = True
+    while changed and len(groups) > 1:
+        changed = False
+        for idx, g in enumerate(groups):
+            if gdur(g) < min_seconds:
+                if idx + 1 < len(groups):
+                    groups[idx + 1] = g + groups[idx + 1]
+                else:
+                    groups[idx - 1] = groups[idx - 1] + g
+                groups.pop(idx)
+                changed = True
+                break
+
+    # SPLIT: scenes longer than max_seconds split at the strongest internal gap.
+    def split_long(group: list[int]) -> list[list[int]]:
+        if gdur(group) <= max_seconds or len(group) < 2:
+            return [group]
+        cut = max(group[:-1], key=lambda u: depths[u])
+        left = [u for u in group if u <= cut]
+        right = [u for u in group if u > cut]
+        return split_long(left) + split_long(right)
+
+    final: list[list[int]] = []
+    for g in groups:
+        final.extend(split_long(g))
+
+    if log_callback:
+        log_callback(
+            f"TextTiling: реплик={len(units)}, границ={len(final) - 1}, сцен={len(final)} "
+            f"(sensitivity={sensitivity}, target={target_scenes or 'auto'}, окно={w})"
+        )
+
+    scenes: list[Scene] = []
+    for gi, g in enumerate(final, start=1):
+        segs = [s for u in g for s in units[u]]
+        scenes.append(make_scene_from_segments(gi, segs))
+    return scenes
+
+
+def enrich_scenes_with_lm(
+    scenes: list[Scene],
+    base_url: str,
+    model: str,
+    ttl_seconds: int | None = None,
+    style_anchor: str = "",
+    character_description: str = "",
+    niche: str = "documentary",
+    video_style: str = DEFAULT_VIDEO_STYLE,
+) -> list[Scene]:
+    """Fill creative fields (title, visual_direction, screen_text, music_note,
+    retention_note) for scenes whose boundaries are ALREADY fixed (e.g. from
+    embedding segmentation). The LLM only LABELS each scene by index — it must
+    not merge or split. Raises on LM failure so the caller can keep the
+    heuristic labels the scenes already carry."""
+    if not scenes:
+        return scenes
+    style = get_video_style(video_style)
+    style_block = "\n" + style_director_brief(video_style, style_anchor) + "\n"
+    character_block = f"ПЕРСОНАЖ (одинаков во всех сценах): {character_description}\n" if character_description else ""
+    compact = "\n".join(
+        f"{s.index}|{s.start}-{s.end}|{(s.voice_text or '').strip()}" for s in scenes
+    )
+    prompt = (
+        f"Ты режиссёр монтажа YouTube-контента в стиле \"{style.name}\".\n\n"
+        "Границы сцен УЖЕ заданы. НЕ объединяй и НЕ разбивай их, НЕ меняй index/тайминги/текст.\n"
+        "Для КАЖДОЙ сцены по её тексту придумай поля:\n"
+        "- title — короткое название сцены;\n"
+        "- visual_direction — КОНКРЕТНОЕ описание сцены в выбранном стиле: локация, кто/что в кадре, ракурс, "
+        "эмоция, простой визуальный символ; не копируй текст диктора дословно;\n"
+        "- screen_text — короткая надпись на экран (2-7 слов) или пусто;\n"
+        "- music_note — короткая заметка по музыке;\n"
+        "- retention_note — заметка по удержанию.\n"
+        f"{style_block}{character_block}"
+        "visual_direction делай разным для соседних сцен (чередуй планы).\n"
+        "Верни ТОЛЬКО валидный JSON-массив объектов с полями: "
+        "index, title, visual_direction, screen_text, music_note, retention_note.\n"
+        "index — номер сцены из входа.\n\n"
+        "Сцены (index|start-end|текст):\n"
+        f"{compact}"
+    )
+    payload = {
+        "model": model.strip() or "local-model",
+        "messages": [
+            {"role": "system", "content": "Отвечай только валидным JSON. Не добавляй markdown. visual_direction — буквальная физическая сцена, без метафор и символов."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
+    }
+    add_lm_ttl(payload, ttl_seconds)
+    endpoint = base_url.rstrip("/") + "/chat/completions"
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=240) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    content = data["choices"][0]["message"]["content"].strip()
+    raw = parse_lm_json_array(content, "LM scene enrichment")
+    by_index: dict[int, dict] = {}
+    for item in raw:
+        try:
+            by_index[int(item.get("index"))] = item
+        except (TypeError, ValueError):
+            continue
+    for scene in scenes:
+        item = by_index.get(scene.index)
+        if not item:
+            continue
+        scene.title = str(item.get("title", scene.title)).strip() or scene.title
+        scene.visual_direction = str(item.get("visual_direction", scene.visual_direction)).strip() or scene.visual_direction
+        scene.screen_text = str(item.get("screen_text", scene.screen_text)).strip()
+        scene.music_note = str(item.get("music_note", scene.music_note)).strip() or scene.music_note
+        scene.retention_note = str(item.get("retention_note", scene.retention_note)).strip() or scene.retention_note
+    return scenes
+
+
+def build_heuristic_shots(
+    scenes: list[Scene],
+    image_preference: str = "Auto",
+    style_anchor: str = "",
+    video_style: str = DEFAULT_VIDEO_STYLE,
+    character_description: str = "",
+) -> list[Shot]:
     shots: list[Shot] = []
     for scene in scenes:
         scene_start = timecode_to_seconds(scene.start)
@@ -309,7 +605,14 @@ def build_heuristic_shots(scenes: list[Scene], image_preference: str = "Auto", s
             if local_index == shot_count - 1:
                 end_seconds = scene_end
             text_hint = scene.voice_text if local_index == 0 else scene.visual_direction
-            route = choose_visual_route(text_hint, scene.screen_text, image_preference=image_preference)
+            route = choose_visual_route(
+                text_hint,
+                scene.screen_text,
+                image_preference=image_preference,
+                style_anchor=style_anchor,
+                video_style=video_style,
+                character_description=character_description,
+            )
             description = make_shot_description(scene, local_index, shot_count)
             shots.append(
                 Shot(
@@ -334,36 +637,23 @@ def build_heuristic_shots(scenes: list[Scene], image_preference: str = "Auto", s
     return shots
 
 
-def choose_visual_route(text: str, screen_text: str = "", image_preference: str = "Auto", style_anchor: str = "") -> dict:
+def choose_visual_route(
+    text: str,
+    screen_text: str = "",
+    image_preference: str = "Auto",
+    style_anchor: str = "",
+    video_style: str = DEFAULT_VIDEO_STYLE,
+    character_description: str = "",
+) -> dict:
     lower = f"{text} {screen_text}".lower()
     preferred_image_model = preferred_realistic_image_model(image_preference)
-
-    if screen_text and any(word in lower for word in ("схема", "bgp", "маршрут", "обход")):
-        return {
-            "visual_type": "motion_text",
-            "asset_query": "documentary motion typography overlay",
-            "image_model": "",
-            "video_model": "",
-            "image_prompt": "",
-            "video_prompt": "",
-            "motion": "Remotion text reveal, subtle scale-in, clean documentary typography",
-            "fallback": "Remotion motion_text overlay",
-        }
-
-    if any(word in lower for word in ("схема", "bgp", "маршрут", "обход", "chokepoint")):
-        return {
-            "visual_type": "remotion_graphic",
-            "asset_query": "schema infographic network route",
-            "image_model": "",
-            "video_model": "",
-            "image_prompt": "",
-            "video_prompt": "",
-            "motion": "animate lines and labels",
-            "fallback": "Remotion graphic or SVG schema",
-        }
-
-    prompt = make_realistic_prompt(text, style_anchor=style_anchor)
-    video_prompt = make_ltx_prompt(prompt)
+    prompt = compose_image_prompt(
+        video_style,
+        make_realistic_prompt(text, style_anchor=""),
+        character_description=character_description,
+        custom_notes=style_anchor,
+    )
+    video_prompt = compose_video_prompt(video_style, make_ltx_prompt(prompt), shot_description=text)
     return {
         "visual_type": "ai_image_then_i2v",
         "asset_query": make_asset_query(lower),
@@ -406,7 +696,14 @@ def make_realistic_prompt(text: str, shot_type: str = "", style_anchor: str = ""
     if len(hint) > 300:
         hint = hint[:297].rsplit(" ", 1)[0] + "..."
     shot = shot_type or _suggest_shot_type(hint)
-    anchor_suffix = f" Style: {style_anchor}." if style_anchor else ""
+    # When a project style is set, lead with it and drop realism-forcing wording
+    # (which would fight non-photoreal styles like "cartoon").
+    if (style_anchor or "").strip():
+        return (
+            f"{style_anchor} style: {hint}. {shot} composition, "
+            f"consistent {style_anchor} look, clear shapes and colors, no text, no logos."
+        )
+    anchor_suffix = ""
     templates = [
         f"Hyper-detailed close-up: {hint}. Rich textures and materials visible, "
         f"natural ambient light, sharp focus on surfaces and details, realistic color palette.{anchor_suffix}",
@@ -455,12 +752,21 @@ def make_ltx_prompt(image_prompt: str, motion_hint: str = "") -> str:
     motion = motion_hint or _suggest_motion(image_prompt)
     return (
         f"The camera {motion}. "
-        "Subtle natural movement brings the scene to life with realistic motion, "
-        "stable composition, natural depth, no readable text, no logos. "
-        "Gentle environmental movement where appropriate: "
-        "light shifting, particles drifting, water rippling softly. "
-        f"Visual intent: {image_prompt}"
+        "Subtle handmade movement brings the shot to life while the composition stays stable. "
+        "Small environmental motion is visible where appropriate: light shifts, particles drift, fabric or water moves softly."
     )
+
+
+def apply_style_anchor(prompt: str, style_anchor: str) -> str:
+    """Force the project's visual style to lead the image prompt. Image models
+    weight the first tokens most, so prepending the style anchor reliably applies
+    it even when the LLM body drifts toward realism. No-op if already present."""
+    s = (style_anchor or "").strip()
+    if not s or not prompt:
+        return prompt
+    if s.lower() in prompt.lower():
+        return prompt
+    return f"{s}, {prompt}"
 
 
 def _suggest_motion(text: str) -> str:
@@ -811,24 +1117,17 @@ def call_lm_studio(
     style_anchor: str = "",
     character_description: str = "",
     niche: str = "documentary",
+    video_style: str = DEFAULT_VIDEO_STYLE,
 ) -> list[Scene]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
-    niche_prefix = {
-        "documentary": "документального",
-        "stories": "сторителлинг-канала",
-        "crime": "криминального детектива",
-        "educational": "образовательного",
-    }.get(niche, "документального")
-    style_block = (
-        f"\nОБЩИЙ ВИЗУАЛЬНЫЙ СТИЛЬ ВСЕХ СЦЕН: {style_anchor}\n"
-        if style_anchor else ""
-    )
+    selected_style = get_video_style(video_style)
+    style_block = "\n" + style_director_brief(video_style, style_anchor) + "\n"
     character_block = (
         f"ПЕРСОНАЖ (должен быть одинаков во всех сценах): {character_description}\n"
         if character_description else ""
     )
     prompt = (
-        f"Ты режиссёр монтажа {niche_prefix} YouTube-контента.\n\n"
+        f"Ты режиссёр монтажа YouTube-контента в стиле \"{selected_style.name}\".\n\n"
         f"Разбей русский дикторский текст на сцены для монтажа.\n"
         f"Для КАЖДОЙ сцены РАЗВЕРНИ текст в визуальную сцену:\n"
         f"- Какую локацию, время суток, освещение мы видим?\n"
@@ -898,28 +1197,21 @@ def call_lm_studio_for_segments(
     style_anchor: str = "",
     character_description: str = "",
     niche: str = "documentary",
+    video_style: str = DEFAULT_VIDEO_STYLE,
 ) -> list[Scene]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
     compact_transcript = "\n".join(
         f"{index}|{segment.start}-{segment.end}|{segment.text.strip()}"
         for index, segment in enumerate(segments, start=1)
     )
-    niche_prefix = {
-        "documentary": "документального",
-        "stories": "сторителлинг-канала",
-        "crime": "криминального детектива",
-        "educational": "образовательного",
-    }.get(niche, "документального")
-    style_block = (
-        f"\nОБЩИЙ СТИЛЬ ВСЕХ СЦЕН: {style_anchor}\n"
-        if style_anchor else ""
-    )
+    selected_style = get_video_style(video_style)
+    style_block = "\n" + style_director_brief(video_style, style_anchor) + "\n"
     character_block = (
         f"ПЕРСОНАЖ (должен выглядеть одинаково во всех сценах): {character_description}\n"
         if character_description else ""
     )
     prompt = (
-        f"Ты режиссёр монтажа {niche_prefix} YouTube-контента.\n\n"
+        f"Ты режиссёр монтажа YouTube-контента в стиле \"{selected_style.name}\".\n\n"
         "У тебя есть точная транскрибация с таймкодами всего ролика. "
         "Сгруппируй соседние сегменты в смысловые сцены для монтажа.\n\n"
         "Для КАЖДОЙ сцены РАЗВЕРНИ текст в визуальную сцену:\n"
@@ -929,9 +1221,8 @@ def call_lm_studio_for_segments(
         "- С какого ракурса снят кадр? (общий план, средний, деталь, сверху, от первого лица)\n"
         f"{style_block}"
         f"{character_block}"
-        "ВАЖНО: visual_direction должен быть КОНКРЕТНЫМ. Не просто 'Офис', а "
-        "'Open-plan office, late afternoon, warm sunlight through venetian blinds, "
-        "dust particles floating in the air, medium shot of a designer working at a wide monitor'.\n\n"
+        "ВАЖНО: visual_direction должен быть КОНКРЕТНЫМ и переведенным в выбранный стиль. "
+        "Если текст абстрактный, придумай простой визуальный символ внутри стиля.\n\n"
         "Правила:\n"
         "1. Используй только соседние segment id, не меняй порядок.\n"
         "2. start сцены должен быть start первого сегмента, end сцены - end последнего сегмента.\n"
@@ -1022,6 +1313,7 @@ def stream_lm_studio_segments(
     style_anchor: str = "",
     character_description: str = "",
     niche: str = "documentary",
+    video_style: str = DEFAULT_VIDEO_STYLE,
 ) -> list[Scene]:
     """Same as call_lm_studio_for_segments but streams scenes via on_scene callback
     as they arrive from LM Studio (server-sent events)."""
@@ -1030,22 +1322,14 @@ def stream_lm_studio_segments(
         f"{index}|{segment.start}-{segment.end}|{segment.text.strip()}"
         for index, segment in enumerate(segments, start=1)
     )
-    niche_prefix = {
-        "documentary": "документального",
-        "stories": "сторителлинг-канала",
-        "crime": "криминального детектива",
-        "educational": "образовательного",
-    }.get(niche, "документального")
-    style_block = (
-        f"\nОБЩИЙ СТИЛЬ ВСЕХ СЦЕН: {style_anchor}\n"
-        if style_anchor else ""
-    )
+    selected_style = get_video_style(video_style)
+    style_block = "\n" + style_director_brief(video_style, style_anchor) + "\n"
     character_block = (
         f"ПЕРСОНАЖ (должен выглядеть одинаково во всех сценах): {character_description}\n"
         if character_description else ""
     )
     prompt = (
-        f"Ты режиссёр монтажа {niche_prefix} YouTube-контента.\n\n"
+        f"Ты режиссёр монтажа YouTube-контента в стиле \"{selected_style.name}\".\n\n"
         "У тебя есть точная транскрибация с таймкодами всего ролика. "
         "Сгруппируй соседние сегменты в смысловые сцены для монтажа.\n\n"
         "Для КАЖДОЙ сцены РАЗВЕРНИ текст в визуальную сцену:\n"
@@ -1055,9 +1339,8 @@ def stream_lm_studio_segments(
         "- С какого ракурса снят кадр? (общий план, средний, деталь, сверху, от первого лица)\n"
         f"{style_block}"
         f"{character_block}"
-        "ВАЖНО: visual_direction должен быть КОНКРЕТНЫМ. Не просто 'Офис', а "
-        "'Open-plan office, late afternoon, warm sunlight through venetian blinds, "
-        "dust particles floating in the air, medium shot of a designer working at a wide monitor'.\n\n"
+        "ВАЖНО: visual_direction должен быть КОНКРЕТНЫМ и переведенным в выбранный стиль. "
+        "Если текст абстрактный, придумай простой визуальный символ внутри стиля.\n\n"
         "Правила:\n"
         "1. Используй только соседние segment id, не меняй порядок.\n"
         "2. start сцены должен быть start первого сегмента, end сцены - end последнего сегмента.\n"
@@ -1218,8 +1501,12 @@ def call_lm_studio_for_shots(
     style_anchor: str = "",
     character_description: str = "",
     niche: str = "documentary",
+    video_style: str = DEFAULT_VIDEO_STYLE,
+    log_callback=None,
 ) -> list[Shot]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
+    selected_style = get_video_style(video_style)
+    style_brief = style_director_brief(video_style, style_anchor)
 
     def _parse_shots(raw_shots: list[dict], offset: int = 0) -> list[Shot]:
         parsed: list[Shot] = []
@@ -1249,10 +1536,10 @@ def call_lm_studio_for_shots(
         payload = {
             "model": model.strip() or "local-model",
             "messages": [
-                {"role": "system", "content": "Отвечай только валидным JSON. Не добавляй markdown."},
+                {"role": "system", "content": "Отвечай только валидным JSON. Не добавляй markdown. Описывай только буквальные физические сцены, без метафор и символов."},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.35,
+            "temperature": 0.25,
         }
         add_lm_ttl(payload, ttl_seconds)
         request = urllib.request.Request(
@@ -1268,7 +1555,7 @@ def call_lm_studio_for_shots(
 
     def _generate_sub_prompt(shot: Shot, scene: Scene, segs: list, start_s: float, end_s: float) -> Shot:
         seg_text = "\n".join(f"  {s.start} - {s.end} | \"{s.text}\"" for s in segs)
-        style_line = f"ОБЩИЙ СТИЛЬ: {style_anchor}\n" if style_anchor else ""
+        style_line = f"{style_brief}\n"
         char_line = f"ПЕРСОНАЖ: {character_description}\n" if character_description else ""
         prompt = (
             f"Ты visual director для YouTube-ролика.\n"
@@ -1278,16 +1565,16 @@ def call_lm_studio_for_shots(
             f"Текст диктора на этом отрезке:\n{seg_text}\n\n"
             "Верни JSON-массив с одним объектом. Поля:\n"
             "- description (русский, для монтажёра, 1 предложение)\n"
-            "- image_prompt (английский, детальный реалистичный промпт для Krea 2, 3-6 предложений, "
-            "конкретные материалы/освещение/цвета, без абстракций)\n"
+            "- image_prompt (английский, детальный промпт для Krea 2 в выбранном стиле, 3-6 предложений, "
+            "конкретные материалы/освещение/цвета/фактура, без абстракций)\n"
             "- video_prompt (английский, движение камеры/действие, present tense, 3-5 предложений)\n\n"
             "image_prompt правила:\n"
             "- Промт начинается с КОНКРЕТНОГО ОБЪЕКТА, не с жанра. "
             "ПЛОХО: 'Documentary photo of...' ХОРОШО: 'A dusty workbench with...'\n"
             "- Конкретные материалы и текстуры (weathered metal, brushed aluminum, frosted glass)\n"
             "- Конкретное освещение (golden hour backlight, cold fluorescent overhead)\n"
-            "- Без клише 'cinematic lighting' и 'photorealistic'\n"
-            "- Избегай unreal, fantasy, alien\n\n"
+            "- Не добавляй photorealistic/documentary realism, если это противоречит стилю.\n"
+            "- Переводи любые абстракции в конкретные предметы и действия по правилам стиля.\n\n"
             "video_prompt правила:\n"
             "- Фокус на движении/действии\n"
             "- Camera movements (slow dolly in, subtle tracking, gentle pan)\n"
@@ -1379,15 +1666,17 @@ def call_lm_studio_for_shots(
         "Для КАЖДОГО кадра image_model=krea2_turbo, video_model=ltx2.3_i2v.\n"
         "visual_type: ai_image_then_i2v (для всех стандартных кадров).\n\n"
         f"Настройка пользователя: {image_preference}.\n\n"
+        f"ВЫБРАННЫЙ СТИЛЬ: {selected_style.name}\n"
+        f"{style_brief}\n\n"
         "ПРАВИЛА ДЛЯ image_prompt (Krea 2 — текстовое изображение):\n"
         "- Пиши на английском, длинные детальные промпты (3-6 предложений), естественным языком, а не тегами.\n"
         "- Krea 2 понимает описательные предложения лучше, чем список ключевых слов через запятую.\n"
         "- Описывай: shot type, subject, texture/material, lighting, color palette, composition, atmosphere.\n"
-        "- ВАЖНО: Чередуй shot types между соседними кадрами в рамках одной сцены. "
-        "Если предыдущий кадр wide establishing — следующий делай close-up или macro detail. "
-        "Никогда не ставь два одинаковых типа кадра подряд.\n"
-        "- Konкретные материалы и текстуры: 'weathered metal', 'brushed aluminum', "
-        "'frosted glass', 'rough concrete', 'polished marble', 'aged copper patina'.\n"
+        "- Сначала опиши конкретный объект/сцену, затем детали выбранного стиля. Не используй LoRA/trigger слова.\n"
+        "- Каждая абстрактная мысль из текста должна стать видимым предметом или конкретным действием внутри выбранного стиля — без символов и метафор.\n"
+        "- Показывай УЗНАВАЕМОЕ реальное место/объект; не полагайся на читаемый текст или логотипы в кадре (модель их коверкает) — передавай узнаваемость формами, цветами и ориентирами.\n"
+        "- Чередуй планы между соседними кадрами. Предпочитай ОБЩИЙ и СРЕДНИЙ план, на котором видно место; крупные планы и макро — изредка, не по умолчанию. Не ставь два одинаковых плана подряд.\n"
+        "- Konкретные материалы и текстуры выбирай из выбранного стиля. Для вязаного стиля: yarn, wool fibers, visible stitches, crocheted props, handmade textile surfaces.\n"
         "- Konкретное освещение: 'golden hour backlight', 'cold fluorescent overhead', "
         "'warm tungsten desk lamp', 'harsh noon sun casting hard shadows'.\n"
         "- ЗАПРЕЩЕНО начинать промпт с абстрактного жанра: 'Documentary...', 'Cinematic...', "
@@ -1399,8 +1688,8 @@ def call_lm_studio_for_shots(
         "используй конкретные названия источников света и материалов.\n"
         "- Не описывай жанр видео. Опиши ЧТО мы видим, а не КАК это снято.\n"
         "- Используй visual_direction из сцены как подсказку для визуального стиля.\n"
-        "- Не добавляй текст на изображение (screen_text отдельным слоем).\n"
-        "- Всё должно выглядеть как реальная съёмка реального мира. Никаких 'unreal', 'fantasy', 'alien'.\n\n"
+        "- Не добавляй текст, логотипы или субтитры на изображение.\n"
+        "- Не заставляй кадр быть реалистичной съёмкой реального мира, если выбранный стиль декоративный или handmade.\n\n"
         "ПРИМЕР ХОРОШЕГО image_prompt (начинается с объекта, а не жанра):\n"
         "\"A 40-year-old man in a wrinkled denim shirt sits at a cluttered wooden desk, "
         "morning light streams through a dusty window casting long diagonal shadows, "
@@ -1422,10 +1711,9 @@ def call_lm_studio_for_shots(
         "- Не описывай внешний вид — модель видит картинку.\n\n"
         "ПРАВИЛА МАРШРУТИЗАЦИИ:\n"
         "- screen_text на русском, 2-7 слов.\n"
-        "- Если в тексте сегмента есть числа, проценты, даты — вынеси в screen_text поверх AI-видео.\n"
         "- description на русском для монтажера.\n"
         "- image_prompt и video_prompt на английском.\n"
-        "- Для схем/маршрутов/BGP/5G — motion_text или remotion_graphic.\n"
+        "- Любые схемы, маршруты, карты и технические объяснения показывай как реалистичный AI-видеоряд.\n"
         "- Не выдумывай факты, работай только с текстом сегментов.\n"
         "- Таймкод кадра: start = первого сегмента в группе, end = последнего.\n"
     )
@@ -1446,7 +1734,9 @@ def call_lm_studio_for_shots(
                 for i, s in enumerate(scene_segs, start=1)
             )
             n_segs = len(scene_segs)
-            style_line = f"Общий стиль: {style_anchor}\n" if style_anchor else ""
+            style_line = (
+                f"ОБЯЗАТЕЛЬНЫЙ ВИЗУАЛЬНЫЙ СТИЛЬ: {selected_style.name}. Каждый image_prompt и video_prompt должен подчиняться этому стилю. Никаких LoRA и trigger-фраз, только текстовый prompt.\n"
+            )
             char_line = f"Персонаж: {character_description}\n" if character_description else ""
             prompt = (
                 f"Ты visual director для YouTube-ролика.\n"
@@ -1454,6 +1744,7 @@ def call_lm_studio_for_shots(
                 f"Направление: {scene.visual_direction}\n"
                 f"Надпись: {scene.screen_text}\n"
                 f"{style_line}{char_line}"
+                f"{style_brief}\n\n"
                 f"Сегменты этой сцены ({n_segs} шт.):\n{seg_lines}\n\n"
                 "ШАГ 1 — РАЗВЕРНИ текст в полную визуальную сцену:\n"
                 "  Из короткой фразы сделай конкретную сцену: "
@@ -1464,33 +1755,48 @@ def call_lm_studio_for_shots(
                 "мужчина 30 лет в футболке тянется к телефону на тумбочке, "
                 "мятое одеяло, деревянная мебель, тёплый свет.\n\n"
                 "ШАГ 2 — создай 3-6 кадров с РАЗНЫМИ ракурсами:\n"
-                "- Каждый кадр = уникальная визуальная идея\n"
+                "- Каждый кадр = уникальная визуальная идея, пригодная для короткой image-to-video анимации\n"
                 "- Чередуй shot types (общий → деталь → средний → неожиданный)\n"
                 f"{' - Сохраняй консистентность: персонаж/объект/стиль одинаковы во всех кадрах\n' if style_anchor or character_description else ''}"
                 "- Не повторяй один концепт дважды в одной сцене\n"
                 "- Не пытайся покрыть каждый сегмент — покрывай каждую СМЫСЛОВУЮ ЕДИНИЦУ\n"
-                "- Типично: 3-6 кадров на сцену, независимо от количества сегментов\n"
+                "- Типично: 1-5 кадров на сцену; короткие сцены 1-2 кадра, важные сцены 3-5 кадров\n"
                 "- Порядок кадров: от общего к частному или по логике повествования\n"
                 "- Максимальная длительность одного кадра: 40 секунд (LTX limit)\n\n"
                 f"{INSTRUCTIONS}"
             )
-            try:
-                raw = _lm_chat(prompt)
-                scene_shots = _parse_shots(raw, offset=len(all_shots))
-                for s in scene_shots:
-                    s.scene_index = scene.index
-                split_shots = []
-                for s in scene_shots:
-                    split_shots.extend(_split_long_shot(s, scene, scene_segs))
-                for i, s in enumerate(split_shots):
-                    s.index = len(all_shots) + i + 1
-                all_shots.extend(split_shots)
-                if on_scene_shots:
-                    on_scene_shots(split_shots)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"LM Studio ошибка на сцене {scene.index} \"{scene.title}\": {exc}"
-                ) from exc
+            # Resilient per-scene generation: retry once on bad/truncated JSON,
+            # then fall back to heuristic shots for THIS scene and keep going —
+            # one flaky scene must not abort the whole shot list.
+            scene_shots: list[Shot] | None = None
+            for attempt in range(2):
+                try:
+                    attempt_prompt = prompt if attempt == 0 else (
+                        prompt + "\n\nВЕРНИ СТРОГО валидный JSON-массив и НИЧЕГО больше: "
+                        "без markdown, без текста до или после массива, все строки в кавычках."
+                    )
+                    raw = _lm_chat(attempt_prompt)
+                    parsed = _parse_shots(raw, offset=len(all_shots))
+                    if parsed:
+                        scene_shots = parsed
+                        break
+                except Exception:
+                    scene_shots = None
+            if not scene_shots:
+                if log_callback:
+                    log_callback(f"Сцена {scene.index} \"{scene.title}\": LLM вернул битый JSON — использую запасную раскадровку.")
+                scene_shots = build_heuristic_shots([scene], image_preference=image_preference, style_anchor=style_anchor, video_style=video_style, character_description=character_description)
+
+            for s in scene_shots:
+                s.scene_index = scene.index
+            split_shots = []
+            for s in scene_shots:
+                split_shots.extend(_split_long_shot(s, scene, scene_segs))
+            for i, s in enumerate(split_shots):
+                s.index = len(all_shots) + i + 1
+            all_shots.extend(split_shots)
+            if on_scene_shots:
+                on_scene_shots(split_shots)
         shots = all_shots
     else:
         compact_scenes = [
@@ -1519,6 +1825,20 @@ def call_lm_studio_for_shots(
     shots = clamp_shots_to_scenes(shots, scenes)
     normalize_shot_routes(shots, image_preference=image_preference)
     repair_shot_prompts(shots)
+    # Enforce the selected style on every frame, regardless of how the LLM
+    # phrased the prompt. Styles are pure text presets: no LoRA and no trigger.
+    for s in shots:
+        s.image_prompt = compose_image_prompt(
+            video_style,
+            s.image_prompt or s.description,
+            character_description=character_description,
+            custom_notes=style_anchor,
+        )
+        s.video_prompt = compose_video_prompt(
+            video_style,
+            s.video_prompt or s.motion,
+            shot_description=s.description,
+        )
     return shots
 
 
@@ -1552,49 +1872,16 @@ def clamp_shots_to_scenes(shots: list[Shot], scenes: list[Scene]) -> list[Shot]:
     return clamped
 
 def normalize_shot_routes(shots: list[Shot], image_preference: str = "Auto"):
-    typography_by_scene: dict[int, int] = {}
     preferred_model = preferred_realistic_image_model(image_preference)
     preference = image_preference.strip().lower()
     for shot in shots:
-        visual_type = shot.visual_type.lower()
-        text = f"{shot.description} {shot.screen_text} {shot.asset_query}".lower()
-
-        if visual_type == "ai_typography_card":
-            count = typography_by_scene.get(shot.scene_index, 0)
-            if count >= 1:
-                shot.visual_type = "motion_text" if shot.screen_text else "ai_image_then_i2v"
-                shot.image_model = ""
-                shot.video_model = ""
-                shot.fallback = shot.fallback or "Remotion text overlay or AI image-to-video"
-            else:
-                typography_by_scene[shot.scene_index] = count + 1
-
-        if visual_type in {"programmatic_schema", "remotion_graphic", "map_graphic", "motion_text"}:
-            shot.image_model = ""
-            shot.video_model = ""
-            if not shot.fallback:
-                shot.fallback = "Remotion/SVG generated graphic"
-
-        if any(keyword in text for keyword in ("bgp", "маршрут", "обход", "chokepoint", "узк", "карта", "map")):
-            if shot.visual_type in {"ai_image", "ai_image_then_i2v", "ai_typography_card"}:
-                shot.visual_type = "remotion_graphic"
-                shot.image_model = ""
-                shot.video_model = ""
-                shot.fallback = "Remotion map or route animation"
-
-        if shot.screen_text and shot.visual_type == "ai_image" and not screen_text_has_number(shot.screen_text):
-            shot.visual_type = "motion_text"
-            shot.image_model = ""
-            shot.video_model = ""
-            shot.fallback = "Text overlay in Remotion"
-
-        if shot.visual_type in {"local_broll", "stock_broll", "local_broll_or_ai_image"}:
+        if shot.visual_type not in {"ai_image", "ai_image_then_i2v"}:
             shot.visual_type = "ai_image_then_i2v"
-
-        if shot.visual_type in {"ai_image", "ai_image_then_i2v"}:
-            if shot.image_model != "ideogram4" or preference in {"krea", "ideogram"}:
-                shot.image_model = preferred_model
-            shot.video_model = shot.video_model or "ltx2.3_i2v"
+        if shot.image_model != "ideogram4" or preference in {"krea", "ideogram"}:
+            shot.image_model = preferred_model
+        shot.video_model = shot.video_model or "ltx2.3_i2v"
+        if not shot.fallback or "Remotion" in shot.fallback or "SVG" in shot.fallback:
+            shot.fallback = "AI image-to-video generation"
             if shot.visual_type == "ai_image":
                 shot.visual_type = "ai_image_then_i2v"
 
@@ -1988,6 +2275,29 @@ def write_remotion_jobs(project_dir: Path, shots: list[Shot]) -> list[Path]:
     return created
 
 
+# Markers of vague/metaphorical SCENE DESCRIPTIONS (not prompt rules). Checked
+# against the human-readable description, never against the composed image_prompt
+# (which embeds style rules that legitimately mention these words).
+_ABSTRACT_MARKERS = (
+    "символизир", "олицетвор", "метафор", "как символ", "в виде символа",
+    "представляет собой", "это образ", "abstract concept", "as a metaphor",
+)
+
+
+def is_concrete_prompt(text: str) -> bool:
+    """Heuristic gate over a scene DESCRIPTION: concrete if it has enough words to
+    describe a real scene and contains no metaphor markers. Conservative — only
+    flags for review, never blocks. Empty text is treated as concrete (not flagged)."""
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    if len(t.split()) < 6:
+        return False
+    if any(marker in t for marker in _ABSTRACT_MARKERS):
+        return False
+    return True
+
+
 def build_asset_board(project_dir: Path, shots: list[Shot] | None = None) -> list[AssetCard]:
     scenes_path = project_dir / "02_scenes.json"
     if not scenes_path.exists():
@@ -2004,32 +2314,28 @@ def build_asset_board(project_dir: Path, shots: list[Shot] | None = None) -> lis
     scene_titles = {scene.index: scene.title for scene in scenes}
     existing = load_asset_board(project_dir)
     existing_by_shot = {card.shot_index: card for card in existing}
-    renders_dir = project_dir / "renders" / "remotion"
-    seen_remotion: set[tuple[str, str]] = set()
-
     cards: list[AssetCard] = []
     for shot in shots:
         old = existing_by_shot.get(shot.index)
-        remotion_job = remotion_job_for_shot(shot, renders_dir)
-        if remotion_job:
-            dedupe_key = remotion_dedupe_key(remotion_job)
-            if dedupe_key in seen_remotion:
-                remotion_job = None
-            else:
-                seen_remotion.add(dedupe_key)
-        remotion_template = remotion_job["props"]["template"] if remotion_job else ""
-        remotion_output = remotion_job["output"] if remotion_job else ""
-        route = determine_asset_route(shot, remotion_template)
-        if route == "graphic":
-            image_model = ""
-            video_model = ""
-        else:
-            image_model = old.image_model if old and old.image_model else shot.image_model
-            video_model = old.video_model if old and old.video_model else shot.video_model
+        route = determine_asset_route(shot, "")
+        image_model = old.image_model if old and old.image_model else shot.image_model
+        video_model = old.video_model if old and old.video_model else shot.video_model
         image_output = old.image_output if old else find_existing_asset(project_dir, "images", shot.index)
         video_output = old.video_output if old else find_existing_asset(project_dir, "videos", shot.index)
-        if remotion_output and Path(remotion_output).exists():
-            remotion_output = str(Path(remotion_output))
+
+        image_prompt = old.image_prompt if old and old.image_prompt else shot.image_prompt
+        # Preserve real statuses (generated/approved/skipped/...); only the transient
+        # pre-generation states are re-evaluated against the current validator, so
+        # stale false-flags clear on rebuild.
+        if old and (old.status or "").lower() not in ("planned", "needs_review", ""):
+            status = old.status
+            notes = old.notes
+        elif not is_concrete_prompt(shot.description):
+            status = "needs_review"
+            notes = "Возможно слишком абстрактное/метафоричное описание сцены — проверьте."
+        else:
+            status = "planned"
+            notes = ""
 
         cards.append(
             AssetCard(
@@ -2044,29 +2350,25 @@ def build_asset_board(project_dir: Path, shots: list[Shot] | None = None) -> lis
                 asset_query=shot.asset_query,
                 image_model=image_model,
                 video_model=video_model,
-                remotion_template=remotion_template,
-                image_prompt=old.image_prompt if old and old.image_prompt else shot.image_prompt,
+                remotion_template="",
+                image_prompt=image_prompt,
                 video_prompt=old.video_prompt if old and old.video_prompt else shot.video_prompt,
                 screen_text=old.screen_text if old and old.screen_text else shot.screen_text,
                 motion=shot.motion,
                 fallback=shot.fallback,
                 image_output=image_output,
                 video_output=video_output,
-                remotion_output=old.remotion_output if old and old.remotion_output else remotion_output,
-                status=old.status if old else "planned",
-                notes=old.notes if old else "",
+                remotion_output="",
+                status=status,
+                notes=notes,
                 approved=old.approved if old else False,
             )
         )
     return cards
 
 
-def determine_asset_route(shot: Shot, remotion_template: str) -> str:
-    if remotion_template:
-        return "remotion"
-    if shot.visual_type in {"motion_text", "programmatic_schema", "map_graphic", "remotion_graphic"}:
-        return "graphic"
-    return "image+video"
+def determine_asset_route(shot: Shot, remotion_template: str = "") -> str:
+    return "image+video" if shot.video_model else "image"
 
 
 def _enrich_template_props(template: str, title: str, subtitle: str, card: AssetCard) -> dict:
@@ -2133,6 +2435,10 @@ def build_cuts_array(project_dir: Path, cards: list[AssetCard] | None = None) ->
     has_audio = False
 
     for card in cards:
+        # Respect the same exclusion as the final ffmpeg export so the rough
+        # Remotion preview shows the same set of shots the user will ship.
+        if (getattr(card, "status", "") or "").lower() in {"skipped", "rejected"}:
+            continue
         in_sec = timecode_to_seconds(card.start)
         out_sec = timecode_to_seconds(card.end)
         if out_sec <= in_sec:
@@ -2201,6 +2507,7 @@ def load_asset_board(project_dir: Path) -> list[AssetCard]:
     field_defaults = {
         "image_output": "",
         "video_output": "",
+        "remotion_template": "",
         "remotion_output": "",
         "status": "planned",
         "notes": "",
@@ -2212,6 +2519,11 @@ def load_asset_board(project_dir: Path) -> list[AssetCard]:
         "text_overlay_enabled": False,
         "text_overlay_text": "",
         "text_overlay_position": "bottom",
+        "text_overlay_style": "subtitle",
+        "text_overlay_x": 50.0,
+        "text_overlay_y": 86.0,
+        "text_overlay_enter": "fade",
+        "text_overlay_exit": "fade",
     }
     for item in raw:
         data = {**field_defaults, **item}
@@ -2510,6 +2822,175 @@ def apply_number_overlay_to_video(video_path: Path, project_dir: Path, card: Ass
         raise RuntimeError(f"Не удалось наложить screen_text через FFmpeg: {details}")
     return output_path
 
+def _load_preset_remotion_config(renders_dir: Path) -> dict:
+    """Load the active project's preset `remotion_templates` map.
+
+    `renders_dir` is <project>/renders/remotion, so the project dir (and its
+    `.project.json` with the chosen preset) is two levels up. This lets template
+    selection be niche-configurable without changing any call sites.
+    """
+    try:
+        project_dir = Path(renders_dir).resolve().parent.parent
+        preset_name = "documentary"
+        meta = project_dir / ".project.json"
+        if meta.exists():
+            preset_name = json.loads(meta.read_text("utf-8")).get("preset", preset_name) or preset_name
+        pipeline_file = Path(__file__).resolve().parent / "presets" / preset_name / "pipeline.json"
+        if pipeline_file.exists():
+            raw = json.loads(pipeline_file.read_text("utf-8"))
+            cfg = raw.get("remotion_templates")
+            if isinstance(cfg, dict):
+                return cfg
+    except Exception:
+        pass
+    return {}
+
+
+def _select_preset_template(text: str, templates_cfg: dict) -> str | None:
+    """Pick a template by preset keywords, preferring higher `priority`, then
+    the longest matching keyword."""
+    best_name = None
+    best_key = (-1, 0)
+    for name, entry in templates_cfg.items():
+        if not isinstance(entry, dict):
+            continue
+        priority = int(entry.get("priority", 0) or 0)
+        for kw in entry.get("match", []):
+            k = str(kw).lower().strip()
+            if k and k in text:
+                key = (priority, len(k))
+                if key > best_key:
+                    best_key = key
+                    best_name = name
+    return best_name
+
+
+def _derive_flow_nodes(shot: Shot) -> list[str]:
+    source = shot.screen_text or shot.description or ""
+    parts = [p.strip() for p in re.split(r"\s*(?:→|->|,|;|·|→)\s*", source) if p.strip()]
+    if len(parts) >= 2:
+        return parts[:6]
+    return ["Шаг 1", "Шаг 2", "Шаг 3"]
+
+
+def _build_preset_template_props(name: str, entry: dict, shot: Shot, duration: int) -> dict | None:
+    """Build Remotion props for a preset-selected template, merging preset
+    defaults with the shot's own text. Returns None when the template needs
+    niche-specific geometry the preset doesn't provide (caller then falls back
+    to the built-in heuristics)."""
+    dur = min(duration, int(entry.get("duration_max", 8) or 8))
+    accent = entry.get("accent") or entry.get("default_accent")
+    title = shot.screen_text.strip() or entry.get("title") or shot.description.strip()
+    subtitle = entry.get("subtitle") or (shot.description.strip() if shot.screen_text else "")
+    props: dict = {"template": name, "durationSeconds": dur}
+    if accent:
+        props["accent"] = accent
+
+    if name == "StatCard":
+        props.update({
+            "title": entry.get("title", "Ключевой факт"),
+            "value": extract_stat_value(shot.screen_text or shot.description),
+            "label": shot.screen_text or shot.description,
+        })
+    elif name in {"MapRoute", "RerouteMap"}:
+        route = entry.get("route")
+        if not route:
+            return None
+        props.update({"title": title, "subtitle": subtitle, "route": route})
+        if name == "RerouteMap":
+            if not entry.get("alternateRoute"):
+                return None
+            props["alternateRoute"] = entry["alternateRoute"]
+    elif name == "MapSplit":
+        props.update({
+            "title": title, "subtitle": subtitle,
+            "leftLabel": entry.get("leftLabel", "A"),
+            "rightLabel": entry.get("rightLabel", "B"),
+        })
+    elif name == "FlowDiagram":
+        props.update({
+            "title": title, "subtitle": subtitle,
+            "nodes": entry.get("nodes") or _derive_flow_nodes(shot),
+        })
+    elif name == "ChapterTitle":
+        props.update({
+            "chapter": entry.get("chapter", f"Кадр {shot.index:03d}"),
+            "title": title,
+            "subtitle": subtitle,
+        })
+    else:  # TextOverlay and any custom/niche template
+        props.update({"title": title, "subtitle": subtitle})
+    return props
+
+
+def _build_card_template_props(name: str, entry: dict, card: AssetCard, duration: int) -> dict | None:
+    """Build Remotion props for a template from the CARD's own content, so each
+    shot gets its own title/subtitle/data instead of fixed preset constants.
+    Style (accent/duration) comes from the preset; geometry that can't be derived
+    from text (map routes) still comes from the preset entry."""
+    dur = min(duration, int(entry.get("duration_max", 8) or 8))
+    accent = entry.get("accent") or entry.get("default_accent")
+    title = (card.screen_text or "").strip() or entry.get("title") or (card.description or "").strip()
+    subtitle = (card.description or "").strip() or entry.get("subtitle", "")
+    props: dict = {"template": name, "durationSeconds": dur}
+    if accent:
+        props["accent"] = accent
+
+    if name == "StatCard":
+        props.update({
+            "title": title or entry.get("title", "Ключевой факт"),
+            "value": extract_stat_value(card.screen_text or card.description),
+            "label": card.screen_text or card.description,
+        })
+    elif name in {"MapRoute", "RerouteMap"}:
+        route = entry.get("route")
+        if not route:
+            return None
+        props.update({"title": title, "subtitle": subtitle, "route": route})
+        if name == "RerouteMap":
+            if not entry.get("alternateRoute"):
+                return None
+            props["alternateRoute"] = entry["alternateRoute"]
+    elif name == "MapSplit":
+        props.update({
+            "title": title, "subtitle": subtitle,
+            "leftLabel": entry.get("leftLabel", "A"),
+            "rightLabel": entry.get("rightLabel", "B"),
+        })
+    elif name == "FlowDiagram":
+        props.update({"title": title, "subtitle": subtitle, "nodes": _derive_flow_nodes(card)})
+    elif name == "ChapterTitle":
+        props.update({"chapter": f"Кадр {card.shot_index:03d}", "title": title, "subtitle": subtitle})
+    else:
+        props.update({"title": title, "subtitle": subtitle})
+    return props
+
+
+def remotion_job_from_card(card: AssetCard, renders_dir: Path) -> dict | None:
+    """Build a Remotion job straight from the card: honours the card's chosen
+    `remotion_template` (or auto-selects by text) and fills props from the card's
+    own text. This is what makes per-shot graphics differ instead of repeating
+    the same fixed template instance."""
+    duration = max(2, timecode_to_seconds(card.end) - timecode_to_seconds(card.start))
+    templates_cfg = _load_preset_remotion_config(renders_dir)
+    text = f"{card.description} {card.screen_text} {getattr(card, 'asset_query', '')}".lower()
+    name = (getattr(card, "remotion_template", "") or "").strip() or _select_preset_template(text, templates_cfg)
+    if not name:
+        return None
+    entry = templates_cfg.get(name, {})
+    props = _build_card_template_props(name, entry, card, duration)
+    if not props:
+        return None
+    return {
+        "shot_index": card.shot_index,
+        "scene_index": card.scene_index,
+        "start": card.start,
+        "end": card.end,
+        "output": str((renders_dir / f"shot_{card.shot_index:03d}_{name}.mp4").resolve()),
+        "props": props,
+    }
+
+
 def remotion_job_for_shot(shot: Shot, renders_dir: Path) -> dict | None:
     duration = max(2, timecode_to_seconds(shot.end) - timecode_to_seconds(shot.start))
     visual_type = shot.visual_type.lower()
@@ -2517,7 +2998,20 @@ def remotion_job_for_shot(shot: Shot, renders_dir: Path) -> dict | None:
     if visual_type in {"programmatic_schema", "remotion_graphic", "motion_text", "map_graphic"}:
         if any(word in text for word in ("hair", "human hair", "anatomy", "exploded", "cutaway", "cross-section", "owners", "logos")):
             return None
-        if "bgp" in text or "обход" in text or "reroute" in text or "routing" in text or "маршрут" in text and "повреж" in text:
+
+        # Preset-driven template selection (niche-configurable via
+        # presets/<niche>/pipeline.json -> remotion_templates). Falls back to the
+        # built-in documentary heuristics below when the preset has no match.
+        _templates_cfg = _load_preset_remotion_config(renders_dir)
+        _selected = _select_preset_template(text, _templates_cfg)
+        _preset_props = (
+            _build_preset_template_props(_selected, _templates_cfg[_selected], shot, duration)
+            if _selected else None
+        )
+        if _preset_props:
+            template = _preset_props["template"]
+            props = _preset_props
+        elif "bgp" in text or "обход" in text or "reroute" in text or "routing" in text or "маршрут" in text and "повреж" in text:
             template = "RerouteMap"
             props = {
                 "template": template,
@@ -2831,9 +3325,8 @@ class ContentPipelineApp:
             "3. Схемы",
             "4. Видеоряд",
             "5. Доска кадров",
-            "6. Remotion",
-            "7. Настройки",
-            "8. Экспорт (позже)",
+            "6. Настройки",
+            "7. Экспорт",
         ]:
             self.nav.insert(END, item)
         self.nav.selection_set(0)
@@ -2847,7 +3340,6 @@ class ContentPipelineApp:
         self.build_schemes_section()
         self.build_visual_plan_section()
         self.build_asset_board_section()
-        self.build_remotion_section()
         self.build_settings_section()
         self.build_export_section()
         self.show_section(0)
@@ -3073,7 +3565,7 @@ class ContentPipelineApp:
         ttk.Combobox(row1, textvariable=self.asset_status, values=["planned", "generating", "generated", "needs_review", "approved", "rejected", "skipped"], state="readonly", width=14).pack(side=LEFT, padx=(6, 14))
         Label(row1, text="Route").pack(side=LEFT)
         self.asset_route = StringVar(value="")
-        ttk.Combobox(row1, textvariable=self.asset_route, values=["remotion", "image+video", "image", "broll_or_ai", "graphic", "manual"], state="readonly", width=14).pack(side=LEFT, padx=(6, 14))
+        ttk.Combobox(row1, textvariable=self.asset_route, values=["image+video", "image"], state="readonly", width=14).pack(side=LEFT, padx=(6, 14))
         Label(row1, text="Image").pack(side=LEFT)
         self.asset_image_model = StringVar(value="")
         ttk.Combobox(row1, textvariable=self.asset_image_model, values=["", "krea2_turbo", "ideogram4"], state="readonly", width=14).pack(side=LEFT, padx=(6, 14))
@@ -3118,11 +3610,9 @@ class ContentPipelineApp:
 
         generate_actions = Frame(right, pady=2)
         generate_actions.pack(fill=X)
-        Button(generate_actions, text="Generate route", command=self.start_generate_selected_route).pack(side=LEFT)
-        Button(generate_actions, text="Generate graphic", command=self.start_generate_selected_graphic).pack(side=LEFT, padx=(8, 0))
+        Button(generate_actions, text="Generate AI video", command=self.start_generate_selected_route).pack(side=LEFT)
         Button(generate_actions, text="Generate image", command=self.start_generate_selected_image).pack(side=LEFT, padx=(8, 0))
         Button(generate_actions, text="Generate LTX video", command=self.start_generate_selected_video).pack(side=LEFT, padx=(8, 0))
-        Button(generate_actions, text="Render Remotion", command=self.start_render_selected_remotion).pack(side=LEFT, padx=(8, 0))
 
     def build_remotion_section(self):
         frame = Frame(self.content)
@@ -3150,7 +3640,7 @@ class ContentPipelineApp:
 
     def build_settings_section(self):
         frame = Frame(self.content)
-        self.section_frames[6] = frame
+        self.section_frames[5] = frame
 
         Label(frame, text="Настройки", anchor=W, font=("Segoe UI", 14, "bold")).pack(fill=X)
         Label(
@@ -3201,7 +3691,7 @@ class ContentPipelineApp:
 
     def build_export_section(self):
         frame = Frame(self.content)
-        self.section_frames[7] = frame
+        self.section_frames[6] = frame
         Label(frame, text="Экспорт", anchor=W, font=("Segoe UI", 14, "bold")).pack(fill=X)
         Label(
             frame,
@@ -3815,8 +4305,6 @@ class ContentPipelineApp:
             outputs.append(f"Image: {card.image_output}")
         if card.video_output:
             outputs.append(f"Video: {card.video_output}")
-        if card.remotion_output:
-            outputs.append(f"Remotion: {card.remotion_output}")
         if not outputs:
             outputs.append("Outputs: not generated yet")
         self.asset_outputs.set("\n".join(outputs))
@@ -3860,7 +4348,7 @@ class ContentPipelineApp:
         if self.current_asset_index is None:
             return
         card = self.asset_cards[self.current_asset_index]
-        for value in [card.video_output, card.remotion_output, card.image_output]:
+        for value in [card.video_output, card.image_output]:
             if value and Path(value).exists():
                 os.startfile(value)
                 return
@@ -3926,38 +4414,32 @@ class ContentPipelineApp:
             self.log_queue.put(f"__ASSET_STATUS__Генерация кадра {card.shot_index:03d} via {mode}")
             self.log_queue.put("__ASSET_BOARD_REFRESH__")
 
-            if mode == "route":
-                if card.route == "remotion":
-                    self.render_asset_remotion(card, cards, card_index)
-                    return
-                if card.route == "graphic" and card.visual_type == "motion_text":
-                    self.render_asset_motion_text(card, cards, card_index)
-                    return
-                if card.route in {"image+video", "image", "broll_or_ai", "graphic"}:
-                    generated_any = False
-                    if card.image_model:
-                        image_path = generate_comfy_image(self.comfy_url.get(), project_dir, card)
-                        card.image_output = str(image_path)
-                        generated_any = True
-                    if card.route == "image+video" and card.video_model:
-                        video_path = generate_comfy_ltx_video(self.comfy_url.get(), project_dir, card)
-                        video_path = apply_number_overlay_to_video(video_path, project_dir, card, self.log_queue.put)
-                        card.video_output = str(video_path)
-                        generated_any = True
-                    if not generated_any:
-                        raise RuntimeError(f"Route '{card.route}' needs manual setup or a selected image model.")
-                else:
-                    raise RuntimeError(f"Route '{card.route}' пока не генерируется автоматически.")
+            if mode in {"route", "graphic"}:
+                card.route = "image+video"
+                card.visual_type = "ai_image_then_i2v"
+                card.remotion_template = ""
+                card.remotion_output = ""
+                if not card.image_model:
+                    card.image_model = preferred_realistic_image_model(self.image_model_preference.get())
+                if not card.video_model:
+                    card.video_model = "ltx2.3_i2v"
+                generated_any = False
+                if card.image_model:
+                    image_path = generate_comfy_image(self.comfy_url.get(), project_dir, card)
+                    card.image_output = str(image_path)
+                    generated_any = True
+                if card.video_model:
+                    video_path = generate_comfy_ltx_video(self.comfy_url.get(), project_dir, card)
+                    card.video_output = str(video_path)
+                    generated_any = True
+                if not generated_any:
+                    raise RuntimeError("AI video generation needs image and video models.")
             elif mode == "image":
                 image_path = generate_comfy_image(self.comfy_url.get(), project_dir, card)
                 card.image_output = str(image_path)
             elif mode == "video":
                 video_path = generate_comfy_ltx_video(self.comfy_url.get(), project_dir, card)
-                video_path = apply_number_overlay_to_video(video_path, project_dir, card, self.log_queue.put)
                 card.video_output = str(video_path)
-            elif mode == "graphic":
-                self.render_asset_motion_text(card, cards, card_index)
-                return
             else:
                 raise RuntimeError(f"Unknown generation mode: {mode}")
 
@@ -4169,16 +4651,17 @@ class ContentPipelineApp:
                         image_preference=self.image_model_preference.get(),
                         ttl_seconds=self.lm_ttl_seconds(),
                         segments=tm_segments,
+                        video_style=DEFAULT_VIDEO_STYLE,
                     )
                     self.log_queue.put(f"Visual stage 2/3: LM Studio returned {len(shots)} frame(s)")
                     self.schedule_lm_unload("frame list generation finished")
                 except Exception as exc:
                     self.log_queue.put(f"LM Studio visual plan failed: {explain_lm_studio_error(exc)}")
                     self.log_queue.put("Falling back to local frame-list draft")
-                    shots = build_heuristic_shots(scenes, image_preference=self.image_model_preference.get())
+                    shots = build_heuristic_shots(scenes, image_preference=self.image_model_preference.get(), video_style=DEFAULT_VIDEO_STYLE)
             else:
                 self.log_queue.put("Visual stage 1/3: building local frame-list draft")
-                shots = build_heuristic_shots(scenes, image_preference=self.image_model_preference.get())
+                shots = build_heuristic_shots(scenes, image_preference=self.image_model_preference.get(), video_style=DEFAULT_VIDEO_STYLE)
             write_shot_list_files(self.current_project_dir, shots)
             preview = []
             for shot in shots:
@@ -4344,5 +4827,7 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
 
 

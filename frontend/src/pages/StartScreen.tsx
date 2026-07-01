@@ -1,30 +1,29 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import * as api from '../api/client'
-import type { ProjectInfo, Preset } from '../api/types'
+import { useToast } from '../components/Toast'
+import type { ProjectInfo } from '../api/types'
 
 export default function StartScreen() {
   const navigate = useNavigate()
+  const toast = useToast()
   const [projects, setProjects] = useState<ProjectInfo[]>([])
-  const [presets, setPresets] = useState<Preset[]>([])
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
-  const [newPreset, setNewPreset] = useState('documentary')
   const [newLang, setNewLang] = useState('ru')
 
   useEffect(() => {
-    api.getProjects().then(setProjects).catch(() => {})
-    api.getPresets().then(setPresets).catch(() => {})
+    api.getProjects().then(setProjects).catch((e) => toast.error(`Не удалось загрузить проекты: ${(e as Error).message}`))
   }, [])
 
   const handleCreate = async () => {
-    if (!newName.trim()) return
+    if (!newName.trim()) { toast.error('Введите название проекта'); return }
     try {
-      const p = await api.createProject(newName.trim(), newPreset, newLang)
+      const p = await api.createProject(newName.trim(), newLang)
       const slug = p.dir.split(/[\\/]/).pop() || p.name
       navigate(`/project/${encodeURIComponent(slug)}`)
     } catch (e) {
-      alert('Failed to create project: ' + (e as Error).message)
+      toast.error('Не удалось создать проект: ' + (e as Error).message)
     }
   }
 
@@ -33,10 +32,9 @@ export default function StartScreen() {
       <div className="max-w-3xl w-full">
         <div className="text-center mb-12">
           <h1 className="text-5xl font-bold text-white mb-3">Pipeline Studio</h1>
-          <p className="text-slate-400 text-lg">Полуавтоматическое создание YouTube-документалок</p>
+          <p className="text-slate-400 text-lg">Аудиодорожка → универсальный AI-видеоряд</p>
         </div>
 
-        {/* New project button */}
         {!showNew && (
           <button
             onClick={() => setShowNew(true)}
@@ -46,7 +44,6 @@ export default function StartScreen() {
           </button>
         )}
 
-        {/* New project form */}
         {showNew && (
           <div className="bg-slate-900 rounded-xl p-6 mb-8 border border-slate-700">
             <h2 className="text-xl font-bold text-white mb-4">Создать проект</h2>
@@ -61,31 +58,16 @@ export default function StartScreen() {
                   onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
                 />
               </div>
-              <div className="flex gap-4">
-                <div className="flex-1">
-                  <label className="block text-sm text-slate-400 mb-1">Пресет</label>
-                  <select
-                    value={newPreset}
-                    onChange={(e) => setNewPreset(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    {presets.map((p) => (
-                      <option key={p.name} value={p.name}>{p.name}</option>
-                    ))}
-                    {presets.length === 0 && <option value="documentary">documentary</option>}
-                  </select>
-                </div>
-                <div className="w-24">
-                  <label className="block text-sm text-slate-400 mb-1">Язык</label>
-                  <select
-                    value={newLang}
-                    onChange={(e) => setNewLang(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="ru">RU</option>
-                    <option value="en">EN</option>
-                  </select>
-                </div>
+              <div className="w-32">
+                <label className="block text-sm text-slate-400 mb-1">Язык</label>
+                <select
+                  value={newLang}
+                  onChange={(e) => setNewLang(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="ru">RU</option>
+                  <option value="en">EN</option>
+                </select>
               </div>
               <div className="flex gap-3">
                 <button
@@ -105,7 +87,6 @@ export default function StartScreen() {
           </div>
         )}
 
-        {/* Project list */}
         <div className="space-y-2">
           <h2 className="text-sm text-slate-500 uppercase tracking-wider mb-3">Проекты</h2>
           {projects.length === 0 && (
@@ -124,7 +105,7 @@ export default function StartScreen() {
                   <span className="text-white font-semibold text-lg">{p.name}</span>
                   <span className="ml-3 text-xs text-slate-500 uppercase">{p.language}</span>
                 </div>
-                <span className="text-slate-600 group-hover:text-slate-400 text-sm">{p.preset}</span>
+                <span className="text-slate-600 group-hover:text-slate-400 text-sm">AI video</span>
               </div>
             </button>
             );

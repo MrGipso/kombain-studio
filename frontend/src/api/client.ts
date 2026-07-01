@@ -1,4 +1,4 @@
-import type { ProjectInfo, ProjectDetail, ProjectState, AssetCard, Settings, Preset, ValidationReport, TimelineMedia } from './types'
+import type { ProjectInfo, ProjectDetail, ProjectState, AssetCard, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle } from './types'
 
 const BASE = '/api'
 
@@ -16,12 +16,13 @@ async function r<T>(url: string, opts?: RequestInit): Promise<T> {
 
 // Projects
 export const getProjects = () => r<ProjectInfo[]>('/projects')
-export const createProject = (name: string, preset: string, language: string) =>
+export const createProject = (name: string, language: string) =>
   r<ProjectInfo>('/projects', {
     method: 'POST',
-    body: JSON.stringify({ name, preset, language }),
+    body: JSON.stringify({ name, language }),
   })
 export const getProject = (id: string) => r<ProjectDetail>(`/projects/${encodeURIComponent(id)}`)
+export const getVideoStyles = () => r<VideoStyle[]>('/projects/styles')
 export const getProjectState = (id: string) => r<ProjectState>(`/projects/${encodeURIComponent(id)}/state`)
 export const getTimelineMedia = (id: string) => r<TimelineMedia>(`/projects/${encodeURIComponent(id)}/timeline-media`)
 export const saveTimelineSettings = (id: string, data: { voice_start: string }) =>
@@ -80,15 +81,18 @@ export const regeneratePrompt = (id: string, cardIndex: number, target: 'image_p
     body: JSON.stringify({ target }),
   })
 
-export const renderProject = (id: string) =>
-  r<{ ok: boolean; output: string; cuts: number }>(
-    `/projects/${encodeURIComponent(id)}/render`, {
-    method: 'POST',
-  })
-
-// Project settings (style_anchor, etc.)
-export const updateProjectSettings = (id: string, data: { style_anchor: string; character_description: string; niche: string }) =>
-  r<{ style_anchor: string; character_description: string; niche: string }>(
+// Project settings (video style + optional custom notes)
+export interface ProjectStyleSettings {
+  video_style: string
+  style_anchor: string
+  character_description: string
+  seg_min_seconds: number
+  seg_max_seconds: number
+  seg_sensitivity: number
+  seg_target_scenes: number
+}
+export const updateProjectSettings = (id: string, data: ProjectStyleSettings) =>
+  r<ProjectStyleSettings>(
     `/projects/${encodeURIComponent(id)}/settings`, {
     method: 'PUT',
     body: JSON.stringify(data),
@@ -99,6 +103,11 @@ export const getSettings = () => r<Settings>('/settings')
 export const updateSettings = (data: Partial<Settings>) =>
   r('/settings', { method: 'PUT', body: JSON.stringify(data) })
 export const getPresets = () => r<Preset[]>('/presets')
+
+// Diagnostics — test external dependencies
+export interface DiagnosticResult { target: string; ok: boolean; message: string; detail?: string }
+export const runDiagnostic = (target: 'lm' | 'embed' | 'comfy' | 'ffmpeg' | 'whisper') =>
+  r<DiagnosticResult>(`/diagnostics/${target}`)
 
 // Validation
 export const validateProject = (id: string) => r<ValidationReport>(`/projects/${encodeURIComponent(id)}/validate`, { method: 'POST' })

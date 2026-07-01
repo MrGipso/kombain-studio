@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.routers import projects, transcription, scenes, shots, assets, export_router, settings, media
+from backend.routers import projects, transcription, scenes, shots, assets, export_router, settings, media, diagnostics
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ app.include_router(assets.router, prefix="/api/projects", tags=["Assets"])
 app.include_router(export_router.router, prefix="/api/projects", tags=["Export"])
 app.include_router(settings.router, prefix="/api", tags=["Settings"])
 app.include_router(media.router, prefix="/api", tags=["Media"])
+app.include_router(diagnostics.router, prefix="/api", tags=["Diagnostics"])
 
 # Serve frontend: existing files directly, everything else -> index.html (SPA)
 static_dir = Path(__file__).resolve().parent / "static"

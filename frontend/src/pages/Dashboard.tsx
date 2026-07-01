@@ -3,12 +3,16 @@ import { Link, useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import type { AssetCard, ProjectInfo } from '../api/types'
 import { useSSE } from '../hooks/useSSE'
+import { useToast } from '../components/Toast'
+import { hasMedia, isExcluded, isIncluded } from '../lib/cards'
 
 interface Context {
   projectId: string
   project: ProjectInfo
   steps: Record<string, boolean>
   setSteps: (steps: Record<string, boolean>) => void
+  busy: string | null
+  setBusy: (busy: string | null) => void
 }
 
 type RunKey = 'transcription' | 'scenes' | 'shots' | 'export'
@@ -32,13 +36,33 @@ const STATUS_LABELS: Record<string, string> = {
   skipped: 'Пропущено',
 }
 
+const RUN_LABELS: Record<RunKey, string> = {
+  transcription: 'Транскрипция',
+  scenes: 'Анализ сцен',
+  shots: 'Шот-лист',
+  export: 'Экспорт',
+}
+
+// Dependency gating: a step can only run if its prerequisites already exist.
+function canRun(key: RunKey, steps: Record<string, boolean>): boolean {
+  if (key === 'transcription') return true
+  if (key === 'scenes') return Boolean(steps.transcript)
+  if (key === 'shots') return Boolean(steps.scenes)
+  if (key === 'export') return Boolean(steps.asset_board)
+  return false
+}
+
 export default function Dashboard() {
-  const { projectId, project, steps, setSteps } = useOutletContext<Context>()
+  const { projectId, project, steps, setSteps, busy, setBusy } = useOutletContext<Context>()
   const { startStream, stopStream } = useSSE()
+  const toast = useToast()
   const [cards, setCards] = useState<AssetCard[]>([])
   const [logs, setLogs] = useState<string[]>([])
   const [running, setRunning] = useState<RunKey | null>(null)
+  const [progress, setProgress] = useState<number | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
+  // Locked by a job started on another page of this project.
+  const lockedElsewhere = Boolean(busy) && !running
 
   const refresh = async () => {
     const [board, state] = await Promise.all([
@@ -58,12 +82,12 @@ export default function Dashboard() {
   }, [logs])
 
   const counts = useMemo(() => {
-    const generated = cards.filter((c) => c.status === 'generated' || c.status === 'approved' || c.approved).length
-    const approved = cards.filter((c) => c.approved || c.status === 'approved').length
+    const withMedia = cards.filter(hasMedia).length
+    const included = cards.filter(isIncluded).length
+    const excluded = cards.filter(isExcluded).length
     const working = cards.filter((c) => c.status === 'generating').length
-    const review = cards.filter((c) => c.status === 'needs_review' || c.status === 'rejected').length
-    const withMedia = cards.filter((c) => c.image_output || c.video_output || c.remotion_output).length
-    return { total: cards.length, generated, approved, working, review, withMedia }
+    const review = cards.filter((c) => c.status === 'needs_review').length
+    return { total: cards.length, withMedia, included, excluded, working, review }
   }, [cards])
 
   const nextRun = useMemo<RunKey | null>(() => {
@@ -74,24 +98,27 @@ export default function Dashboard() {
   }, [steps])
 
   const runStep = (key: RunKey) => {
-    if (running) return
+    if (running || busy) return
+    if (!canRun(key, steps)) {
+      toast.error(`${RUN_LABELS[key]}: сначала выполните предыдущий шаг`)
+      return
+    }
     const endpoints: Record<RunKey, string> = {
       transcription: api.startTranscription(projectId),
       scenes: api.startSceneAnalysis(projectId),
       shots: api.startShotGeneration(projectId),
       export: api.startExport(projectId),
     }
-    const labels: Record<RunKey, string> = {
-      transcription: 'Транскрипция',
-      scenes: 'Анализ сцен',
-      shots: 'Шот-лист',
-      export: 'Экспорт',
-    }
 
     setRunning(key)
-    setLogs((prev) => [...prev.slice(-120), `${labels[key]}: старт`])
+    setBusy(RUN_LABELS[key])
+    setProgress(key === 'shots' ? 0 : null)
+    setLogs((prev) => [...prev.slice(-120), `${RUN_LABELS[key]}: старт`])
     startStream(endpoints[key], {
       onLog: (msg) => setLogs((prev) => [...prev.slice(-160), msg]),
+      onProgress: (_step, value) => {
+        if (typeof value === 'number') setProgress(value)
+      },
       onEvent: (event, data) => {
         if (event === 'scene_shots') {
           const shots = Array.isArray(data.shots) ? data.shots.length : 0
@@ -99,39 +126,55 @@ export default function Dashboard() {
         }
       },
       onDone: async () => {
-        setLogs((prev) => [...prev.slice(-160), `${labels[key]}: готово`])
+        setLogs((prev) => [...prev.slice(-160), `${RUN_LABELS[key]}: готово`])
+        toast.success(`${RUN_LABELS[key]}: готово`)
         setRunning(null)
+        setBusy(null)
+        setProgress(null)
         await refresh()
       },
       onError: (msg) => {
-        setLogs((prev) => [...prev.slice(-160), `${labels[key]}: ${msg}`])
+        setLogs((prev) => [...prev.slice(-160), `${RUN_LABELS[key]}: ${msg}`])
+        toast.error(`${RUN_LABELS[key]}: ${msg}`)
         setRunning(null)
+        setBusy(null)
+        setProgress(null)
       },
     })
   }
 
   const validate = async () => {
-    if (running) return
+    if (running || busy) return
     setLogs((prev) => [...prev.slice(-120), 'QA: старт'])
     try {
       const report = await api.validateProject(projectId)
-      setLogs((prev) => [
-        ...prev.slice(-160),
-        `QA: ${report.summary.status}, errors=${report.summary.counts.error || 0}, warnings=${report.summary.counts.warning || 0}`,
-      ])
+      const errors = report.summary.counts.error || 0
+      const warnings = report.summary.counts.warning || 0
+      setLogs((prev) => [...prev.slice(-160), `QA: ${report.summary.status}, errors=${errors}, warnings=${warnings}`])
+      if (errors) toast.error(`QA: ${errors} ошибок, ${warnings} предупреждений`)
+      else toast.success(`QA: ок (${warnings} предупреждений)`)
       await refresh()
     } catch (e) {
       setLogs((prev) => [...prev.slice(-160), `QA: ${(e as Error).message}`])
+      toast.error(`QA: ${(e as Error).message}`)
     }
   }
 
+  // Note: this only detaches the client view. The server task keeps running —
+  // there is no server-side cancellation for whisper/LM jobs.
   const stop = () => {
     stopStream()
     setRunning(null)
-    setLogs((prev) => [...prev.slice(-160), 'Остановлено на клиенте'])
+    setBusy(null)
+    setProgress(null)
+    setLogs((prev) => [...prev.slice(-160), 'Просмотр отключён (задача продолжает выполняться на сервере)'])
+    toast.info('Просмотр отключён. Задача продолжается на сервере.')
   }
 
-  const completion = cards.length ? Math.round((counts.generated / cards.length) * 100) : 0
+  const completion = cards.length ? Math.round((counts.included / cards.length) * 100) : 0
+  const pct = progress === null ? null : Math.round(progress * 100)
+  const pctLabel = pct === null ? '' : pct + '%'
+  const pctWidth = (pct ?? 0) + '%'
 
   return (
     <div className="p-6 space-y-5 max-w-[1500px]">
@@ -143,21 +186,21 @@ export default function Dashboard() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => nextRun && runStep(nextRun)}
-            disabled={!nextRun || Boolean(running)}
+            disabled={!nextRun || Boolean(running) || lockedElsewhere}
             className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45"
           >
-            {nextRun ? 'Продолжить пайплайн' : 'Пайплайн собран'}
+            {nextRun ? `Продолжить: ${RUN_LABELS[nextRun]}` : 'Пайплайн собран'}
           </button>
           <button
             onClick={validate}
-            disabled={Boolean(running)}
+            disabled={Boolean(running) || lockedElsewhere}
             className="px-4 py-2 rounded-lg bg-slate-800 text-slate-200 text-sm font-semibold border border-slate-700 disabled:opacity-45"
           >
             Проверить QA
           </button>
           {running && (
             <button onClick={stop} className="px-4 py-2 rounded-lg bg-red-950 text-red-200 text-sm font-semibold border border-red-800">
-              Стоп
+              Отключить просмотр
             </button>
           )}
         </div>
@@ -167,8 +210,8 @@ export default function Dashboard() {
         {[
           ['Всего', counts.total],
           ['С медиа', counts.withMedia],
-          ['Готово', counts.generated],
-          ['Утверждено', counts.approved],
+          ['В финале', counts.included],
+          ['Исключено', counts.excluded],
           ['В работе', counts.working],
           ['Проверить', counts.review],
         ].map(([label, value]) => (
@@ -193,7 +236,7 @@ export default function Dashboard() {
                 <button
                   key={step.key}
                   onClick={() => step.run ? runStep(step.run) : validate()}
-                  disabled={Boolean(running) || (!step.run && !steps.asset_board)}
+                  disabled={Boolean(running) || lockedElsewhere || (step.run ? !canRun(step.run, steps) : !steps.asset_board)}
                   className={`min-h-28 rounded-lg border p-3 text-left transition-colors disabled:opacity-45 ${
                     done ? 'border-emerald-800 bg-emerald-950/35' : active ? 'border-sky-700 bg-sky-950/35' : 'border-slate-800 bg-slate-950/40 hover:border-slate-600'
                   }`}
@@ -212,6 +255,22 @@ export default function Dashboard() {
           <div className="mt-5 h-2 rounded-full bg-slate-950 overflow-hidden">
             <div className="h-full bg-emerald-500" style={{ width: `${completion}%` }} />
           </div>
+
+          {running && (
+            <div className="mt-4">
+              <div className="mb-1 flex items-center justify-between text-xs text-slate-400">
+                <span>{RUN_LABELS[running]}… {pctLabel}</span>
+                {progress === null && <span className="text-slate-600">выполняется</span>}
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-slate-950">
+                {progress !== null ? (
+                  <div className="h-full bg-sky-500 transition-all" style={{ width: pctWidth }} />
+                ) : (
+                  <div className="h-full w-1/3 animate-[indeterminate_1.2s_ease-in-out_infinite] rounded-full bg-sky-500" />
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="rounded-lg bg-slate-900 border border-slate-800 p-5">
@@ -243,16 +302,20 @@ export default function Dashboard() {
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800">
           <h2 className="text-base font-semibold text-white">Live progress</h2>
           <div className="flex gap-2">
-            {(['transcription', 'scenes', 'shots', 'export'] as RunKey[]).map((key) => (
-              <button
-                key={key}
-                onClick={() => runStep(key)}
-                disabled={Boolean(running)}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 text-xs text-slate-200 border border-slate-700 disabled:opacity-45"
-              >
-                {key === 'transcription' ? 'Transcribe' : key === 'scenes' ? 'Scenes' : key === 'shots' ? 'Shots' : 'Export'}
-              </button>
-            ))}
+            {(['transcription', 'scenes', 'shots', 'export'] as RunKey[]).map((key) => {
+              const allowed = canRun(key, steps)
+              return (
+                <button
+                  key={key}
+                  onClick={() => runStep(key)}
+                  disabled={Boolean(running) || lockedElsewhere || !allowed}
+                  title={allowed ? '' : 'Сначала выполните предыдущий шаг'}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-xs text-slate-200 border border-slate-700 disabled:opacity-45"
+                >
+                  {key === 'transcription' ? 'Transcribe' : key === 'scenes' ? 'Scenes' : key === 'shots' ? 'Shots' : 'Export'}
+                </button>
+              )
+            })}
           </div>
         </div>
         <div className="h-56 overflow-y-auto p-4 font-mono text-xs text-slate-400 space-y-1">
@@ -264,3 +327,4 @@ export default function Dashboard() {
     </div>
   )
 }
+

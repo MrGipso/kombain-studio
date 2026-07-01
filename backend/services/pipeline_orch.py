@@ -105,7 +105,7 @@ def _ensure_lm_context(settings: dict, log: Callable[[str], None]):
         log(f"LM Studio context warning (non-fatal): {pipeline.explain_lm_studio_error(exc)}")
 
 
-def _maybe_unload_lm(settings: dict, reason: str, log: Callable[[str], None]):
+def _maybe_unload_lm(settings: dict, reason: str, log: Callable[[str], None], model: str | None = None):
     delay = _lm_unload_delay_seconds(settings)
     if delay is None:
         log("LM Studio auto-unload disabled")
@@ -114,7 +114,7 @@ def _maybe_unload_lm(settings: dict, reason: str, log: Callable[[str], None]):
         log(f"LM Studio TTL set ({delay}s) — model stays loaded")
         return
     base_url = settings.get("lm_url", "http://127.0.0.1:1234/v1")
-    model = str(settings.get("lm_model", "local-model")).strip()
+    model = str(model if model is not None else settings.get("lm_model", "local-model")).strip()
     if not model:
         log("LM Studio unload skipped: empty model id")
         return
@@ -143,18 +143,53 @@ def run_scene_analysis(
 
     style_anchor = settings.get("style_anchor", "")
     character_description = settings.get("character_description", "")
-    niche = settings.get("niche", "documentary")
+    video_style = settings.get("video_style", "knitted")
 
     t_segments = [pipeline.TranscriptSegment(s["start"], s["end"], s["text"]) for s in segments_data]
 
+    embed_model = settings.get("lm_embed_model", "text-embedding-nomic-embed-text-v1.5")
+    seg_min = int(settings.get("seg_min_seconds", 20) or 20)
+    seg_max = int(settings.get("seg_max_seconds", 90) or 90)
+    seg_sensitivity = float(settings.get("seg_sensitivity", 0.6) or 0.6)
+    seg_target = int(settings.get("seg_target_scenes", 0) or 0)
+
     _ensure_lm_context(settings, log)
-    log("Analyzing scenes via LM Studio...")
-    scenes = pipeline.call_lm_studio_for_segments(
-        base_url, model, t_segments, ttl_seconds=ttl,
-        style_anchor=style_anchor,
-        character_description=character_description,
-        niche=niche,
-    )
+    # PRIMARY: deterministic scene boundaries via embeddings, then the LLM only
+    # LABELS those fixed scenes (title/visual_direction/etc). This stops the
+    # boundaries from "jumping" run to run.
+    try:
+        log("Сегментация сцен по эмбеддингам...")
+        scenes = pipeline.build_scenes_by_embedding(
+            t_segments, base_url, embed_model, fallback=False, ttl_seconds=ttl,
+            min_seconds=seg_min, max_seconds=seg_max, sensitivity=seg_sensitivity, target_scenes=seg_target,
+            log_callback=log,
+        )
+        # Free the embedding model from VRAM (same auto-unload policy as the main
+        # model) before the LLM labelling step loads the chat model.
+        _maybe_unload_lm(settings, "embedding segmentation finished", log, model=embed_model)
+        log(f"Границы по эмбеддингам: {len(scenes)} сцен; озаглавливаю через LLM...")
+        try:
+            scenes = pipeline.enrich_scenes_with_lm(
+                scenes, base_url, model, ttl_seconds=ttl,
+                style_anchor=style_anchor,
+                character_description=character_description,
+                video_style=video_style,
+            )
+        except Exception as exc:
+            log(f"LLM-озаглавливание не удалось ({exc}); оставляю эвристические заголовки")
+    except Exception as exc:
+        # No embedding model available — fall back to LLM grouping, then duration.
+        log(f"Эмбеддинги недоступны ({exc}); группирую сцены через LLM...")
+        try:
+            scenes = pipeline.call_lm_studio_for_segments(
+                base_url, model, t_segments, ttl_seconds=ttl,
+                style_anchor=style_anchor,
+                character_description=character_description,
+                video_style=video_style,
+            )
+        except Exception as exc2:
+            log(f"LLM-группировка не удалась ({exc2}); режу по длительности")
+            scenes = pipeline.build_scenes_from_segments(t_segments)
 
     _maybe_unload_lm(settings, "scene analysis finished", log)
 
@@ -185,7 +220,7 @@ def run_shot_generation(
 
     style_anchor = settings.get("style_anchor", "")
     character_description = settings.get("character_description", "")
-    niche = settings.get("niche", "documentary")
+    video_style = settings.get("video_style", "knitted")
 
     segments_path = project_dir / "01_transcript_segments.json"
     if segments_path.exists():
@@ -202,7 +237,8 @@ def run_shot_generation(
         on_scene_shots=on_scene_shots,
         style_anchor=style_anchor,
         character_description=character_description,
-        niche=niche,
+        video_style=video_style,
+        log_callback=log,
     )
 
     _maybe_unload_lm(settings, "shot list generation finished", log)
@@ -219,6 +255,5 @@ def run_shot_generation(
                   "priority": s.priority, "fallback": s.fallback} for s in shots]
 
     return shots_out, _to_cards(cards)
-
 
 

@@ -49,10 +49,16 @@ class SSEManager:
         if not q:
             return
         try:
-            msg = await q.get()
-            while msg.get("type") != "disconnect":
-                yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+            while True:
                 msg = await q.get()
+                if msg.get("type") == "disconnect":
+                    break
+                yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                # Terminal events close the stream so the connection does not
+                # hang open forever (which previously caused ConnectionResetError
+                # spam when the client navigated away mid-stream).
+                if msg.get("event") in ("done", "error"):
+                    break
         except asyncio.CancelledError:
             pass
         finally:

@@ -9,24 +9,27 @@ import Timeline from './pages/Timeline'
 import AssetBoard from './pages/AssetBoard'
 import Preview from './pages/Preview'
 import Settings from './pages/Settings'
+import { ToastProvider } from './components/Toast'
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<StartScreen />} />
-        <Route path="/project/:projectId" element={<ProjectLayout />}>
-          <Route index element={<Dashboard />} />
-          <Route path="transcription" element={<Transcription />} />
-          <Route path="scenes" element={<Scenes />} />
-          <Route path="shots" element={<Shots />} />
-          <Route path="timeline" element={<Timeline />} />
-          <Route path="board" element={<AssetBoard />} />
-          <Route path="preview" element={<Preview />} />
-        </Route>
-        <Route path="/settings" element={<Settings />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <ToastProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<StartScreen />} />
+          <Route path="/project/:projectId" element={<ProjectLayout />}>
+            <Route index element={<Dashboard />} />
+            <Route path="transcription" element={<Transcription />} />
+            <Route path="scenes" element={<Scenes />} />
+            <Route path="shots" element={<Shots />} />
+            <Route path="board" element={<AssetBoard />} />
+            <Route path="timeline" element={<Timeline />} />
+            <Route path="preview" element={<Preview />} />
+          </Route>
+          <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </ToastProvider>
   )
 }

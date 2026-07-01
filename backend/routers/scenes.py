@@ -48,9 +48,13 @@ async def analyze_scenes(project_id: str):
         raise HTTPException(400, "No transcript segments. Run transcription first.")
 
     settings_dict = {f.name: getattr(project.settings, f.name) for f in project.settings.__dataclass_fields__.values()}
+    settings_dict["video_style"] = project.metadata.get("video_style", "knitted")
     settings_dict["style_anchor"] = project.metadata.get("style_anchor", "")
     settings_dict["character_description"] = project.metadata.get("character_description", "")
-    settings_dict["niche"] = project.metadata.get("niche", "documentary")
+    settings_dict["seg_min_seconds"] = project.metadata.get("seg_min_seconds", 20)
+    settings_dict["seg_max_seconds"] = project.metadata.get("seg_max_seconds", 90)
+    settings_dict["seg_sensitivity"] = project.metadata.get("seg_sensitivity", 0.6)
+    settings_dict["seg_target_scenes"] = project.metadata.get("seg_target_scenes", 0)
 
     async def event_stream():
         sub_id, q = sse.subscribe(project.dir.name)

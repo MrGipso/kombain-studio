@@ -74,6 +74,11 @@ class AssetCard:
     text_overlay_enabled: bool = False
     text_overlay_text: str = ""
     text_overlay_position: str = "bottom"
+    text_overlay_style: str = "subtitle"
+    text_overlay_x: float = 50.0
+    text_overlay_y: float = 86.0
+    text_overlay_enter: str = "fade"
+    text_overlay_exit: str = "fade"
 
 
 def slugify(text: str) -> str:

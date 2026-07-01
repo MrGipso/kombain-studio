@@ -8,8 +8,8 @@ const NAV_ITEMS = [
   { to: 'transcription', label: 'Транскрипция', icon: '02' },
   { to: 'scenes', label: 'Сцены', icon: '03' },
   { to: 'shots', label: 'Кадры', icon: '04' },
-  { to: 'timeline', label: 'Timeline', icon: '05' },
-  { to: 'board', label: 'Asset Board', icon: '06' },
+  { to: 'board', label: 'Asset Board', icon: '05' },
+  { to: 'timeline', label: 'Timeline', icon: '06' },
   { to: 'preview', label: 'Preview', icon: '07' },
 ]
 
@@ -18,6 +18,9 @@ export default function ProjectLayout() {
   const navigate = useNavigate()
   const [project, setProject] = useState<ProjectInfo | null>(null)
   const [steps, setSteps] = useState<Record<string, boolean>>({})
+  // App-level lock: which pipeline step is running (shared across all pages of
+  // this project) so two pages can't start conflicting jobs on the same project.
+  const [busy, setBusy] = useState<string | null>(null)
 
   useEffect(() => {
     if (!projectId) return
@@ -72,6 +75,12 @@ export default function ProjectLayout() {
 
         {/* Pipeline progress + Settings at bottom */}
         <div className="border-t border-slate-800">
+          {busy && (
+            <div className="mx-3 mt-3 flex items-center gap-2 rounded-lg border border-sky-800 bg-sky-950/40 px-3 py-2 text-xs text-sky-300">
+              <span className="h-2.5 w-2.5 shrink-0 animate-ping rounded-full bg-sky-400" />
+              <span className="truncate">Идёт: {busy}</span>
+            </div>
+          )}
           <div className="p-3">
             <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Прогресс</p>
             <div className="space-y-1">
@@ -101,7 +110,7 @@ export default function ProjectLayout() {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto">
-        <Outlet context={{ projectId, project, steps, setSteps }} />
+        <Outlet context={{ projectId, project, steps, setSteps, busy, setBusy }} />
       </main>
     </div>
   )

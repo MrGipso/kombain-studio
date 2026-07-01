@@ -8,7 +8,7 @@
   "pipeline": {
     "transcriber": "whisper_cpp",
     "analyzer": "lm_studio",
-    "generators": ["comfy", "remotion", "schema"]
+    "generators": ["comfy"]
   },
 
   "routes": [
@@ -23,10 +23,15 @@
     {
       "name": "diagram_explanation",
       "match": {"words": ["схема", "архитектура", "диаграмма", "поток", "flow", "процесс"]},
-      "visual_type": "remotion_graphic",
-      "steps": [{"plugin": "remotion", "template": "FlowDiagram"}],
-      "fallback": "Remotion FlowDiagram or SVG schema",
-      "motion": "animate lines and labels"
+      "visual_type": "ai_image_then_i2v",
+      "steps": [
+        {"plugin": "comfy", "workflow": "t2i_krea", "save_as": "image"},
+        {"plugin": "comfy", "workflow": "i2v_ltx", "input": "image", "save_as": "video"}
+      ],
+      "image_model": "auto",
+      "video_model": "ltx2.3_i2v",
+      "motion": "slow camera movement over diagram-like scene",
+      "fallback": "AI image-to-video"
     },
     {
       "name": "result_demo",
@@ -39,26 +44,41 @@
     {
       "name": "comparison",
       "match": {"words": ["сравнение", "разница", "vs", "против", "альтернатива"]},
-      "visual_type": "remotion_graphic",
-      "steps": [{"plugin": "remotion", "template": "MapSplit"}],
-      "fallback": "Remotion split comparison",
-      "motion": "split screen animation"
+      "visual_type": "ai_image_then_i2v",
+      "steps": [
+        {"plugin": "comfy", "workflow": "t2i_krea", "save_as": "image"},
+        {"plugin": "comfy", "workflow": "i2v_ltx", "input": "image", "save_as": "video"}
+      ],
+      "image_model": "auto",
+      "video_model": "ltx2.3_i2v",
+      "motion": "slow push-in",
+      "fallback": "AI image-to-video"
     },
     {
       "name": "concept_card",
       "match": {"words": ["термин", "понятие", "определение", "что такое", "это"]},
-      "visual_type": "motion_text",
-      "steps": [{"plugin": "remotion", "template": "ChapterTitle"}],
-      "fallback": "Remotion text overlay",
-      "motion": "text reveal"
+      "visual_type": "ai_image_then_i2v",
+      "steps": [
+        {"plugin": "comfy", "workflow": "t2i_krea", "save_as": "image"},
+        {"plugin": "comfy", "workflow": "i2v_ltx", "input": "image", "save_as": "video"}
+      ],
+      "image_model": "auto",
+      "video_model": "ltx2.3_i2v",
+      "motion": "slow push-in",
+      "fallback": "AI image-to-video"
     },
     {
       "name": "stat_or_metric",
       "match": {"words": ["%", "процент", "скорость", "время", "миллисекунд", "число"]},
-      "visual_type": "remotion_graphic",
-      "steps": [{"plugin": "remotion", "template": "StatCard"}],
-      "fallback": "Remotion StatCard",
-      "motion": "stat reveal"
+      "visual_type": "ai_image_then_i2v",
+      "steps": [
+        {"plugin": "comfy", "workflow": "t2i_krea", "save_as": "image"},
+        {"plugin": "comfy", "workflow": "i2v_ltx", "input": "image", "save_as": "video"}
+      ],
+      "image_model": "auto",
+      "video_model": "ltx2.3_i2v",
+      "motion": "slow push-in",
+      "fallback": "AI image-to-video"
     },
     {
       "name": "generic_broll",
@@ -75,14 +95,6 @@
   "model_preferences": {
     "krea2_turbo": {"realism": "high", "supports_text": false},
     "ideogram4": {"realism": "high", "supports_text": true}
-  },
-
-  "remotion_templates": {
-    "ChapterTitle": {"match": ["термин", "понятие", "глава", "определение"], "default_accent": "#22c55e"},
-    "FlowDiagram": {"match": ["схема", "архитектура", "flow", "процесс"], "default_accent": "#38bdf8"},
-    "MapSplit": {"match": ["сравнение", "vs", "разница"], "default_accent": "#f97316"},
-    "StatCard": {"match": ["%", "процент", "скорость"], "default_accent": "#a855f7"},
-    "TextOverlay": {"match": ["текст", "пояснение", "вывод"], "default_accent": "#22c55e"}
   },
 
   "heuristics": {

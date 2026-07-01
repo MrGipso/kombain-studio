@@ -43,3 +43,9 @@ body {
   opacity: 0.8;
   z-index: 50;
 }
+
+/* Indeterminate progress slide (honest "working" indicator, not a value) */
+@keyframes indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}

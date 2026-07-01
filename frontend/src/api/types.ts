@@ -12,9 +12,25 @@ export interface ProjectDetail {
   asset_board: AssetCard[]
   segments: TranscriptSegment[]
   transcript: string
+  video_style: string
   style_anchor: string
   character_description: string
-  niche: string
+  seg_min_seconds: number
+  seg_max_seconds: number
+  seg_sensitivity: number
+  seg_target_scenes: number
+}
+
+export interface VideoStyle {
+  id: string
+  name: string
+  description: string
+  scene_brief: string
+  base_prompt: string
+  character_rules: string
+  shot_planning_rules: string[]
+  visual_translation_rules: string[]
+  negative_prompt: string
 }
 
 export interface ProjectState {
@@ -98,7 +114,6 @@ export interface AssetCard {
   asset_query: string
   image_model: string
   video_model: string
-  remotion_template: string
   image_prompt: string
   video_prompt: string
   screen_text: string
@@ -106,7 +121,6 @@ export interface AssetCard {
   fallback: string
   image_output: string
   video_output: string
-  remotion_output: string
   status: string
   notes: string
   approved: boolean
@@ -117,11 +131,17 @@ export interface AssetCard {
   text_overlay_enabled: boolean
   text_overlay_text: string
   text_overlay_position: string
+  text_overlay_style: string
+  text_overlay_x: number
+  text_overlay_y: number
+  text_overlay_enter: string
+  text_overlay_exit: string
 }
 
 export interface Settings {
   lm_url: string
   lm_model: string
+  lm_embed_model: string
   lm_context: string
   comfy_url: string
   comfy_krea_workflow: string

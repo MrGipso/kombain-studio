@@ -73,38 +73,32 @@ class AssetWorker(QThread):
             pipeline.write_asset_board(self.project_dir, cards)
             self.log.emit(f"Generating shot {card.shot_index:03d} via {self.mode}")
 
-            if self.mode == "route":
-                if card.route == "remotion":
-                    self.render_remotion(card, cards)
-                    self.done.emit()
-                    return
-                if card.route == "graphic" and card.visual_type == "motion_text":
-                    self.render_motion_text(card, cards)
-                    self.done.emit()
-                    return
-                if card.route not in {"image+video", "image", "broll_or_ai", "graphic"}:
-                    raise RuntimeError(f"Route '{card.route}' is not automated yet.")
+            if self.mode in {"route", "graphic"}:
+                card.route = "image+video"
+                card.visual_type = "ai_image_then_i2v"
+                card.remotion_template = ""
+                card.remotion_output = ""
+                if not card.image_model:
+                    card.image_model = pipeline.preferred_realistic_image_model("Auto")
+                if not card.video_model:
+                    card.video_model = "ltx2.3_i2v"
                 generated_any = False
                 if card.image_model:
                     image_path = pipeline.generate_comfy_image(self.comfy_url, self.project_dir, card)
                     card.image_output = str(image_path)
                     generated_any = True
-                if card.route == "image+video" and card.video_model:
+                if card.video_model:
                     video_path = pipeline.generate_comfy_ltx_video(self.comfy_url, self.project_dir, card)
                     card.video_output = str(video_path)
                     generated_any = True
                 if not generated_any:
-                    raise RuntimeError("This card needs an image model or manual setup.")
+                    raise RuntimeError("AI video generation needs image and video models.")
             elif self.mode == "image":
                 image_path = pipeline.generate_comfy_image(self.comfy_url, self.project_dir, card)
                 card.image_output = str(image_path)
             elif self.mode == "video":
                 video_path = pipeline.generate_comfy_ltx_video(self.comfy_url, self.project_dir, card)
                 card.video_output = str(video_path)
-            elif self.mode == "graphic":
-                self.render_motion_text(card, cards)
-                self.done.emit()
-                return
             else:
                 raise RuntimeError(f"Unknown mode: {self.mode}")
 
@@ -126,97 +120,13 @@ class AssetWorker(QThread):
             self.failed.emit(str(exc))
 
     def render_remotion(self, card: pipeline.AssetCard, cards: list[pipeline.AssetCard]):
-        shots_path = self.project_dir / "04_shot_list.json"
-        shots = [pipeline.Shot(**item) for item in json.loads(shots_path.read_text(encoding="utf-8"))]
-        shot = next((item for item in shots if item.index == card.shot_index), None)
-        if not shot:
-            raise RuntimeError(f"Shot {card.shot_index:03d} not found.")
-        renders_dir = self.project_dir / "renders" / "remotion"
-        job = pipeline.remotion_job_for_shot(shot, renders_dir)
-        if not job:
-            raise RuntimeError("No Remotion job for this card.")
-
-        jobs_dir = self.project_dir / "remotion_jobs"
-        jobs_dir.mkdir(parents=True, exist_ok=True)
-        job_path = jobs_dir / f"shot_{shot.index:03d}_{job['props']['template']}.json"
-        job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        remotion_dir = ROOT / "remotion_graphics"
-        node_modules = remotion_dir / "node_modules"
-        if not node_modules.exists():
-            raise RuntimeError(f"Remotion dependencies are missing. Run npm install in {remotion_dir}")
-        node = shutil.which("node.exe") or shutil.which("node")
-        if not node:
-            raise RuntimeError("node.exe was not found in PATH.")
-        script = remotion_dir / "scripts" / "render-job.mjs"
-        command = [node, str(script), str(job_path)]
-        self.log.emit(" ".join(command))
-        process = subprocess.Popen(
-            command,
-            cwd=remotion_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        assert process.stdout is not None
-        for line in process.stdout:
-            self.log.emit(line.rstrip())
-        code = process.wait()
-        if code != 0:
-            raise RuntimeError(f"Remotion failed with code {code}")
-        output = Path(job.get("output", ""))
-        if output.exists():
-            card.remotion_output = str(output)
-            card.status = "generated"
-            pipeline.write_asset_board(self.project_dir, cards)
-        else:
-            raise RuntimeError(f"Expected output was not found: {output}")
+        raise RuntimeError("Remotion rendering was removed; use AI video generation instead.")
 
     def render_motion_text(self, card: pipeline.AssetCard, cards: list[pipeline.AssetCard]):
-        renders_dir = self.project_dir / "renders" / "remotion"
-        job = pipeline.remotion_motion_text_job_for_card(card, renders_dir)
-        self.render_remotion_job(card, cards, job)
+        raise RuntimeError("Remotion motion-text rendering was removed; use AI video generation instead.")
 
     def render_remotion_job(self, card: pipeline.AssetCard, cards: list[pipeline.AssetCard], job: dict):
-        jobs_dir = self.project_dir / "remotion_jobs"
-        jobs_dir.mkdir(parents=True, exist_ok=True)
-        template = job["props"]["template"]
-        job_path = jobs_dir / f"shot_{card.shot_index:03d}_{template}.json"
-        job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        remotion_dir = ROOT / "remotion_graphics"
-        node_modules = remotion_dir / "node_modules"
-        if not node_modules.exists():
-            raise RuntimeError(f"Remotion dependencies are missing. Run npm install in {remotion_dir}")
-        node = shutil.which("node.exe") or shutil.which("node")
-        if not node:
-            raise RuntimeError("node.exe was not found in PATH.")
-        script = remotion_dir / "scripts" / "render-job.mjs"
-        command = [node, str(script), str(job_path)]
-        self.log.emit(" ".join(command))
-        process = subprocess.Popen(
-            command,
-            cwd=remotion_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        assert process.stdout is not None
-        for line in process.stdout:
-            self.log.emit(line.rstrip())
-        code = process.wait()
-        if code != 0:
-            raise RuntimeError(f"Remotion failed with code {code}")
-        output = Path(job.get("output", ""))
-        if not output.exists():
-            raise RuntimeError(f"Expected output was not found: {output}")
-        card.remotion_output = str(output)
-        card.status = "generated"
-        pipeline.write_asset_board(self.project_dir, cards)
+        raise RuntimeError("Remotion rendering was removed; use AI video generation instead.")
 
 
 class LmUnloadWorker(QThread):
@@ -914,3 +824,6 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+

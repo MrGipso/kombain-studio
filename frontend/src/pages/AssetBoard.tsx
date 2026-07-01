@@ -1,14 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
+import { useToast } from '../components/Toast'
+import { hasMedia, isExcluded, isIncluded } from '../lib/cards'
 import type { AssetCard } from '../api/types'
 
 interface Context {
   projectId: string
+  busy: string | null
+  setBusy: (busy: string | null) => void
 }
 
 const STATUSES = ['all', 'planned', 'image_ready', 'generating', 'generated', 'needs_review', 'approved', 'rejected', 'skipped']
-const ROUTES = ['all', 'image+video', 'remotion', 'graphic']
+const ROUTES = ['all', 'image+video', 'image']
+
+// Manually-selectable routes in the card editor (no "all" pseudo-filter).
+const CARD_ROUTES = ['image+video', 'image']
+const ROUTE_LABELS: Record<string, string> = {
+  'image+video': 'Реалистичный (картинка→видео)',
+  image: 'Реалистичная картинка',
+}
 
 const STATUS_COLORS: Record<string, string> = {
   planned: '#64748b',
@@ -27,24 +38,28 @@ function mediaUrl(path: string, v: number = 0) {
 
 function bestMedia(card: AssetCard) {
   if (card.video_output) return { type: 'video', path: card.video_output }
-  if (card.remotion_output) return { type: 'video', path: card.remotion_output }
   if (card.image_output) return { type: 'image', path: card.image_output }
   return null
 }
 
 export default function AssetBoard() {
   const { projectId } = useOutletContext<Context>()
+  const toast = useToast()
   const [cards, setCards] = useState<AssetCard[]>([])
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [checked, setChecked] = useState<Set<number>>(new Set())
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterRoute, setFilterRoute] = useState('all')
   const [query, setQuery] = useState('')
-  const [busy, setBusy] = useState<string | null>(null)
+  const [busy, setLocalBusy] = useState<string | null>(null)
   const [mediaVersion, setMediaVersion] = useState(0)
+  // Generation/render is blocked while a pipeline step runs on another page.
 
   const load = async () => {
-    const board = await api.getAssetBoard(projectId).catch(() => [] as AssetCard[])
+    const board = await api.getAssetBoard(projectId).catch((e) => {
+      toast.error(`Не удалось загрузить доску: ${(e as Error).message}`)
+      return [] as AssetCard[]
+    })
     setCards(board)
     setSelectedIndex((current) => {
       if (!board.length) return null
@@ -56,6 +71,21 @@ export default function AssetBoard() {
   useEffect(() => {
     load()
   }, [projectId])
+
+  // Auto-refresh while any card is still generating, so renders that finished
+  // on the server (e.g. while you were on another tab) get picked up here.
+  const anyGenerating = useMemo(
+    () => cards.some((c) => (c.status || '').toLowerCase() === 'generating'),
+    [cards],
+  )
+  useEffect(() => {
+    if (!anyGenerating) return
+    const id = setInterval(() => {
+      load()
+      setMediaVersion((v) => v + 1)
+    }, 4000)
+    return () => clearInterval(id)
+  }, [anyGenerating, projectId])
 
   const visibleIndexes = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -76,10 +106,10 @@ export default function AssetBoard() {
 
   const counts = useMemo(() => ({
     total: cards.length,
-    generated: cards.filter((c) => c.status === 'generated' || c.status === 'approved' || c.approved).length,
-    approved: cards.filter((c) => c.approved || c.status === 'approved').length,
-    review: cards.filter((c) => c.status === 'needs_review' || c.status === 'rejected').length,
-    media: cards.filter((c) => c.image_output || c.video_output || c.remotion_output).length,
+    media: cards.filter(hasMedia).length,
+    included: cards.filter(isIncluded).length,
+    excluded: cards.filter(isExcluded).length,
+    review: cards.filter((c) => c.status === 'needs_review').length,
   }), [cards])
 
   const updateCardAt = (index: number, card: AssetCard) => {
@@ -101,12 +131,15 @@ export default function AssetBoard() {
 
   const saveSelected = async () => {
     if (selectedIndex === null || !selected) return
-    setBusy('save')
+    setLocalBusy('save')
     try {
       const updated = await api.updateCard(projectId, selectedIndex, selected)
       updateCardAt(selectedIndex, updated)
+      toast.success('Карточка сохранена')
+    } catch (e) {
+      toast.error((e as Error).message)
     } finally {
-      setBusy(null)
+      setLocalBusy(null)
     }
   }
 
@@ -115,17 +148,26 @@ export default function AssetBoard() {
     updateCardAt(index, updated)
   }
 
-  const approve = async (index: number) => {
-    setBusy(`approve-${index}`)
+  // Toggle a card in/out of the final video (replaces the old approve gate).
+  const toggleExclude = async (index: number) => {
+    const card = cards[index]
+    setLocalBusy(`exclude-${index}`)
     try {
-      await patchCard(index, { approved: true, status: 'approved' })
+      if (isExcluded(card)) {
+        await patchCard(index, { status: hasMedia(card) ? 'generated' : 'planned' })
+      } else {
+        await patchCard(index, { status: 'skipped' })
+      }
+    } catch (e) {
+      toast.error((e as Error).message)
     } finally {
-      setBusy(null)
+      setLocalBusy(null)
     }
   }
 
   const generate = async (index: number, mode: 'route' | 'image' | 'video') => {
-    setBusy(`generate-${index}`)
+    setLocalBusy(`generate-${index}`)
+    patchCardAt(index, { status: 'generating' }) // optimistic, so the UI reflects work immediately
     try {
       const result = await api.generateCard(projectId, index, mode)
       if (result.card) {
@@ -133,24 +175,25 @@ export default function AssetBoard() {
         setMediaVersion((v) => v + 1)
       }
     } catch (e) {
-      alert((e as Error).message)
+      toast.error(`Кадр #${cards[index]?.shot_index ?? index}: ${(e as Error).message}`)
       await load()
     } finally {
-      setBusy(null)
+      setLocalBusy(null)
     }
   }
 
   const regeneratePrompt = async (index: number, target: 'image_prompt' | 'video_prompt') => {
-    setBusy(`prompt-${target}-${index}`)
+    setLocalBusy(`prompt-${target}-${index}`)
     try {
       const result = await api.regeneratePrompt(projectId, index, target)
       if (result.card) updateCardAt(index, result.card)
       patchCardAt(index, { [target]: result.prompt })
+      toast.success('Промпт обновлён')
     } catch (e) {
-      alert((e as Error).message)
+      toast.error((e as Error).message)
       await load()
     } finally {
-      setBusy(null)
+      setLocalBusy(null)
     }
   }
 
@@ -158,7 +201,7 @@ export default function AssetBoard() {
     const candidates = checkedIndexes.length ? checkedIndexes : visibleIndexes
     const targets = candidates.filter((index) => {
       const card = cards[index]
-      if (card.status === 'approved') return false
+      if (isExcluded(card)) return false
       if (mode === 'image') return !card.image_output
       if (mode === 'video') return !card.video_output
       return true
@@ -168,30 +211,21 @@ export default function AssetBoard() {
     }
   }
 
-  const batchApprove = async () => {
+  const batchExclude = async () => {
     const targets = checkedIndexes.length ? checkedIndexes : visibleIndexes
-    setBusy('batch-approve')
+    setLocalBusy('batch-exclude')
     try {
+      let n = 0
       for (const index of targets) {
-        if (cards[index].status === 'generated' || cards[index].image_output || cards[index].video_output || cards[index].remotion_output) {
-          const updated = await api.updateCard(projectId, index, { approved: true, status: 'approved' })
-          updateCardAt(index, updated)
-        }
+        const updated = await api.updateCard(projectId, index, { status: 'skipped' })
+        updateCardAt(index, updated)
+        n++
       }
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const renderFinal = async () => {
-    setBusy('render')
-    try {
-      const result = await api.renderProject(projectId)
-      alert(`Render complete!\nOutput: ${result.output}\nCuts: ${result.cuts}`)
+      toast.success(`Исключено из финала: ${n}`)
     } catch (e) {
-      alert((e as Error).message)
+      toast.error((e as Error).message)
     } finally {
-      setBusy(null)
+      setLocalBusy(null)
     }
   }
 
@@ -212,11 +246,11 @@ export default function AssetBoard() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-white">Asset Board</h1>
-          <p className="text-sm text-slate-500 mt-1">{counts.media}/{counts.total} с файлами, {counts.approved} утверждено, {counts.review} на проверке</p>
+          <p className="text-sm text-slate-500 mt-1">{counts.included}/{counts.total} в финале, {counts.excluded} исключено, {counts.review} на проверке</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => batchGenerate('route')} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">
-            Generate route
+            Generate AI
           </button>
           <button onClick={() => batchGenerate('image')} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-slate-800 text-slate-100 text-sm font-semibold border border-slate-700 disabled:opacity-45">
             Image
@@ -224,11 +258,8 @@ export default function AssetBoard() {
           <button onClick={() => batchGenerate('video')} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-slate-800 text-slate-100 text-sm font-semibold border border-slate-700 disabled:opacity-45">
             Video
           </button>
-          <button onClick={batchApprove} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold disabled:opacity-45">
-            Approve
-          </button>
-          <button onClick={renderFinal} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold disabled:opacity-45">
-            Render Video
+          <button onClick={batchExclude} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-slate-800 text-slate-100 text-sm font-semibold border border-slate-700 disabled:opacity-45" title="Исключить выбранные (или видимые) кадры из финального видео">
+            Исключить
           </button>
         </div>
       </div>
@@ -236,9 +267,9 @@ export default function AssetBoard() {
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         {[
           ['Всего', counts.total],
-          ['Медиа', counts.media],
-          ['Готово', counts.generated],
-          ['Утверждено', counts.approved],
+          ['С медиа', counts.media],
+          ['В финале', counts.included],
+          ['Исключено', counts.excluded],
           ['Проверить', counts.review],
         ].map(([label, value]) => (
           <div key={label} className="rounded-lg bg-slate-900 border border-slate-800 p-3">
@@ -313,7 +344,7 @@ export default function AssetBoard() {
                   </div>
                   <div>
                     <span className="inline-flex rounded px-2 py-1 text-[11px] font-medium" style={{ backgroundColor: `${color}22`, color }}>{card.status || 'planned'}</span>
-                    {card.approved && <div className="text-[11px] text-emerald-400 mt-1">approved</div>}
+                    {isExcluded(card) ? <div className="text-[11px] text-rose-400 mt-1">исключён</div> : isIncluded(card) && <div className="text-[11px] text-emerald-400 mt-1">в финале</div>}
                   </div>
                   <div className="min-w-0">
                     <div className="text-sm text-slate-200 truncate">{card.description || card.screen_text || card.scene_title || 'Без описания'}</div>
@@ -322,8 +353,8 @@ export default function AssetBoard() {
                   <div className="text-xs text-slate-400 self-center">{card.route || '-'}</div>
                   <div className="text-xs text-slate-400 self-center">{media ? media.type : 'none'}</div>
                   <div onClick={(e) => e.stopPropagation()} className="flex justify-end gap-1">
-                    <button onClick={() => generate(index, 'route')} disabled={Boolean(busy)} className="px-2 py-1 rounded bg-indigo-600 text-white text-xs disabled:opacity-45">Route</button>
-                    <button onClick={() => approve(index)} disabled={Boolean(busy)} className="px-2 py-1 rounded bg-emerald-700 text-white text-xs disabled:opacity-45">OK</button>
+                    <button onClick={() => generate(index, 'route')} disabled={Boolean(busy)} className="px-2 py-1 rounded bg-indigo-600 text-white text-xs disabled:opacity-45">AI</button>
+                    <button onClick={() => toggleExclude(index)} disabled={Boolean(busy)} title={isExcluded(card) ? 'Вернуть в финал' : 'Исключить из финала'} className={`px-2 py-1 rounded text-white text-xs disabled:opacity-45 ${isExcluded(card) ? 'bg-slate-700' : 'bg-rose-800'}`}>{isExcluded(card) ? 'Верн.' : 'Искл.'}</button>
                   </div>
                 </button>
               )
@@ -354,7 +385,7 @@ export default function AssetBoard() {
               </div>
 
               <div className="grid grid-cols-3 gap-2">
-                <button onClick={() => selectedIndex !== null && generate(selectedIndex, 'route')} disabled={Boolean(busy)} className="py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">Route</button>
+                <button onClick={() => selectedIndex !== null && generate(selectedIndex, 'route')} disabled={Boolean(busy)} className="py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">AI</button>
                 <button onClick={() => selectedIndex !== null && generate(selectedIndex, 'image')} disabled={Boolean(busy)} className="py-2 rounded-lg bg-slate-800 text-slate-100 text-sm font-semibold border border-slate-700 disabled:opacity-45">Image</button>
                 <button onClick={() => selectedIndex !== null && generate(selectedIndex, 'video')} disabled={Boolean(busy)} className="py-2 rounded-lg bg-slate-800 text-slate-100 text-sm font-semibold border border-slate-700 disabled:opacity-45">Video</button>
               </div>
@@ -364,6 +395,23 @@ export default function AssetBoard() {
                   <span className="text-xs text-slate-500">Description</span>
                   <textarea value={selected.description} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, description: e.target.value })} className="mt-1 h-16 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
                 </label>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-xs text-slate-500">Route (как показать)</span>
+                    <select
+                      value={CARD_ROUTES.includes(selected.route) ? selected.route : 'image+video'}
+                      onChange={(e) => updateCardAt(selectedIndex!, { ...selected, route: e.target.value })}
+                      className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-2 text-sm text-white outline-none focus:border-indigo-500"
+                    >
+                      {CARD_ROUTES.map((r) => <option key={r} value={r}>{ROUTE_LABELS[r]}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <p className="text-[11px] text-slate-600 -mt-1">
+                  Роут определяет простой AI-процесс: картинка или картинка с последующей анимацией в видео.
+                </p>
+
                 <label className="block">
                   <span className="mb-1 flex items-center justify-between gap-3 text-xs text-slate-500">
                     <span>Image prompt</span>
@@ -396,7 +444,7 @@ export default function AssetBoard() {
 
               <div className="flex gap-2">
                 <button onClick={saveSelected} disabled={Boolean(busy)} className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">Сохранить</button>
-                <button onClick={() => selectedIndex !== null && approve(selectedIndex)} disabled={Boolean(busy)} className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold disabled:opacity-45">Approve</button>
+                <button onClick={() => selectedIndex !== null && toggleExclude(selectedIndex)} disabled={Boolean(busy)} className={`px-4 py-2 rounded-lg text-white text-sm font-semibold disabled:opacity-45 ${selected && isExcluded(selected) ? 'bg-slate-700' : 'bg-rose-800'}`}>{selected && isExcluded(selected) ? 'Вернуть в финал' : 'Исключить'}</button>
               </div>
             </>
           ) : (

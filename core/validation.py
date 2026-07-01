@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -178,6 +179,31 @@ def summarize(issues: Iterable[ValidationIssue]) -> dict:
     return {"status": status, "counts": counts}
 
 
+def scene_metrics(project: Project) -> dict:
+    """Quality metrics for the scene segmentation, so the report shows HOW the cut
+    went (count, length spread, outliers) rather than just timing errors."""
+    scenes = _read_json(project.file_path("scenes")) or []
+    if not scenes:
+        return {"count": 0}
+    durs = [max(0, _duration(s)) for s in scenes]
+    words = [len(str(s.get("voice_text", "")).split()) for s in scenes]
+    seg_min = int(project.metadata.get("seg_min_seconds", 20) or 20)
+    seg_max = int(project.metadata.get("seg_max_seconds", 90) or 90)
+    avg = statistics.fmean(durs) if durs else 0.0
+    std = statistics.pstdev(durs) if len(durs) > 1 else 0.0
+    return {
+        "count": len(scenes),
+        "duration_min": min(durs) if durs else 0,
+        "duration_avg": round(avg, 1),
+        "duration_max": max(durs) if durs else 0,
+        "duration_stddev": round(std, 1),
+        "evenness": round(std / avg, 2) if avg else 0,  # 0 = равномерно, >1 = очень рвано
+        "under_min": sum(1 for d in durs if d < seg_min),
+        "over_max": sum(1 for d in durs if d > seg_max),
+        "words_avg": round(statistics.fmean(words), 1) if words else 0,
+    }
+
+
 def validate_project(project: Project) -> dict:
     issues: list[ValidationIssue] = []
     transcript_issues, transcript_end = validate_transcript(project)
@@ -189,6 +215,7 @@ def validate_project(project: Project) -> dict:
     payload = {
         "project": project.name,
         "summary": summarize(issues),
+        "segmentation": scene_metrics(project),
         "issues": [asdict(issue) for issue in issues],
     }
     return payload

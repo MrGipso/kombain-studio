@@ -2,15 +2,19 @@ import { useState, useRef, useEffect } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import { useSSE } from '../hooks/useSSE'
+import { useToast } from '../components/Toast'
 import type { TranscriptSegment } from '../api/types'
 
 interface Context {
   projectId: string
+  busy: string | null
+  setBusy: (busy: string | null) => void
 }
 
 export default function Transcription() {
-  const { projectId } = useOutletContext<Context>()
+  const { projectId, busy, setBusy } = useOutletContext<Context>()
   const { startStream } = useSSE()
+  const toast = useToast()
   const [logs, setLogs] = useState<string[]>([])
   const [transcript, setTranscript] = useState('')
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
@@ -18,6 +22,7 @@ export default function Transcription() {
   const [elapsed, setElapsed] = useState(0)
   const fileRef = useRef<HTMLInputElement>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
+  const lockedElsewhere = Boolean(busy) && !running
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -47,32 +52,20 @@ export default function Transcription() {
 
   const handleUpload = async () => {
     const file = fileRef.current?.files?.[0]
-    if (!file) return
+    if (!file) { toast.error('Сначала выберите аудиофайл'); return }
     try {
       const result = await api.uploadAudio(projectId, file)
       setLogs((prev) => [...prev, `✅ Загружено: ${result.filename}`])
+      toast.success(`Загружено: ${result.filename}`)
     } catch (e) {
       setLogs((prev) => [...prev, `❌ Ошибка загрузки: ${(e as Error).message}`])
+      toast.error(`Загрузка: ${(e as Error).message}`)
     }
   }
 
-  const handleTranscribe = async () => {
-    const file = fileRef.current?.files?.[0]
-    if (!file) {
-      setLogs((prev) => [...prev, '⚠️ Сначала выберите аудиофайл'])
-      return
-    }
-
-    try {
-      const result = await api.uploadAudio(projectId, file)
-      setLogs((prev) => [...prev, `✅ Загружено: ${result.filename}`])
-      fileRef.current!.value = ''
-    } catch (e) {
-      setLogs((prev) => [...prev, `❌ Ошибка загрузки: ${(e as Error).message}`])
-      return
-    }
-
+  const startTranscriptionStream = () => {
     setRunning(true)
+    setBusy('Транскрипция')
     setLogs((prev) => [...prev, '⏳ Запуск транскрипции...'])
 
     startStream(api.startTranscription(projectId), {
@@ -82,13 +75,45 @@ export default function Transcription() {
         setSegments(data.segments as TranscriptSegment[])
         const txtLen = typeof data.text === 'string' ? data.text.length : 0
         setLogs((prev) => [...prev, `✅ Транскрипция завершена: ${txtLen} символов`])
+        toast.success('Транскрипция завершена')
         setRunning(false)
+        setBusy(null)
       },
       onError: (msg) => {
         setLogs((prev) => [...prev, `❌ ${msg}`])
+        toast.error(`Транскрипция: ${msg}`)
         setRunning(false)
+        setBusy(null)
       },
     })
+  }
+
+  const handleTranscribe = async () => {
+    if (busy) { toast.error('Дождитесь завершения текущей задачи'); return }
+    const file = fileRef.current?.files?.[0]
+    if (!file) {
+      toast.error('Сначала выберите аудиофайл (или используйте «Запустить на загруженном»)')
+      return
+    }
+
+    try {
+      const result = await api.uploadAudio(projectId, file)
+      setLogs((prev) => [...prev, `✅ Загружено: ${result.filename}`])
+      fileRef.current!.value = ''
+    } catch (e) {
+      setLogs((prev) => [...prev, `❌ Ошибка загрузки: ${(e as Error).message}`])
+      toast.error(`Загрузка: ${(e as Error).message}`)
+      return
+    }
+
+    startTranscriptionStream()
+  }
+
+  // Re-run transcription on audio already saved in the project (voice/) without
+  // re-selecting a file — useful after a page reload.
+  const handleTranscribeExisting = () => {
+    if (busy) { toast.error('Дождитесь завершения текущей задачи'); return }
+    startTranscriptionStream()
   }
 
   return (
@@ -107,30 +132,46 @@ export default function Transcription() {
           />
           <button
             onClick={handleUpload}
-            disabled={running}
+            disabled={running || lockedElsewhere}
             className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg disabled:opacity-50 cursor-pointer"
           >
             Загрузить
           </button>
         </div>
 
+        {lockedElsewhere && (
+          <div className="px-4 py-3 bg-sky-900/30 border border-sky-700/50 rounded-lg text-sky-300 text-sm">
+            ⏳ Идёт другая задача ({busy}). Дождитесь завершения.
+          </div>
+        )}
+
         {running && (
           <div className="flex items-center gap-3 px-4 py-3 bg-indigo-900/40 border border-indigo-700/50 rounded-lg">
             <span className="w-3 h-3 rounded-full bg-indigo-400 animate-ping" />
-            <span className="text-indigo-300 text-sm font-semibold">Транскрибирование... {fmtTime(elapsed)}</span>
+            <span className="text-indigo-300 text-sm font-semibold shrink-0">Транскрибирование… {fmtTime(elapsed)}</span>
             <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-              <div className="h-full w-1/3 bg-indigo-500 rounded-full animate-pulse" />
+              <div className="h-full w-1/3 bg-indigo-500 rounded-full animate-[indeterminate_1.2s_ease-in-out_infinite]" />
             </div>
           </div>
         )}
 
-        <button
-          onClick={handleTranscribe}
-          disabled={running}
-          className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
-        >
-          {running ? '⏳ Идёт транскрипция...' : '🎤 Запустить транскрипцию'}
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={handleTranscribe}
+            disabled={running || lockedElsewhere}
+            className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
+          >
+            {running ? '⏳ Идёт транскрипция...' : '🎤 Загрузить и транскрибировать'}
+          </button>
+          <button
+            onClick={handleTranscribeExisting}
+            disabled={running || lockedElsewhere}
+            title="Использовать аудио, уже сохранённое в проекте"
+            className="py-3 px-5 bg-slate-700 hover:bg-slate-600 text-white font-semibold rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
+          >
+            ↻ На загруженном
+          </button>
+        </div>
       </div>
 
       {/* Transcript */}
@@ -172,3 +213,4 @@ export default function Transcription() {
     </div>
   )
 }
+

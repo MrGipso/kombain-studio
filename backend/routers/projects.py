@@ -7,8 +7,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from core.config import load_settings, list_presets
+from core.config import load_settings
 from core.project import Project, create_project, open_project, list_projects
+from core.style_presets import DEFAULT_VIDEO_STYLE, list_video_styles
 
 from backend.models.schemas import ProjectInfo, ProjectSettingsUpdate, Settings
 
@@ -37,7 +38,7 @@ async def get_projects():
 
 class CreateProjectRequest(BaseModel):
     name: str
-    preset: str = "documentary"
+    preset: str = "universal"
     language: str = "ru"
 
 
@@ -49,7 +50,7 @@ async def create_project_ep(req: CreateProjectRequest):
         name=req.name,
         output_base=output_base,
         settings=s,
-        preset=req.preset,
+        preset="universal",
     )
     project.settings.whisper_language = req.language
     project.save_meta()
@@ -59,6 +60,11 @@ async def create_project_ep(req: CreateProjectRequest):
         preset=project.preset,
         language=req.language,
     )
+
+
+@router.get("/styles")
+async def get_video_styles():
+    return list_video_styles()
 
 
 @router.get("/{project_id:str}")
@@ -95,16 +101,24 @@ async def get_project(project_id: str):
         "asset_board": cards_data,
         "segments": segments_data,
         "transcript": transcript_text,
+        "video_style": project.metadata.get("video_style", DEFAULT_VIDEO_STYLE),
         "style_anchor": project.metadata.get("style_anchor", ""),
         "character_description": project.metadata.get("character_description", ""),
-        "niche": project.metadata.get("niche", "documentary"),
+        "seg_min_seconds": project.metadata.get("seg_min_seconds", 20),
+        "seg_max_seconds": project.metadata.get("seg_max_seconds", 90),
+        "seg_sensitivity": project.metadata.get("seg_sensitivity", 0.6),
+        "seg_target_scenes": project.metadata.get("seg_target_scenes", 0),
     }
 
 
 class UpdateProjectSettingsRequest(BaseModel):
+    video_style: str = DEFAULT_VIDEO_STYLE
     style_anchor: str = ""
     character_description: str = ""
-    niche: str = "documentary"
+    seg_min_seconds: int = 20
+    seg_max_seconds: int = 90
+    seg_sensitivity: float = 0.6
+    seg_target_scenes: int = 0
 
 
 @router.put("/{project_id:str}/settings")
@@ -119,14 +133,22 @@ async def update_project_settings(project_id: str, req: UpdateProjectSettingsReq
     project = open_project(path, _settings())
     if not project:
         raise HTTPException(404, "Project not found")
+    project.metadata["video_style"] = req.video_style or DEFAULT_VIDEO_STYLE
     project.metadata["style_anchor"] = req.style_anchor
     project.metadata["character_description"] = req.character_description
-    project.metadata["niche"] = req.niche
+    project.metadata["seg_min_seconds"] = req.seg_min_seconds
+    project.metadata["seg_max_seconds"] = req.seg_max_seconds
+    project.metadata["seg_sensitivity"] = req.seg_sensitivity
+    project.metadata["seg_target_scenes"] = req.seg_target_scenes
     project.save_meta()
     return {
+        "video_style": project.metadata["video_style"],
         "style_anchor": req.style_anchor,
         "character_description": req.character_description,
-        "niche": req.niche,
+        "seg_min_seconds": req.seg_min_seconds,
+        "seg_max_seconds": req.seg_max_seconds,
+        "seg_sensitivity": req.seg_sensitivity,
+        "seg_target_scenes": req.seg_target_scenes,
     }
 
 

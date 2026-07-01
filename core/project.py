@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.config import Settings, load_preset_by_path
+from core.config import Settings
 from core.locale import Locale, load_locale
 from core.models import slugify
 
@@ -29,7 +29,7 @@ class Project:
     dir: Path
     settings: Settings = field(default_factory=Settings)
     locale: Locale | None = None
-    preset: str = "documentary"
+    preset: str = "universal"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -100,16 +100,23 @@ class Project:
             "name": self.name,
             "preset": self.preset,
             "language": self.settings.whisper_language,
+            "video_style": self.metadata.get("video_style", "knitted"),
             "style_anchor": self.metadata.get("style_anchor", ""),
             "character_description": self.metadata.get("character_description", ""),
-            "niche": self.metadata.get("niche", "documentary"),
+            "seg_min_seconds": self.metadata.get("seg_min_seconds", 20),
+            "seg_max_seconds": self.metadata.get("seg_max_seconds", 90),
+            "seg_sensitivity": self.metadata.get("seg_sensitivity", 0.6),
+            "seg_target_scenes": self.metadata.get("seg_target_scenes", 0),
         }
         meta_path = self.dir / ".project.json"
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def load_locale(self, lang: str | None = None) -> Locale:
         lang = lang or self.settings.whisper_language or "ru"
-        preset_path = Path(__file__).resolve().parent.parent / "presets" / self.preset
+        presets_dir = Path(__file__).resolve().parent.parent / "presets"
+        preset_path = presets_dir / self.preset
+        if not preset_path.exists():
+            preset_path = presets_dir / "documentary"
         self.locale = load_locale(preset_path, lang)
         return self.locale
 
@@ -118,7 +125,7 @@ def create_project(
     name: str,
     output_base: Path,
     settings: Settings | None = None,
-    preset: str = "documentary",
+    preset: str = "universal",
 ) -> Project:
     dir_name = slugify(name) or "untitled"
     project_dir = (output_base / dir_name).resolve()
@@ -129,8 +136,6 @@ def create_project(
     (project_dir / "assets" / "images").mkdir(parents=True, exist_ok=True)
     (project_dir / "assets" / "videos").mkdir(parents=True, exist_ok=True)
     (project_dir / "notes").mkdir(exist_ok=True)
-    (project_dir / "renders" / "remotion").mkdir(parents=True, exist_ok=True)
-    (project_dir / "remotion_jobs").mkdir(exist_ok=True)
     (project_dir / "exports").mkdir(exist_ok=True)
     (project_dir / "transcription").mkdir(exist_ok=True)
     (project_dir / "visual_plan").mkdir(exist_ok=True)
@@ -153,14 +158,18 @@ def open_project(path: Path, settings: Settings | None = None) -> Project | None
         try:
             meta = json.loads(meta_file.read_text(encoding="utf-8"))
             # ensure new fields exist
+            meta.setdefault("video_style", "knitted")
             meta.setdefault("style_anchor", "")
             meta.setdefault("character_description", "")
-            meta.setdefault("niche", "documentary")
+            meta.setdefault("seg_min_seconds", 20)
+            meta.setdefault("seg_max_seconds", 90)
+            meta.setdefault("seg_sensitivity", 0.6)
+            meta.setdefault("seg_target_scenes", 0)
             return Project(
                 name=meta.get("name", path.name),
                 dir=path,
                 settings=settings or Settings(),
-                preset=meta.get("preset", "documentary"),
+                preset=meta.get("preset", "universal"),
                 metadata=meta,
             )
         except (json.JSONDecodeError, OSError):
@@ -182,3 +191,5 @@ def list_projects(output_base: Path) -> list[Project]:
             if proj:
                 projects.append(proj)
     return projects
+
+

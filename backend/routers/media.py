@@ -12,6 +12,8 @@ from core.project import open_project
 
 router = APIRouter()
 
+EXCLUDED_STATUSES = {"skipped", "rejected"}
+
 
 class TimelineSettings(BaseModel):
     voice_start: str = "00:00:00"
@@ -134,10 +136,11 @@ async def timeline_media(project_id: str):
 
     items = []
     for index, card in enumerate(cards):
+        if str(card.get("status", "")).lower() in EXCLUDED_STATUSES:
+            continue
         media_path = _first_existing(
             [
                 card.get("video_output", ""),
-                card.get("remotion_output", ""),
                 card.get("image_output", ""),
             ]
         )
@@ -182,3 +185,5 @@ async def save_timeline_settings(project_id: str, settings: TimelineSettings):
     data = {"voice_start": settings.voice_start or "00:00:00"}
     _write_timeline_settings(project, data)
     return data
+
+

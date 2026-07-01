@@ -51,6 +51,9 @@ class LmStudioAnalyzer(AnalyzerPlugin):
         base_url = cfg.get("lm_url", "http://127.0.0.1:1234/v1")
         model = cfg.get("lm_model", "local-model")
         image_pref = cfg.get("image_model_preference", "Auto")
+        style_anchor = cfg.get("style_anchor") or project.metadata.get("style_anchor", "")
+        character_description = cfg.get("character_description") or project.metadata.get("character_description", "")
+        video_style = cfg.get("video_style") or project.metadata.get("video_style", "knitted")
 
         try:
             pipeline_scenes = [pipeline.Scene(**s.__dict__) for s in scenes]
@@ -59,6 +62,9 @@ class LmStudioAnalyzer(AnalyzerPlugin):
             raw_shots = pipeline.call_lm_studio_for_shots(
                 base_url, model, pipeline_scenes, image_pref,
                 segments=pipeline_segments,
+                style_anchor=style_anchor,
+                character_description=character_description,
+                video_style=video_style,
             )
             shots = [Shot(**s.__dict__) for s in raw_shots]
 
@@ -88,3 +94,5 @@ class LmStudioAnalyzer(AnalyzerPlugin):
         if not s.lm_model:
             errors.append("LM Studio model not configured")
         return errors
+
+

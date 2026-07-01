@@ -3,19 +3,24 @@ import { Link, useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import type { TimelineMedia } from '../api/types'
 import { useSSE } from '../hooks/useSSE'
+import { useToast } from '../components/Toast'
 
 interface Context {
   projectId: string
+  busy: string | null
+  setBusy: (busy: string | null) => void
 }
 
 export default function Preview() {
-  const { projectId } = useOutletContext<Context>()
+  const { projectId, busy, setBusy } = useOutletContext<Context>()
   const { startStream } = useSSE()
+  const toast = useToast()
   const [media, setMedia] = useState<TimelineMedia | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [exporting, setExporting] = useState(false)
   const [selectedUrl, setSelectedUrl] = useState('')
   const logEndRef = useRef<HTMLDivElement>(null)
+  const lockedElsewhere = Boolean(busy) && !exporting
 
   const load = async () => {
     const next = await api.getTimelineMedia(projectId).catch(() => null)
@@ -33,20 +38,25 @@ export default function Preview() {
   }, [logs])
 
   const handleExport = () => {
-    if (exporting) return
+    if (exporting || busy) { if (busy && !exporting) toast.error('Дождитесь завершения текущей задачи'); return }
     setExporting(true)
+    setBusy('Экспорт')
     setLogs((prev) => [...prev.slice(-120), 'Экспорт: старт'])
 
     startStream(api.startExport(projectId), {
       onLog: (msg) => setLogs((prev) => [...prev.slice(-180), msg]),
       onDone: async (data) => {
         setLogs((prev) => [...prev.slice(-180), `Экспорт: готово ${data.path || ''}`])
+        toast.success('Экспорт MP4 готов')
         setExporting(false)
+        setBusy(null)
         await load()
       },
       onError: (msg) => {
         setLogs((prev) => [...prev.slice(-180), `Экспорт: ${msg}`])
+        toast.error(`Экспорт: ${msg}`)
         setExporting(false)
+        setBusy(null)
       },
     })
   }
@@ -59,14 +69,14 @@ export default function Preview() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-white">Preview & Export</h1>
-          <p className="text-sm text-slate-500 mt-1">{media?.items.length || 0} сгенерированных клипов</p>
+          <p className="text-sm text-slate-500 mt-1">Финальное видео (со звуком, по таймлайну) · {media?.items.length || 0} клипов с медиа</p>
         </div>
         <div className="flex gap-2">
           <Link to="../timeline" className="px-4 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-100">
             Timeline
           </Link>
-          <button onClick={handleExport} disabled={exporting} className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">
-            {exporting ? 'Exporting' : 'Build MP4'}
+          <button onClick={handleExport} disabled={exporting || lockedElsewhere} title="Финальная сборка через ffmpeg: кадры в финале + озвучка + оверлеи" className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">
+            {exporting ? 'Собираю…' : 'Собрать финал (MP4)'}
           </button>
           {media?.export_url && (
             <a href={api.getDownloadUrl(projectId)} download className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold">
@@ -143,3 +153,4 @@ export default function Preview() {
     </div>
   )
 }
+
