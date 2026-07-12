@@ -1,9 +1,8 @@
-import tempfile
+import json
 from pathlib import Path
 from typing import Callable
 
-import content_pipeline_gui as pipeline
-from core.models import TranscriptSegment as CoreSegment
+from core import transcribe as transcription
 from core.project import Project
 from plugins.transcribers.base import TranscriberPlugin, TranscriptionResult
 
@@ -26,64 +25,33 @@ class WhisperCppTranscriber(TranscriberPlugin):
         try:
             whisper_cli = Path(project.settings.whisper_cli)
             if not whisper_cli.exists():
-                whisper_cli = Path(pipeline.find_default_tool("whisper-cli.exe")) if pipeline.find_default_tool("whisper-cli.exe") else whisper_cli
+                discovered = transcription.find_default_tool("whisper-cli.exe")
+                whisper_cli = Path(discovered) if discovered else whisper_cli
 
             model_path = Path(project.settings.whisper_model)
             if not model_path.exists():
-                model_path = Path(pipeline.find_default_model()) if pipeline.find_default_model() else model_path
+                discovered = transcription.find_default_model()
+                model_path = Path(discovered) if discovered else model_path
 
             ffmpeg_path = Path(project.settings.ffmpeg)
             if not ffmpeg_path.exists():
-                ffmpeg_path = Path(pipeline.find_default_tool("ffmpeg.exe")) if pipeline.find_default_tool("ffmpeg.exe") else ffmpeg_path
+                discovered = transcription.find_default_tool("ffmpeg.exe")
+                ffmpeg_path = Path(discovered) if discovered else ffmpeg_path
 
             output_dir = project.dir / "transcription"
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            log("Converting audio to 16 kHz mono WAV")
-            with tempfile.TemporaryDirectory(prefix="content-pipeline-") as temp_root:
-                wav_path = Path(temp_root) / "voice_16khz.wav"
-                ffmpeg_command = [
-                    str(ffmpeg_path),
-                    "-y", "-i", str(audio_path),
-                    "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
-                    str(wav_path),
-                ]
-                code = pipeline.run_process(ffmpeg_command, log)
-                if code != 0:
-                    return TranscriptionResult(success=False, error="ffmpeg conversion failed")
-
-                output_base = output_dir / "whisper_transcript"
-                log("Running whisper.cpp")
-                whisper_command = [
-                    str(whisper_cli),
-                    "-m", str(model_path),
-                    "-f", str(wav_path),
-                    "-l", language.strip() or "ru",
-                    "-otxt", "-osrt", "-oj",
-                    "-of", str(output_base),
-                ]
-                code = pipeline.run_process(whisper_command, log)
-                if code != 0:
-                    return TranscriptionResult(success=False, error="whisper.cpp transcription failed")
-
-            txt_path = output_base.with_suffix(".txt")
-            json_path = output_base.with_suffix(".json")
-            srt_path = output_base.with_suffix(".srt")
-
-            transcript_text = ""
-            if txt_path.exists():
-                transcript_text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
-
-            raw_segments: list = []
-            if json_path.exists():
-                raw_segments = pipeline.parse_whisper_json(json_path)
-            if not raw_segments and srt_path.exists():
-                raw_segments = pipeline.parse_srt_segments(srt_path)
-
-            core_segments = [
-                CoreSegment(start=s.start, end=s.end, text=s.text)
-                for s in raw_segments
-            ]
+            transcript_text, core_segments, json_path, srt_path = (
+                transcription.transcribe_with_whisper_cpp(
+                    audio_path=audio_path,
+                    whisper_cli=whisper_cli,
+                    model_path=model_path,
+                    ffmpeg_path=ffmpeg_path,
+                    language=language.strip() or "auto",
+                    output_dir=output_dir,
+                    log_callback=log,
+                )
+            )
 
             # Write project files
             project.write_text("transcript", transcript_text)
@@ -91,8 +59,10 @@ class WhisperCppTranscriber(TranscriberPlugin):
             project.write_json("transcript_segments", seg_data)
 
             if json_path and json_path.exists():
-                import json
-                project.write_json("whisper_raw", json.loads(json_path.read_text("utf-8")))
+                project.write_json(
+                    "whisper_raw",
+                    json.loads(json_path.read_text(encoding="utf-8-sig")),
+                )
 
             return TranscriptionResult(
                 success=True,
@@ -107,10 +77,11 @@ class WhisperCppTranscriber(TranscriberPlugin):
 
     def validate(self) -> list[str]:
         errors = []
-        if not pipeline.find_default_tool("whisper-cli.exe"):
-            errors.append("whisper-cli.exe not found in PATH or settings")
         from core.config import load_settings
         s = load_settings()
-        if s.whisper_cli and not Path(s.whisper_cli).exists():
+        configured = Path(s.whisper_cli).expanduser() if s.whisper_cli else None
+        if configured and not configured.exists():
             errors.append(f"whisper-cli path does not exist: {s.whisper_cli}")
+        elif not configured and not transcription.find_default_tool("whisper-cli.exe"):
+            errors.append("whisper-cli.exe not found in PATH or settings")
         return errors

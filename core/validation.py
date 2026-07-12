@@ -171,6 +171,96 @@ def validate_shots(project: Project, scene_by_index: dict[int, dict], transcript
     return issues
 
 
+def _card_route(card: dict) -> str:
+    route = str(card.get("route", "") or "").lower()
+    vt = str(card.get("visual_type", "") or "").lower()
+    if route in {"stock", "kenburns", "image", "image+video"}:
+        return route
+    if vt == "stock_video":
+        return "stock"
+    if vt == "still_kenburns":
+        return "kenburns"
+    if vt == "ai_image":
+        return "image"
+    return "image+video" if card.get("video_model") else "image"
+
+
+def _expected_visual_type(route: str) -> str:
+    return {
+        "stock": "stock_video",
+        "kenburns": "still_kenburns",
+        "image": "ai_image",
+        "image+video": "ai_image_then_i2v",
+    }.get(route, "")
+
+
+def _path_exists(value: str) -> bool:
+    return bool(value) and Path(value).exists()
+
+
+def validate_asset_board(project: Project) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    cards = _read_json(project.file_path("asset_board"))
+    if not cards:
+        return issues
+
+    for raw in cards:
+        card = raw if isinstance(raw, dict) else {}
+        shot = card.get("shot_index", "?")
+        item = f"card {shot}"
+        route = _card_route(card)
+        visual_type = str(card.get("visual_type", "") or "").lower()
+        expected_vt = _expected_visual_type(route)
+        status = str(card.get("status", "") or "").lower()
+        excluded = status in {"skipped", "rejected"}
+        assigned_media = str(card.get("assigned_media", "") or "")
+        image_output = str(card.get("image_output", "") or "")
+        video_output = str(card.get("video_output", "") or "")
+
+        if expected_vt and visual_type != expected_vt:
+            issues.append(_issue(
+                "warning", "asset_board", "route не совпадает с visual_type", item,
+                route=route, visual_type=visual_type, expected_visual_type=expected_vt,
+            ))
+
+        if assigned_media and not _path_exists(assigned_media):
+            issues.append(_issue("error", "asset_board", "assigned_media указывает на несуществующий файл", item, path=assigned_media))
+        if image_output and not _path_exists(image_output):
+            issues.append(_issue("error", "asset_board", "image_output указывает на несуществующий файл", item, path=image_output))
+        if video_output and not _path_exists(video_output):
+            issues.append(_issue("error", "asset_board", "video_output указывает на несуществующий файл", item, path=video_output))
+
+        if not excluded and not assigned_media:
+            if route in {"stock", "kenburns", "image+video"} and not video_output:
+                level = "error" if status == "generated" else "warning"
+                issues.append(_issue(level, "asset_board", "Маршрут требует video_output, но видео отсутствует", item, route=route, status=status))
+            if route == "image" and not image_output:
+                level = "error" if status == "generated" else "warning"
+                issues.append(_issue(level, "asset_board", "Маршрут image требует image_output, но картинка отсутствует", item, route=route, status=status))
+
+        if route == "image+video" and image_output and not video_output and not excluded:
+            issues.append(_issue("warning", "asset_board", "Есть только картинка для AI-video кадра — экспорт не будет считать кадр готовым", item))
+
+        if route == "stock" and status == "generated":
+            if not str(card.get("source_url", "") or "").strip():
+                issues.append(_issue("warning", "asset_board", "Сток-кадр сгенерирован без source_url", item))
+            if not str(card.get("source_license", "") or "").strip():
+                issues.append(_issue("warning", "asset_board", "Сток-кадр сгенерирован без зафиксированной лицензии", item))
+            try:
+                score = float(card.get("stock_score", 0) or 0)
+            except (TypeError, ValueError):
+                score = 0.0
+            if score <= 0:
+                issues.append(_issue("warning", "asset_board", "Сток-кадр сгенерирован без stock_score", item))
+
+        if card.get("text_overlay_enabled"):
+            overlay_text = str(card.get("text_overlay_text", "") or card.get("screen_text", "") or "").strip()
+            if not overlay_text:
+                issues.append(_issue("warning", "asset_board", "Overlay включён, но текст пустой", item))
+
+    return issues
+
+
 def summarize(issues: Iterable[ValidationIssue]) -> dict:
     counts = {"error": 0, "warning": 0, "info": 0}
     for issue in issues:
@@ -211,6 +301,7 @@ def validate_project(project: Project) -> dict:
     scene_issues, scene_by_index = validate_scenes(project, transcript_end)
     issues.extend(scene_issues)
     issues.extend(validate_shots(project, scene_by_index, transcript_end))
+    issues.extend(validate_asset_board(project))
 
     payload = {
         "project": project.name,
@@ -225,6 +316,27 @@ def write_validation_report(project: Project) -> dict:
     if not project.dir.exists():
         raise FileNotFoundError(f"Project directory does not exist: {project.dir}")
     report = validate_project(project)
-    path = project.file_path("validation_report")
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    project.write_json("validation_report", report)
+    upstream = project.stage_states()
+    # A report over stale planning artifacts is still useful to the user, but it
+    # must not turn the DAG green. Master export will surface the stale stage and
+    # require rebuilding it first.
+    if project.stage_dependencies_current("validation"):
+        project.mark_stage_completed(
+            "validation",
+            report,
+            input_hash=project.content_hash({
+                stage: {
+                    "hash": state.get("hash"),
+                    "revision": state.get("revision", 0),
+                }
+                for stage, state in upstream.items()
+                if stage in ("transcript", "scenes", "shots", "assets", "timeline")
+            }),
+        )
+    else:
+        project.invalidate_stage(
+            "validation",
+            reason="validation dependencies are not current",
+        )
     return report

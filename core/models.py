@@ -1,6 +1,23 @@
+import os
 import re
+import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
+
+
+def legacy_asset_card_id(
+    project_dir: Path | str,
+    card_index: int,
+    shot_index: int | str = "",
+) -> str:
+    """Return a repeatable UUID for a legacy board row missing ``card_id``.
+
+    It remains stable across read-only loads and is written into the board on
+    the next normal save.  Once persisted, moving a project does not change it.
+    """
+    project_key = os.path.normcase(str(Path(project_dir).resolve()))
+    seed = f"{project_key}|asset-card|{int(card_index)}|shot:{shot_index}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
 @dataclass
@@ -40,6 +57,11 @@ class Shot:
     motion: str
     priority: str
     fallback: str
+    # Short English ambient-sound phrase for the SFX generator (Woosh).
+    sfx_query: str = ""
+    # Reference-insert route: entity to resolve and preferred source.
+    reference_query: str = ""
+    reference_source: str = "wikipedia"
 
 
 @dataclass
@@ -79,6 +101,31 @@ class AssetCard:
     text_overlay_y: float = 86.0
     text_overlay_enter: str = "fade"
     text_overlay_exit: str = "fade"
+    source_url: str = ""
+    source_license: str = ""
+    source_author: str = ""
+    stock_score: float = 0.0
+    # SFX layer (optional): ambient-sound query and the generated audio file.
+    sfx_query: str = ""
+    sfx_output: str = ""
+    # Shot importance from the LLM (high/medium/low): drives the LTX draft-mode
+    # decision (hero shots keep the full two-pass render).
+    priority: str = "medium"
+    # Vision-QA score of the generated image (0..1; -1 = not checked).
+    qa_score: float = -1.0
+    # True when the current video_output was rendered with the fast draft LTX
+    # workflow (so the board can flag it and offer a full "Финал" re-render).
+    ltx_draft: bool = False
+    # Reference-insert route (Wikipedia / arXiv): entity to look up + resolved
+    # page/credit filled at generation time.
+    reference_query: str = ""
+    reference_source: str = "wikipedia"
+    reference_url: str = ""
+    reference_output: str = ""
+    reference_credit: str = ""
+    # Stable identity survives board reordering and shot insertions.  Indices are
+    # presentation/order metadata and must not be used as provenance keys.
+    card_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 def slugify(text: str) -> str:

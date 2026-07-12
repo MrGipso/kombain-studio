@@ -35,7 +35,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QUrl
 
-import content_pipeline_gui as pipeline
+from core import board as board_store
+from core import comfy_generation
+from core import lm as lm_client
+from core.config import load_settings, save_settings
+from core.models import AssetCard
 
 
 ROOT = Path(__file__).resolve().parent
@@ -67,11 +71,12 @@ class AssetWorker(QThread):
 
     def run(self):
         try:
-            cards = pipeline.load_asset_board(self.project_dir)
+            cards = board_store.load_asset_board(self.project_dir)
             card = cards[self.card_index]
             card.status = "generating"
-            pipeline.write_asset_board(self.project_dir, cards)
+            board_store.write_asset_board(self.project_dir, cards)
             self.log.emit(f"Generating shot {card.shot_index:03d} via {self.mode}")
+            settings = load_settings()
 
             if self.mode in {"route", "graphic"}:
                 card.route = "image+video"
@@ -79,53 +84,73 @@ class AssetWorker(QThread):
                 card.remotion_template = ""
                 card.remotion_output = ""
                 if not card.image_model:
-                    card.image_model = pipeline.preferred_realistic_image_model("Auto")
+                    card.image_model = board_store.preferred_realistic_image_model("Auto")
                 if not card.video_model:
                     card.video_model = "ltx2.3_i2v"
                 generated_any = False
                 if card.image_model:
-                    image_path = pipeline.generate_comfy_image(self.comfy_url, self.project_dir, card)
+                    image_path = comfy_generation.generate_comfy_image(
+                        self.comfy_url,
+                        self.project_dir,
+                        card,
+                        settings=settings,
+                    )
                     card.image_output = str(image_path)
                     generated_any = True
                 if card.video_model:
-                    video_path = pipeline.generate_comfy_ltx_video(self.comfy_url, self.project_dir, card)
+                    video_path = comfy_generation.generate_comfy_ltx_video(
+                        self.comfy_url,
+                        self.project_dir,
+                        card,
+                        settings=settings,
+                    )
                     card.video_output = str(video_path)
                     generated_any = True
                 if not generated_any:
                     raise RuntimeError("AI video generation needs image and video models.")
             elif self.mode == "image":
-                image_path = pipeline.generate_comfy_image(self.comfy_url, self.project_dir, card)
+                image_path = comfy_generation.generate_comfy_image(
+                    self.comfy_url,
+                    self.project_dir,
+                    card,
+                    settings=settings,
+                )
                 card.image_output = str(image_path)
             elif self.mode == "video":
-                video_path = pipeline.generate_comfy_ltx_video(self.comfy_url, self.project_dir, card)
+                video_path = comfy_generation.generate_comfy_ltx_video(
+                    self.comfy_url,
+                    self.project_dir,
+                    card,
+                    settings=settings,
+                )
                 card.video_output = str(video_path)
             else:
                 raise RuntimeError(f"Unknown mode: {self.mode}")
 
             card.status = "generated"
             card.approved = False
-            pipeline.write_asset_board(self.project_dir, cards)
+            board_store.write_asset_board(self.project_dir, cards)
             self.log.emit(f"Shot {card.shot_index:03d} generated")
             self.done.emit()
         except Exception as exc:
             try:
-                cards = pipeline.load_asset_board(self.project_dir)
+                cards = board_store.load_asset_board(self.project_dir)
                 if 0 <= self.card_index < len(cards):
                     card = cards[self.card_index]
                     card.status = "needs_review"
                     card.notes = (card.notes + "\n" if card.notes else "") + f"Generation error: {exc}"
-                    pipeline.write_asset_board(self.project_dir, cards)
+                    board_store.write_asset_board(self.project_dir, cards)
             except Exception:
                 pass
             self.failed.emit(str(exc))
 
-    def render_remotion(self, card: pipeline.AssetCard, cards: list[pipeline.AssetCard]):
+    def render_remotion(self, card: AssetCard, cards: list[AssetCard]):
         raise RuntimeError("Remotion rendering was removed; use AI video generation instead.")
 
-    def render_motion_text(self, card: pipeline.AssetCard, cards: list[pipeline.AssetCard]):
+    def render_motion_text(self, card: AssetCard, cards: list[AssetCard]):
         raise RuntimeError("Remotion motion-text rendering was removed; use AI video generation instead.")
 
-    def render_remotion_job(self, card: pipeline.AssetCard, cards: list[pipeline.AssetCard], job: dict):
+    def render_remotion_job(self, card: AssetCard, cards: list[AssetCard], job: dict):
         raise RuntimeError("Remotion rendering was removed; use AI video generation instead.")
 
 
@@ -143,10 +168,10 @@ class LmUnloadWorker(QThread):
     def run(self):
         try:
             self.log.emit(f"LM Studio unload: model={self.lm_model}, reason={self.reason}")
-            result = pipeline.unload_lm_studio_model(self.lm_url, self.lm_model)
+            result = lm_client.unload_model(self.lm_url, self.lm_model)
             self.done.emit(json.dumps(result, ensure_ascii=False))
         except Exception as exc:
-            self.failed.emit(pipeline.explain_lm_studio_error(exc))
+            self.failed.emit(lm_client.explain_error(exc))
 
 
 class ContentPipelineQt(QMainWindow):
@@ -155,7 +180,7 @@ class ContentPipelineQt(QMainWindow):
         self.setWindowTitle("Content Pipeline - Qt Production Studio")
         self.resize(1420, 900)
         self.project_dir: Path | None = None
-        self.asset_cards: list[pipeline.AssetCard] = []
+        self.asset_cards: list[AssetCard] = []
         self.current_card_index: int | None = None
         self.worker: AssetWorker | None = None
         self.lm_unload_worker: LmUnloadWorker | None = None
@@ -435,39 +460,27 @@ class ContentPipelineQt(QMainWindow):
         self.stack.setCurrentIndex(index)
 
     def load_settings(self):
-        if not pipeline.SETTINGS_PATH.exists():
-            return
-        try:
-            settings = json.loads(pipeline.SETTINGS_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            return
-        self.lm_url.setText(settings.get("lm_url", self.lm_url.text()))
-        self.lm_model.setText(settings.get("lm_model", self.lm_model.text()))
-        self.lm_context.setText(str(settings.get("lm_context", self.lm_context.text())))
-        self.lm_auto_unload.setChecked(bool(settings.get("lm_auto_unload", self.lm_auto_unload.isChecked())))
-        self.lm_unload_delay.setText(str(settings.get("lm_unload_delay", self.lm_unload_delay.text())))
-        self.comfy_url.setText(settings.get("comfy_url", self.comfy_url.text()))
-        self.asset_comfy_url.setText(settings.get("comfy_url", self.asset_comfy_url.text()))
+        settings = load_settings()
+        self.lm_url.setText(settings.lm_url or self.lm_url.text())
+        self.lm_model.setText(settings.lm_model or self.lm_model.text())
+        self.lm_context.setText(str(settings.lm_context or self.lm_context.text()))
+        self.lm_auto_unload.setChecked(bool(settings.lm_auto_unload))
+        self.lm_unload_delay.setText(str(settings.lm_unload_delay))
+        self.comfy_url.setText(settings.comfy_url or self.comfy_url.text())
+        self.asset_comfy_url.setText(settings.comfy_url or self.asset_comfy_url.text())
 
     def save_settings(self):
-        settings = {}
-        if pipeline.SETTINGS_PATH.exists():
-            try:
-                settings = json.loads(pipeline.SETTINGS_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                settings = {}
-        settings.update(
-            {
-                "lm_url": self.lm_url.text().strip(),
-                "lm_model": self.lm_model.text().strip(),
-                "lm_context": self.lm_context.text().strip(),
-                "lm_auto_unload": self.lm_auto_unload.isChecked(),
-                "lm_unload_delay": self.lm_unload_delay.text().strip(),
-                "comfy_url": self.comfy_url.text().strip() or self.asset_comfy_url.text().strip(),
-            }
+        settings = load_settings()
+        settings.lm_url = self.lm_url.text().strip()
+        settings.lm_model = self.lm_model.text().strip()
+        settings.lm_context = self.lm_context.text().strip()
+        settings.lm_auto_unload = self.lm_auto_unload.isChecked()
+        settings.lm_unload_delay = self.lm_unload_delay.text().strip()
+        settings.comfy_url = (
+            self.comfy_url.text().strip() or self.asset_comfy_url.text().strip()
         )
-        self.asset_comfy_url.setText(settings["comfy_url"])
-        pipeline.SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.asset_comfy_url.setText(settings.comfy_url)
+        save_settings(settings)
         self.append_log("Settings saved")
 
     def lm_unload_delay_seconds(self) -> int:
@@ -531,7 +544,7 @@ class ContentPipelineQt(QMainWindow):
         if not (project_dir / "06_asset_board.json").exists():
             self.rebuild_asset_board()
         else:
-            self.asset_cards = pipeline.load_asset_board(project_dir)
+            self.asset_cards = board_store.load_asset_board(project_dir)
             self.populate_table()
 
     def rebuild_asset_board(self):
@@ -539,8 +552,8 @@ class ContentPipelineQt(QMainWindow):
             QMessageBox.warning(self, "Нет проекта", "Сначала откройте проект.")
             return
         try:
-            self.asset_cards = pipeline.build_asset_board(self.project_dir)
-            pipeline.write_asset_board(self.project_dir, self.asset_cards)
+            self.asset_cards = board_store.build_asset_board(self.project_dir)
+            board_store.write_asset_board(self.project_dir, self.asset_cards)
             self.populate_table()
             self.append_log(f"Asset board rebuilt: {len(self.asset_cards)} shots")
         except Exception as exc:
@@ -588,7 +601,7 @@ class ContentPipelineQt(QMainWindow):
             self.current_card_index = index
             self.show_card(self.asset_cards[index])
 
-    def show_card(self, card: pipeline.AssetCard):
+    def show_card(self, card: AssetCard):
         self.card_title.setText(
             f"Shot {card.shot_index:03d} | Scene {card.scene_index:02d} | {card.start}-{card.end} | {card.route}"
         )
@@ -628,7 +641,7 @@ class ContentPipelineQt(QMainWindow):
         card.video_prompt = self.video_prompt.toPlainText().strip()
         card.notes = self.notes.toPlainText().strip()
         card.approved = card.status == "approved"
-        pipeline.write_asset_board(self.project_dir, self.asset_cards)
+        board_store.write_asset_board(self.project_dir, self.asset_cards)
         row = self.current_card_index
         self.populate_table()
         self.shot_table.selectRow(row)
@@ -666,7 +679,7 @@ class ContentPipelineQt(QMainWindow):
         if not self.project_dir:
             return
         row = self.current_card_index
-        self.asset_cards = pipeline.load_asset_board(self.project_dir)
+        self.asset_cards = board_store.load_asset_board(self.project_dir)
         self.populate_table()
         if row is not None and row < self.shot_table.rowCount():
             self.shot_table.selectRow(row)

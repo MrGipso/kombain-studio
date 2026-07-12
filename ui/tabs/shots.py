@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import Scene, Shot
+from core import board as board_store
 from core.project import Project
 from ui.workers import ShotListWorker
 
@@ -210,13 +211,12 @@ class ShotsTab(QWidget):
     def rebuild_asset_board(self):
         if not self.project:
             return
-        import content_pipeline_gui as pipeline
         try:
-            cards = pipeline.build_asset_board(self.project.dir)
+            cards = board_store.build_asset_board(self.project.dir)
         except FileNotFoundError as e:
             QMessageBox.warning(self, "Нет данных", str(e) + "\n\nСначала создайте shot list (Generate shot list → Via LM Studio).")
             return
-        pipeline.write_asset_board(self.project.dir, cards)
+        board_store.write_asset_board(self.project.dir, cards)
         from core.models import AssetCard
         core_cards = [AssetCard(**c.__dict__) for c in cards]
         if hasattr(self, "_board_callback"):

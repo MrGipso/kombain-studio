@@ -179,13 +179,6 @@ class ScenesTab(QWidget):
         if not self.project:
             return
 
-        from core import pipeline as pipeline_module
-        import content_pipeline_gui as old_pipeline
-
-        pipeline_scenes = [
-            old_pipeline.Scene(**s.__dict__) for s in self.scenes
-        ]
-
         # Create edit plan CSV
         import csv
         csv_path = self.project.file_path("edit_plan")

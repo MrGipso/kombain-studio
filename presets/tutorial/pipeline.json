@@ -123,15 +123,15 @@
   "comfy_workflows": {
     "t2i_krea": {
       "path_var": "COMFY_KREA_WORKFLOW",
-      "default": "H:\\image_krea2_turbo_t2i_api.json"
+      "default": "workflows/image_krea2_turbo_t2i_api.json"
     },
     "t2i_ideogram": {
       "path_var": "COMFY_IDEOGRAM_WORKFLOW",
-      "default": "H:\\image_ideogram4_t2i_api.json"
+      "default": "workflows/image_ideogram4_t2i_api.json"
     },
     "i2v_ltx": {
       "path_var": "COMFY_LTX_WORKFLOW",
-      "default": "H:\\Animal\\video-generation\\LTX23_GGUF_i2v_api.json"
+      "default": "workflows/LTX23_GGUF_i2v_api.json"
     }
   }
 }

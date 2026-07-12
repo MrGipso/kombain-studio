@@ -24,15 +24,16 @@ class ExportWorker(QThread):
 
     def run(self):
         try:
-            export_video(
+            # export_video may version the default name (timestamp), so trust the
+            # path it returns instead of recomputing it from output_name.
+            result = export_video(
                 self.project_dir,
                 ffmpeg_path=self.ffmpeg_path,
                 log_callback=self._log,
                 output_name=self.output_name,
             )
-            output = self.project_dir / "exports" / self.output_name
-            if output.exists():
-                self.done.emit(str(output))
+            if result and Path(result).exists():
+                self.done.emit(str(result))
             else:
                 self.failed.emit("Export did not produce output file.")
         except Exception as exc:

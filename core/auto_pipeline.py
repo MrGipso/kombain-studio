@@ -6,8 +6,10 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
-import content_pipeline_gui as pipeline
-from core.generation_queue import GenerationQueue
+from core import board as board_store
+from core import lm as lm_client
+from core import scenes as scene_tools
+from core import shot_planning as shot_planner
 from core.models import AssetCard, Scene, Shot, TranscriptSegment
 from core.project import Project
 from core.validation import write_validation_report
@@ -63,7 +65,7 @@ class _SceneAnalysisWorker(QThread):
             video_style = self.settings.get("video_style") or self.project.metadata.get("video_style", "knitted")
 
             t_segments = [
-                pipeline.TranscriptSegment(s.start, s.end, s.text)
+                TranscriptSegment(s.start, s.end, s.text)
                 for s in self.segments
             ]
             embed_model = self.settings.get("lm_embed_model", "text-embedding-nomic-embed-text-v1.5")
@@ -74,7 +76,7 @@ class _SceneAnalysisWorker(QThread):
             try:
                 # PRIMARY: deterministic boundaries via embeddings; LLM only labels.
                 self.log.emit("Сегментация сцен по эмбеддингам...")
-                scenes = pipeline.build_scenes_by_embedding(
+                scenes = scene_tools.build_scenes_by_embedding(
                     t_segments, base_url, embed_model, fallback=False, ttl_seconds=ttl_seconds,
                     min_seconds=seg_min, max_seconds=seg_max, sensitivity=seg_sensitivity, target_scenes=seg_target,
                 )
@@ -82,14 +84,14 @@ class _SceneAnalysisWorker(QThread):
                 # loading the chat model for labelling.
                 if lm_unload_delay_seconds(self.settings) == 0 and embed_model:
                     try:
-                        pipeline.unload_lm_studio_model(base_url, embed_model)
+                        lm_client.unload_model(base_url, embed_model)
                         self.log.emit(f"Эмбеддинг-модель выгружена: {embed_model}")
                     except Exception as exc:
-                        self.log.emit(f"Выгрузка эмбеддинг-модели: {pipeline.explain_lm_studio_error(exc)}")
+                        self.log.emit(f"Выгрузка эмбеддинг-модели: {lm_client.explain_error(exc)}")
                 self.log.emit(f"Границы по эмбеддингам: {len(scenes)} сцен; озаглавливаю через LLM...")
                 try:
-                    pipeline.load_lm_studio_model(base_url, model, context_length)
-                    scenes = pipeline.enrich_scenes_with_lm(
+                    lm_client.load_model(base_url, model, context_length)
+                    scenes = scene_tools.enrich_scenes_with_lm(
                         scenes, base_url, model, ttl_seconds=ttl_seconds,
                         style_anchor=style_anchor,
                         character_description=character_description,
@@ -100,8 +102,8 @@ class _SceneAnalysisWorker(QThread):
             except Exception as exc:
                 self.log.emit(f"Эмбеддинги недоступны ({exc}); группирую сцены через LLM...")
                 try:
-                    pipeline.load_lm_studio_model(base_url, model, context_length)
-                    scenes = pipeline.call_lm_studio_for_segments(
+                    lm_client.load_model(base_url, model, context_length)
+                    scenes = scene_tools.call_lm_studio_for_segments(
                         base_url, model, t_segments, ttl_seconds=ttl_seconds,
                         style_anchor=style_anchor,
                         character_description=character_description,
@@ -109,7 +111,7 @@ class _SceneAnalysisWorker(QThread):
                     )
                 except Exception as exc2:
                     self.log.emit(f"LLM-группировка не удалась ({exc2}); режу по длительности")
-                    scenes = pipeline.build_scenes_from_segments(t_segments)
+                    scenes = scene_tools.build_scenes_from_segments(t_segments)
 
             core_scenes = [Scene(**s.__dict__) for s in scenes]
             scenes_data = [s.__dict__ for s in core_scenes]
@@ -135,23 +137,29 @@ class _ShotListWorker(QThread):
 
     def run(self):
         try:
-            pipeline_scenes = [pipeline.Scene(**s.__dict__) for s in self.scenes]
+            pipeline_scenes = [Scene(**s.__dict__) for s in self.scenes]
             image_pref = self.settings.get("image_model_preference", "Auto")
             base_url = self.settings.get("lm_url", "http://127.0.0.1:1234/v1")
             model = self.settings.get("lm_model", "local-model")
             seg_data = self.project.read_json("transcript_segments") or []
-            pipeline_segments = [pipeline.TranscriptSegment(**s) for s in seg_data]
+            pipeline_segments = [TranscriptSegment(**s) for s in seg_data]
             style_anchor = self.settings.get("style_anchor") or self.project.metadata.get("style_anchor", "")
             character_description = self.settings.get("character_description") or self.project.metadata.get("character_description", "")
             video_style = self.settings.get("video_style") or self.project.metadata.get("video_style", "knitted")
             self.log.emit(f"Генерирую шот-лист через LM Studio ({len(pipeline_segments)} сегментов)...")
             ttl_seconds = lm_ttl_seconds(self.settings)
-            shots = pipeline.call_lm_studio_for_shots(
+            reference_density = (
+                str(self.settings.get("reference_density", "normal") or "normal")
+                if self.settings.get("reference_enable", True)
+                else "off"
+            )
+            shots = shot_planner.call_lm_studio_for_shots(
                 base_url, model, pipeline_scenes, image_pref,
                 segments=pipeline_segments, ttl_seconds=ttl_seconds,
                 style_anchor=style_anchor,
                 character_description=character_description,
                 video_style=video_style,
+                reference_density=reference_density,
             )
 
             core_shots = [Shot(**s.__dict__) for s in shots]
@@ -159,8 +167,8 @@ class _ShotListWorker(QThread):
             self.project.write_json("shot_list", shots_data)
 
             self.log.emit("Собираю доску ассетов...")
-            cards = pipeline.build_asset_board(self.project.dir)
-            pipeline.write_asset_board(self.project.dir, cards)
+            cards = board_store.build_asset_board(self.project.dir)
+            board_store.write_asset_board(self.project.dir, cards)
             report = write_validation_report(self.project)
             self.log.emit(validation_summary_message(report))
             core_cards = [AssetCard(**c.__dict__) for c in cards]
@@ -236,10 +244,10 @@ class AutoPipeline(QObject):
             self.progress.emit("shots", "LM Studio unload skipped: model id пустой")
             return
         try:
-            result = pipeline.unload_lm_studio_model(base_url, model)
+            result = lm_client.unload_model(base_url, model)
             self.progress.emit("shots", f"LM Studio выгружена: {result}")
         except Exception as exc:
-            self.progress.emit("shots", f"LM Studio unload error: {pipeline.explain_lm_studio_error(exc)}")
+            self.progress.emit("shots", f"LM Studio unload error: {lm_client.explain_error(exc)}")
 
     def cancel(self):
         if self._scene_worker and self._scene_worker.isRunning():

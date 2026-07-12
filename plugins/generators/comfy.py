@@ -1,6 +1,4 @@
-from pathlib import Path
-
-import content_pipeline_gui as pipeline
+from core import comfy_generation
 from core.models import AssetCard
 from core.project import Project
 from plugins.generators.base import GeneratorPlugin, GeneratorResult
@@ -21,12 +19,24 @@ class ComfyGenerator(GeneratorPlugin):
         try:
             outputs = {}
             if card.image_model:
-                image_path = pipeline.generate_comfy_image(comfy_url, project.dir, card)
+                image_path = comfy_generation.generate_comfy_image(
+                    comfy_url,
+                    project.dir,
+                    card,
+                    settings=project.settings,
+                )
                 outputs["image"] = str(image_path)
+                card.image_output = str(image_path)
 
             if card.video_model:
-                video_path = pipeline.generate_comfy_ltx_video(comfy_url, project.dir, card)
+                video_path = comfy_generation.generate_comfy_ltx_video(
+                    comfy_url,
+                    project.dir,
+                    card,
+                    settings=project.settings,
+                )
                 outputs["video"] = str(video_path)
+                card.video_output = str(video_path)
 
             if not outputs:
                 return GeneratorResult(

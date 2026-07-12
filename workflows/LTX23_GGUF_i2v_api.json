@@ -1,7 +1,7 @@
 {
   "269": {
     "inputs": {
-      "image": "Krea2_turbo_00031_.png"
+      "image": "input.png"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -305,22 +305,6 @@
       "title": "Switch to Text to Video?"
     }
   },
-  "267:240": {
-    "inputs": {
-      "text": [
-        "267:266",
-        0
-      ],
-      "clip": [
-        "267:281",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "CLIP Text Encode (Prompt)"
-    }
-  },
   "267:239": {
     "inputs": {
       "frame_rate": [
@@ -469,19 +453,6 @@
       "title": "Width"
     }
   },
-  "267:247": {
-    "inputs": {
-      "text": "pc game, console game, video game, cartoon, childish, ugly",
-      "clip": [
-        "267:281",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "CLIP Text Encode (Prompt)"
-    }
-  },
   "267:231": {
     "inputs": {
       "cfg": 1,
@@ -530,15 +501,6 @@
     "class_type": "PrimitiveStringMultiline",
     "_meta": {
       "title": "Prompt"
-    }
-  },
-  "267:260": {
-    "inputs": {
-      "value": 25
-    },
-    "class_type": "PrimitiveInt",
-    "_meta": {
-      "title": "Frame Rate"
     }
   },
   "267:280": {
@@ -649,15 +611,6 @@
       "title": "KSamplerSelect"
     }
   },
-  "267:282": {
-    "inputs": {
-      "model_name": "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
-    },
-    "class_type": "LatentUpscaleModelLoader",
-    "_meta": {
-      "title": "Load Latent Upscale Model"
-    }
-  },
   "267:283": {
     "inputs": {
       "vae_name": "LTX23_audio_vae_bf16.safetensors",
@@ -689,7 +642,54 @@
       "title": "KSamplerSelect"
     }
   },
-  "267:281": {
+  "267:260": {
+    "inputs": {
+      "value": 25
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Frame Rate"
+    }
+  },
+  "267:240": {
+    "inputs": {
+      "text": [
+        "267:266",
+        0
+      ],
+      "clip": [
+        "267:309",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "267:247": {
+    "inputs": {
+      "text": "pc game, console game, video game, cartoon, childish, ugly",
+      "clip": [
+        "267:309",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "267:282": {
+    "inputs": {
+      "model_name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+    },
+    "class_type": "LatentUpscaleModelLoader",
+    "_meta": {
+      "title": "Load Latent Upscale Model"
+    }
+  },
+  "267:309": {
     "inputs": {
       "clip_name1": "gemma_3_12B_it_fp8_e4m3fn.safetensors",
       "clip_name2": "ltx-2.3_text_projection_bf16.safetensors",
