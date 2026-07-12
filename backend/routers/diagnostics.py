@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from core.config import load_settings
+from core.comfy import validate_configured_workflows
 
 router = APIRouter()
 
@@ -47,14 +48,57 @@ def _check_lm(settings) -> CheckResult:
     except Exception:
         pass
     msg = "LM Studio доступен"
-    if settings.lm_model and settings.lm_model != "local-model" and model_ids:
+    if settings.lm_model and settings.lm_model != "local-model":
         if settings.lm_model not in model_ids:
             return CheckResult(
-                target="lm", ok=True,
-                message=f"LM Studio доступен, но модель '{settings.lm_model}' не в списке",
+                target="lm", ok=False,
+                message=f"LM Studio доступен, но модель '{settings.lm_model}' не загружена",
                 detail=", ".join(model_ids[:10]),
             )
     return CheckResult(target="lm", ok=True, message=msg, detail=", ".join(model_ids[:10]))
+
+
+def _check_lm_inference(settings) -> CheckResult:
+    """Explicit active probe; may JIT-load the configured chat model."""
+    availability = _check_lm(settings)
+    if not availability.ok:
+        return availability
+    base = (settings.lm_url or "http://127.0.0.1:1234/v1").rstrip("/")
+    model = str(settings.lm_model or "").strip()
+    if not model or model == "local-model":
+        return CheckResult(
+            target="lm", ok=False, message="LM model не настроена", detail=model,
+        )
+    try:
+        payload = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply with OK"}],
+            "temperature": 0,
+            "max_tokens": 8,
+            "ttl": 5,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"{base}/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+        content = str(
+            (((data.get("choices") or [{}])[0]).get("message") or {}).get("content", "")
+        ).strip()
+        if content:
+            return CheckResult(
+                target="lm", ok=True, message="LM inference работает", detail=model,
+            )
+        return CheckResult(
+            target="lm", ok=False, message="LM вернула пустой ответ", detail=model,
+        )
+    except Exception as exc:
+        return CheckResult(
+            target="lm", ok=False, message="LM inference недоступен", detail=str(exc),
+        )
 
 
 def _check_comfy(settings) -> CheckResult:
@@ -63,14 +107,54 @@ def _check_comfy(settings) -> CheckResult:
     if not ok:
         ok, body = _http_get(f"{base}/")
     if ok:
-        return CheckResult(target="comfy", ok=True, message="ComfyUI доступен")
+        try:
+            report = validate_configured_workflows(settings.comfy_url, settings)
+        except Exception as exc:
+            return CheckResult(
+                target="comfy",
+                ok=False,
+                message="ComfyUI доступен, но workflows не удалось проверить",
+                detail=str(exc),
+            )
+        problems = []
+        for name, item in report["workflows"].items():
+            if item.get("ok"):
+                continue
+            missing = item.get("missing_node_types") or []
+            problems.append(
+                f"{name}: {', '.join(missing) if missing else item.get('error', 'invalid workflow')}"
+            )
+        if problems:
+            return CheckResult(
+                target="comfy",
+                ok=False,
+                message="ComfyUI доступен, но workflows несовместимы",
+                detail="; ".join(problems),
+            )
+        return CheckResult(
+            target="comfy",
+            ok=True,
+            message="ComfyUI и workflows готовы",
+            detail=(
+                f"{len(report['workflows'])} workflows, "
+                f"{report['available_node_types']} node types"
+            ),
+        )
     return CheckResult(target="comfy", ok=False, message="ComfyUI недоступен", detail=body)
 
 
 def _check_binary(target: str, configured: str, default_name: str) -> CheckResult:
     candidate = configured or ""
+    allowed_names = {default_name.lower(), f"{default_name.lower()}.exe"}
     path = Path(candidate) if candidate else None
     if path and path.exists():
+        if path.name.lower() not in allowed_names:
+            return CheckResult(
+                target=target,
+                ok=False,
+                message=f"{default_name} не запущен",
+                detail=f"Ожидался бинарник {default_name}, указан: {path.name}",
+            )
         resolved = str(path)
     else:
         found = shutil.which(candidate) or shutil.which(default_name)
@@ -79,6 +163,13 @@ def _check_binary(target: str, configured: str, default_name: str) -> CheckResul
                 target=target, ok=False,
                 message=f"{default_name} не найден",
                 detail=f"Указанный путь: {candidate or '(пусто)'}",
+            )
+        if Path(found).name.lower() not in allowed_names:
+            return CheckResult(
+                target=target,
+                ok=False,
+                message=f"{default_name} не запущен",
+                detail=f"Ожидался бинарник {default_name}, найден: {Path(found).name}",
             )
         resolved = found
     try:
@@ -115,6 +206,46 @@ def _check_embed(settings) -> CheckResult:
         return CheckResult(target="embed", ok=False, message="Эмбеддинги недоступны", detail=str(exc))
 
 
+def _check_embed_available(settings) -> CheckResult:
+    """Passive model-list probe that never submits an embedding request."""
+    base = (settings.lm_url or "http://127.0.0.1:1234/v1").rstrip("/")
+    model = getattr(settings, "lm_embed_model", "") or "text-embedding-nomic-embed-text-v1.5"
+    ok, body = _http_get(f"{base}/models")
+    if not ok:
+        return CheckResult(
+            target="embed", ok=False, message="LM Studio недоступен", detail=body,
+        )
+    try:
+        data = json.loads(body)
+        model_ids = [str(item.get("id", "")) for item in data.get("data", [])]
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return CheckResult(
+            target="embed", ok=False, message="Некорректный список моделей LM Studio",
+            detail=body[:500],
+        )
+    if model not in model_ids:
+        return CheckResult(
+            target="embed", ok=False,
+            message=f"Embedding model '{model}' не загружена",
+            detail=", ".join(model_ids[:10]),
+        )
+    return CheckResult(
+        target="embed", ok=True, message="Embedding model доступна", detail=model,
+    )
+
+
+def _check_woosh(settings) -> CheckResult:
+    if not getattr(settings, "sfx_enabled", False):
+        return CheckResult(target="woosh", ok=True, message="SFX-слой выключен", detail="Включите sfx_enabled в настройках")
+    base = (getattr(settings, "woosh_url", "") or "").rstrip("/")
+    if not base:
+        return CheckResult(target="woosh", ok=False, message="Woosh URL не задан")
+    ok, body = _http_get(f"{base}/ping")
+    if ok:
+        return CheckResult(target="woosh", ok=True, message="Woosh доступен", detail=base)
+    return CheckResult(target="woosh", ok=False, message="Woosh недоступен", detail=body)
+
+
 def _check_whisper(settings) -> CheckResult:
     cli = settings.whisper_cli or ""
     model = settings.whisper_model or ""
@@ -143,4 +274,6 @@ async def run_check(target: str):
         return _check_binary("ffmpeg", settings.ffmpeg, "ffmpeg")
     if target == "whisper":
         return _check_whisper(settings)
+    if target == "woosh":
+        return _check_woosh(settings)
     return CheckResult(target=target, ok=False, message=f"Неизвестная проверка: {target}")

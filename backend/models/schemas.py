@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -60,6 +61,9 @@ class Shot(BaseModel):
     motion: str = ""
     priority: str = ""
     fallback: str = ""
+    sfx_query: str = ""
+    reference_query: str = ""
+    reference_source: str = "wikipedia"
 
 
 class AssetCard(BaseModel):
@@ -98,6 +102,81 @@ class AssetCard(BaseModel):
     text_overlay_y: float = 86.0
     text_overlay_enter: str = "fade"
     text_overlay_exit: str = "fade"
+    source_url: str = ""
+    source_license: str = ""
+    source_author: str = ""
+    stock_score: float = 0.0
+    sfx_query: str = ""
+    sfx_output: str = ""
+    priority: str = "medium"
+    qa_score: float = -1.0
+    ltx_draft: bool = False
+    # Reference-insert route (Wikipedia / arXiv): the LLM names an entity, the
+    # backend resolves it to a real page, screenshots it and slides it in over a
+    # blurred backdrop. reference_query/source come from the planner; the rest are
+    # filled in at generation time.
+    reference_query: str = ""
+    reference_source: str = "wikipedia"
+    reference_url: str = ""
+    reference_output: str = ""
+    reference_credit: str = ""
+    card_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+
+class AssetVariant(BaseModel):
+    """One immutable media snapshot plus the inputs that produced it."""
+
+    id: str
+    created_at: str
+    card_id: str = ""
+    card_index: int
+    shot_index: int
+    source: str
+    mode: str
+    output_field: Literal[
+        "image_output",
+        "video_output",
+        "reference_output",
+        "remotion_output",
+        "assigned_media",
+    ]
+    file_path: str
+    file_hash: str
+    file_size: int
+    media_type: str
+    parent_id: str | None = None
+    prompt: str = ""
+    query: str = ""
+    model: str = ""
+    settings_hash: str = ""
+    model_hash: str = ""
+    workflow: str = ""
+    workflow_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    selected: bool = False
+
+
+class AssetVariantSelections(BaseModel):
+    image_output: str | None = None
+    video_output: str | None = None
+    reference_output: str | None = None
+    remotion_output: str | None = None
+    assigned_media: str | None = None
+
+
+class AssetVariantList(BaseModel):
+    card_id: str = ""
+    card_index: int
+    shot_index: int
+    selections: AssetVariantSelections
+    variants: list[AssetVariant] = Field(default_factory=list)
+
+
+class AssetVariantSelectResult(BaseModel):
+    ok: bool = True
+    card: AssetCard
+    variant: AssetVariant
+    selections: AssetVariantSelections
 
 
 class Settings(BaseModel):
@@ -113,10 +192,22 @@ class Settings(BaseModel):
     whisper_cli: str = ""
     whisper_model: str = ""
     ffmpeg: str = ""
-    whisper_language: str = "ru"
+    whisper_language: str = "auto"
     output_base: str = ""
     lm_auto_unload: bool = True
     lm_unload_delay: str = "0"
+    pexels_api_key: str = ""
+    pixabay_api_key: str = ""
+    lm_vision_model: str = ""
+    stock_score_threshold: float = 0.6
+    stock_floor: float = 0.4
+    stock_retry_queries: int = 1
+    stock_max_seconds: int = 0
+    stock_candidates: int = 20
+    stock_uniquify: bool = True
+    stock_mirror: bool = False
+    reference_enable: bool = True
+    reference_density: str = "normal"
 
 
 class ValidationIssue(BaseModel):
@@ -139,12 +230,51 @@ class ExportResult(BaseModel):
     error: str | None = None
 
 
+ExportMode = Literal["draft", "master"]
+
+
+class ExportGateReason(BaseModel):
+    """One stable, machine-readable reason why a Master export is blocked."""
+
+    code: str
+    message: str
+    card_index: int | None = None
+    shot_index: int | None = None
+    item: str = ""
+    details: dict[str, Any] | None = None
+
+
+class ExportGateSummary(BaseModel):
+    blockers: int = 0
+    validation_errors: int = 0
+    cards_total: int = 0
+    cards_required: int = 0
+    cards_ready: int = 0
+    cards_excluded: int = 0
+
+
+class ExportGateReport(BaseModel):
+    mode: ExportMode
+    allowed: bool
+    summary: ExportGateSummary
+    reasons: list[ExportGateReason] = Field(default_factory=list)
+
+
+class MasterManifestInfo(BaseModel):
+    path: str
+    sha256: str
+    size: int
+    manifest_id: str
+    created_at: str
+    output_sha256: str
+
+
 class QueueStatus(BaseModel):
     running: bool
     queued: int
     completed: int
     failed: int
-    items: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PipelineStepStatus(BaseModel):
@@ -182,7 +312,7 @@ class TimelineMedia(BaseModel):
     voice_url: str = ""
     export_path: str = ""
     export_url: str = ""
-    items: list[TimelineMediaItem] = []
+    items: list[TimelineMediaItem] = Field(default_factory=list)
 
 
 class SSELog(BaseModel):

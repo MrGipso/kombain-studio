@@ -12,21 +12,23 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.config import load_settings
-from core.project import open_project
+from core import comfy_generation
+from core import lm as lm_client
+from core.project import atomic_write_text, open_project, safe_project_path
 from core.export import find_music_track
 
-import content_pipeline_gui as cpg
 from backend.services.sse_manager import SSEManager
+from backend.services import jobs
 
 router = APIRouter()
 sse = SSEManager()
 
 
 def _resolve_project(project_id: str):
-    path = Path(project_id)
-    if not path.is_absolute():
-        output_base = Path(load_settings().output_base or "projects")
-        path = output_base / project_id
+    try:
+        path = safe_project_path(project_id, load_settings().output_base)
+    except ValueError:
+        raise HTTPException(404, "Project not found")
     project = open_project(path, load_settings())
     if not project:
         raise HTTPException(404, "Project not found")
@@ -57,7 +59,7 @@ def _read_tracks_meta(project) -> dict:
 def _write_tracks_meta(project, meta: dict) -> None:
     p = _tracks_meta_path(project)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(p, json.dumps(meta, ensure_ascii=False, indent=2))
 
 
 def _list_tracks(project) -> list[dict]:
@@ -120,15 +122,22 @@ class MusicSettingsRequest(BaseModel):
 
 @router.put("/{project_id:str}/music/settings")
 async def update_music_settings(project_id: str, req: MusicSettingsRequest):
-    project = _resolve_project(project_id)
-    project.metadata["music_tags"] = req.music_tags
-    project.metadata["music_bpm"] = int(req.music_bpm)
-    project.metadata["music_duration"] = int(req.music_duration)
-    project.metadata["music_enabled"] = bool(req.music_enabled)
-    project.metadata["music_volume_db"] = float(req.music_volume_db)
-    project.metadata["music_duck"] = bool(req.music_duck)
-    project.save_meta()
-    return _music_payload(project)
+    resolved = _resolve_project(project_id)
+    try:
+        with jobs.project_mutation(resolved.dir.name, "Изменение настроек музыки"):
+            project = _resolve_project(project_id)
+            project.metadata["music_tags"] = req.music_tags
+            project.metadata["music_bpm"] = int(req.music_bpm)
+            project.metadata["music_duration"] = int(req.music_duration)
+            project.metadata["music_enabled"] = bool(req.music_enabled)
+            project.metadata["music_volume_db"] = float(req.music_volume_db)
+            project.metadata["music_duck"] = bool(req.music_duck)
+            project.save_meta()
+            project.invalidate_stage("timeline", reason="music settings changed")
+            payload = _music_payload(project)
+    except jobs.ProjectBusy as exc:
+        raise HTTPException(409, str(exc))
+    return payload
 
 
 def _lm_unload_delay_seconds(settings) -> int | None:
@@ -154,7 +163,7 @@ def _unload_lm_after_brief(settings) -> None:
     if not model or model == "local-model":
         return
     try:
-        cpg.unload_lm_studio_model(settings.lm_url or "http://127.0.0.1:1234/v1", model)
+        lm_client.unload_model(settings.lm_url or lm_client.DEFAULT_URL, model)
     except Exception:
         pass
 
@@ -182,7 +191,7 @@ def _lm_music_brief(base_url: str, model: str, notes: list[str], topic: str, ttl
         ],
         "temperature": 0.4,
     }
-    cpg.add_lm_ttl(payload, ttl_seconds)
+    lm_client.add_ttl(payload, ttl_seconds)
     request = urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -204,64 +213,102 @@ def _lm_music_brief(base_url: str, model: str, notes: list[str], topic: str, ttl
 
 @router.post("/{project_id:str}/music/brief")
 async def generate_music_brief(project_id: str):
-    project = _resolve_project(project_id)
-    scenes = project.read_json("scenes") or []
-    notes = [str(s.get("music_note", "")).strip() for s in scenes]
-    topic = project.name
+    resolved = _resolve_project(project_id)
     settings = load_settings()
     delay = _lm_unload_delay_seconds(settings)
     ttl = delay if delay and delay > 0 else None
+
+    def run_brief():
+        with jobs.project_job(resolved.dir.name, "Музыкальный бриф", resource="llm") as cancel_event:
+            try:
+                project = _resolve_project(project_id)
+                scenes = project.read_json("scenes") or []
+                notes = [str(s.get("music_note", "")).strip() for s in scenes]
+                jobs.check(cancel_event)
+                brief = _lm_music_brief(
+                    settings.lm_url or "http://127.0.0.1:1234/v1",
+                    settings.lm_model or "local-model", notes, project.name, ttl,
+                )
+                jobs.check(cancel_event)
+                # Metadata and DAG invalidation are part of this long job's
+                # commit.  Releasing project_job before these writes allowed a
+                # short UI mutation to interleave and be overwritten.
+                if brief["tags"]:
+                    project.metadata["music_tags"] = brief["tags"]
+                project.metadata["music_bpm"] = brief["bpm"]
+                project.save_meta()
+                project.invalidate_stage("timeline", reason="music brief changed")
+                return _music_payload(project)
+            finally:
+                _unload_lm_after_brief(settings)
     try:
-        brief = await asyncio.to_thread(
-            _lm_music_brief, settings.lm_url or "http://127.0.0.1:1234/v1",
-            settings.lm_model or "local-model", notes, topic, ttl,
-        )
+        payload = await asyncio.to_thread(run_brief)
+    except (jobs.ProjectBusy, jobs.JobCancelled) as exc:
+        raise HTTPException(409, str(exc))
     except Exception as exc:
         raise HTTPException(500, f"Не удалось собрать бриф музыки: {exc}")
-    finally:
-        # Unload the LLM from VRAM (same policy as scene analysis) before the
-        # user moves on to GPU-heavy ACE-Step generation in ComfyUI.
-        await asyncio.to_thread(_unload_lm_after_brief, settings)
-    if brief["tags"]:
-        project.metadata["music_tags"] = brief["tags"]
-    project.metadata["music_bpm"] = brief["bpm"]
-    project.save_meta()
-    return _music_payload(project)
+    return payload
 
 
 @router.post("/{project_id:str}/music/generate")
 async def generate_music(project_id: str):
-    project = _resolve_project(project_id)
-    tags = str(project.metadata.get("music_tags", "")).strip()
-    bpm = int(project.metadata.get("music_bpm", 90) or 90)
-    duration = int(project.metadata.get("music_duration", 90) or 90)
-    comfy_url = project.settings.comfy_url or "http://127.0.0.1:8188"
+    resolved = _resolve_project(project_id)
+    project_key = resolved.dir.name
 
     async def event_stream():
-        sub_id, q = sse.subscribe(project.dir.name)
+        sub_id, q = sse.subscribe(project_key)
         loop = asyncio.get_event_loop()
 
         def log(msg: str):
-            loop.call_soon_threadsafe(sse.emit, project.dir.name, "log", {"message": msg})
+            loop.call_soon_threadsafe(sse.emit, project_key, "log", {"message": msg})
 
         def run_sync():
             try:
-                log(f"Генерация музыки (ACE-Step): {duration}s, {bpm} bpm...")
-                track = cpg.generate_comfy_music(comfy_url, project.dir, tags, bpm=bpm, seconds=duration)
-                # Record the track in the library and make it the active one.
-                tmeta = _read_tracks_meta(project)
-                tmeta[track.name] = {
-                    "tags": tags, "bpm": bpm, "duration": duration, "created": int(time.time()),
-                }
-                _write_tracks_meta(project, tmeta)
-                project.metadata["music_selected"] = track.name
-                project.save_meta()
+                with jobs.project_job(project_key, "Генерация музыки", resource="comfy") as cancel_event:
+                    project = _resolve_project(project_id)
+                    tags = str(project.metadata.get("music_tags", "")).strip()
+                    bpm = int(project.metadata.get("music_bpm", 90) or 90)
+                    duration = int(project.metadata.get("music_duration", 90) or 90)
+                    comfy_url = project.settings.comfy_url or "http://127.0.0.1:8188"
+                    log(f"Генерация музыки (ACE-Step): {duration}s, {bpm} bpm...")
+                    jobs.check(cancel_event)
+
+                    def check_cancelled() -> bool:
+                        jobs.check(cancel_event)
+                        return False
+
+                    track = comfy_generation.generate_comfy_music(
+                        comfy_url,
+                        project.dir,
+                        tags,
+                        bpm=bpm,
+                        seconds=duration,
+                        cancel_check=check_cancelled,
+                        settings=project.settings,
+                    )
+                    jobs.check(cancel_event)
+                    # Record the track in the library and make it the active one.
+                    tmeta = _read_tracks_meta(project)
+                    tmeta[track.name] = {
+                        "tags": tags, "bpm": bpm, "duration": duration, "created": int(time.time()),
+                    }
+                    _write_tracks_meta(project, tmeta)
+                    project.metadata["music_selected"] = track.name
+                    project.save_meta()
+                    project.invalidate_stage("timeline", reason="music track generated")
                 loop.call_soon_threadsafe(
-                    sse.emit, project.dir.name, "done",
+                    sse.emit, project_key, "done",
                     {"track_path": str(track), "track_url": _media_url(track), "filename": track.name},
                 )
+            except jobs.JobCancelled as exc:
+                loop.call_soon_threadsafe(
+                    sse.emit,
+                    project_key,
+                    "error",
+                    {"message": str(exc), "code": "cancelled"},
+                )
             except Exception as exc:
-                loop.call_soon_threadsafe(sse.emit, project.dir.name, "error", {"message": str(exc)})
+                loop.call_soon_threadsafe(sse.emit, project_key, "error", {"message": str(exc)})
 
         loop.run_in_executor(None, run_sync)
         async for msg in sse.generator(sub_id):
@@ -276,13 +323,20 @@ class SelectTrackRequest(BaseModel):
 
 @router.put("/{project_id:str}/music/select")
 async def select_track(project_id: str, req: SelectTrackRequest):
-    project = _resolve_project(project_id)
-    name = Path(req.filename).name  # guard against path traversal
-    if not (project.dir / "music" / name).exists():
-        raise HTTPException(404, "Track not found")
-    project.metadata["music_selected"] = name
-    project.save_meta()
-    return _music_payload(project)
+    resolved = _resolve_project(project_id)
+    try:
+        with jobs.project_mutation(resolved.dir.name, "Выбор музыкального трека"):
+            project = _resolve_project(project_id)
+            name = Path(req.filename).name  # guard against path traversal
+            if not (project.dir / "music" / name).exists():
+                raise HTTPException(404, "Track not found")
+            project.metadata["music_selected"] = name
+            project.save_meta()
+            project.invalidate_stage("timeline", reason="selected music track changed")
+            payload = _music_payload(project)
+    except jobs.ProjectBusy as exc:
+        raise HTTPException(409, str(exc))
+    return payload
 
 
 class TrimRequest(BaseModel):
@@ -293,31 +347,45 @@ class TrimRequest(BaseModel):
 
 @router.put("/{project_id:str}/music/trim")
 async def set_trim(project_id: str, req: TrimRequest):
-    project = _resolve_project(project_id)
-    name = Path(req.filename).name
-    if not (project.dir / "music" / name).exists():
-        raise HTTPException(404, "Track not found")
-    tmeta = _read_tracks_meta(project)
-    info = dict(tmeta.get(name, {}))
-    info["trim_start"] = max(0.0, float(req.trim_start))
-    info["trim_end"] = max(0.0, float(req.trim_end))
-    tmeta[name] = info
-    _write_tracks_meta(project, tmeta)
-    return _music_payload(project)
+    resolved = _resolve_project(project_id)
+    try:
+        with jobs.project_mutation(resolved.dir.name, "Обрезка музыкального трека"):
+            project = _resolve_project(project_id)
+            name = Path(req.filename).name
+            if not (project.dir / "music" / name).exists():
+                raise HTTPException(404, "Track not found")
+            tmeta = _read_tracks_meta(project)
+            info = dict(tmeta.get(name, {}))
+            info["trim_start"] = max(0.0, float(req.trim_start))
+            info["trim_end"] = max(0.0, float(req.trim_end))
+            tmeta[name] = info
+            _write_tracks_meta(project, tmeta)
+            project.invalidate_stage("timeline", reason="music trim changed")
+            payload = _music_payload(project)
+    except jobs.ProjectBusy as exc:
+        raise HTTPException(409, str(exc))
+    return payload
 
 
 @router.delete("/{project_id:str}/music/track/{filename}")
 async def delete_track(project_id: str, filename: str):
-    project = _resolve_project(project_id)
-    name = Path(filename).name  # guard against path traversal
-    target = project.dir / "music" / name
-    if target.exists():
-        target.unlink()
-    tmeta = _read_tracks_meta(project)
-    if name in tmeta:
-        tmeta.pop(name, None)
-        _write_tracks_meta(project, tmeta)
-    if str(project.metadata.get("music_selected", "")).strip() == name:
-        project.metadata["music_selected"] = ""
-        project.save_meta()
-    return _music_payload(project)
+    resolved = _resolve_project(project_id)
+    try:
+        with jobs.project_mutation(resolved.dir.name, "Удаление музыкального трека"):
+            project = _resolve_project(project_id)
+            name = Path(filename).name  # guard against path traversal
+            target = project.dir / "music" / name
+            if target.exists():
+                target.unlink()
+            tmeta = _read_tracks_meta(project)
+            if name in tmeta:
+                tmeta.pop(name, None)
+                _write_tracks_meta(project, tmeta)
+            if str(project.metadata.get("music_selected", "")).strip() == name:
+                project.metadata["music_selected"] = ""
+                project.save_meta()
+            project.invalidate_stage("timeline", reason="music track deleted")
+            payload = _music_payload(project)
+    except jobs.ProjectBusy as exc:
+        raise HTTPException(409, str(exc))
+    return payload

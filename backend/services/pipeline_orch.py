@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-import content_pipeline_gui as pipeline
-
-from core.models import AssetCard as CoreAssetCard, Scene as CoreScene
-from core.project import Project
-from core.config import load_settings, save_settings, Settings
-from core.export import export_video
-from core.validation import write_validation_report
-
-from backend.models.schemas import AssetCard
+from core import board as board_store
+from core import lm as lm_client
+from core import scenes as scene_tools
+from core import shot_planning as shot_planner
+from core import shots as shot_tools
+from core.models import Scene, TranscriptSegment
 
 
 def _to_card(c: Any) -> dict[str, Any]:
@@ -25,56 +19,6 @@ def _to_card(c: Any) -> dict[str, Any]:
 
 def _to_cards(cards: list) -> list[dict[str, Any]]:
     return [_to_card(c) for c in cards]
-
-
-def run_transcription(
-    project_dir: Path,
-    audio_path: Path,
-    settings: dict[str, Any],
-    log_callback: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
-    def log(msg: str):
-        if log_callback:
-            log_callback(msg)
-
-    whisper_cli = Path(settings.get("whisper_cli", ""))
-    model_path = Path(settings.get("whisper_model", ""))
-    ffmpeg_path = Path(settings.get("ffmpeg", ""))
-    language = settings.get("whisper_language", "ru")
-
-    if not whisper_cli.exists():
-        whisper_cli = pipeline.find_default_tool("whisper-cli.exe") or whisper_cli
-    if not model_path.exists():
-        mp = pipeline.find_default_model()
-        model_path = Path(mp) if mp else model_path
-    if not ffmpeg_path.exists():
-        ffmpeg_path = pipeline.find_default_tool("ffmpeg.exe") or ffmpeg_path
-
-    transcript_text, segments, json_path, srt_path = pipeline.transcribe_with_whisper_cpp(
-        audio_path=audio_path,
-        whisper_cli=Path(whisper_cli) if isinstance(whisper_cli, str) else whisper_cli,
-        model_path=Path(model_path) if isinstance(model_path, str) else model_path,
-        ffmpeg_path=Path(ffmpeg_path) if isinstance(ffmpeg_path, str) else ffmpeg_path,
-        language=language,
-        output_dir=project_dir / "transcription",
-        log_callback=log,
-    )
-
-    voice_dir = project_dir / "voice"
-    voice_dir.mkdir(parents=True, exist_ok=True)
-    voice_target = voice_dir / audio_path.name
-    if audio_path.exists() and audio_path.resolve() != voice_target.resolve():
-        shutil.copy2(audio_path, voice_target)
-        log(f"Voice audio saved: {voice_target}")
-
-    core_seg_data = [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
-
-    return {
-        "text": transcript_text,
-        "segments": core_seg_data,
-        "json_path": str(json_path) if json_path else "",
-        "srt_path": str(srt_path) if srt_path else "",
-    }
 
 
 def _lm_unload_delay_seconds(settings: dict) -> int | None:
@@ -99,10 +43,10 @@ def _ensure_lm_context(settings: dict, log: Callable[[str], None]):
         return
     try:
         log(f"Setting LM Studio context to {context_length} for model {model}...")
-        result = pipeline.load_lm_studio_model(base_url, model, context_length)
+        result = lm_client.load_model(base_url, model, context_length)
         log(f"LM Studio context updated: {json.dumps(result, ensure_ascii=False)}")
     except Exception as exc:
-        log(f"LM Studio context warning (non-fatal): {pipeline.explain_lm_studio_error(exc)}")
+        log(f"LM Studio context warning (non-fatal): {lm_client.explain_error(exc)}")
 
 
 def _maybe_unload_lm(settings: dict, reason: str, log: Callable[[str], None], model: str | None = None):
@@ -120,10 +64,10 @@ def _maybe_unload_lm(settings: dict, reason: str, log: Callable[[str], None], mo
         return
     try:
         log(f"LM Studio unload: model={model}, reason={reason}")
-        result = pipeline.unload_lm_studio_model(base_url, model)
+        result = lm_client.unload_model(base_url, model)
         log(f"LM Studio unload result: {json.dumps(result, ensure_ascii=False)}")
     except Exception as exc:
-        log(f"LM Studio unload error: {pipeline.explain_lm_studio_error(exc)}")
+        log(f"LM Studio unload error: {lm_client.explain_error(exc)}")
 
 
 def run_scene_analysis(
@@ -145,7 +89,7 @@ def run_scene_analysis(
     character_description = settings.get("character_description", "")
     video_style = settings.get("video_style", "knitted")
 
-    t_segments = [pipeline.TranscriptSegment(s["start"], s["end"], s["text"]) for s in segments_data]
+    t_segments = [TranscriptSegment(s["start"], s["end"], s["text"]) for s in segments_data]
 
     embed_model = settings.get("lm_embed_model", "text-embedding-nomic-embed-text-v1.5")
     seg_min = int(settings.get("seg_min_seconds", 20) or 20)
@@ -154,12 +98,34 @@ def run_scene_analysis(
     seg_target = int(settings.get("seg_target_scenes", 0) or 0)
 
     _ensure_lm_context(settings, log)
+    # AUTHORED scenes first: if the project has a script (00_script.json), the
+    # narration was literally written as beats — align them to the transcript
+    # and use the author's boundaries/titles instead of guessing statistically.
+    from core import script_align
+    authored = script_align.scenes_from_script(project_dir, t_segments, Scene)
+    if authored:
+        log(f"Сцены из сценария: {len(authored)} авторских битов выровнены по аудио.")
+        try:
+            authored = scene_tools.enrich_scenes_with_lm(
+                authored, base_url, model, ttl_seconds=ttl,
+                style_anchor=style_anchor,
+                character_description=character_description,
+                video_style=video_style,
+            )
+        except Exception as exc:
+            log(f"LLM-обогащение сцен не удалось ({exc}); использую данные битов как есть")
+        _maybe_unload_lm(settings, "scene analysis finished (script beats)", log)
+        return [{"index": s.index, "start": s.start, "end": s.end, "title": s.title,
+                 "voice_text": s.voice_text, "visual_direction": s.visual_direction,
+                 "screen_text": s.screen_text, "music_note": s.music_note,
+                 "retention_note": s.retention_note} for s in authored]
+
     # PRIMARY: deterministic scene boundaries via embeddings, then the LLM only
     # LABELS those fixed scenes (title/visual_direction/etc). This stops the
     # boundaries from "jumping" run to run.
     try:
         log("Сегментация сцен по эмбеддингам...")
-        scenes = pipeline.build_scenes_by_embedding(
+        scenes = scene_tools.build_scenes_by_embedding(
             t_segments, base_url, embed_model, fallback=False, ttl_seconds=ttl,
             min_seconds=seg_min, max_seconds=seg_max, sensitivity=seg_sensitivity, target_scenes=seg_target,
             log_callback=log,
@@ -169,7 +135,7 @@ def run_scene_analysis(
         _maybe_unload_lm(settings, "embedding segmentation finished", log, model=embed_model)
         log(f"Границы по эмбеддингам: {len(scenes)} сцен; озаглавливаю через LLM...")
         try:
-            scenes = pipeline.enrich_scenes_with_lm(
+            scenes = scene_tools.enrich_scenes_with_lm(
                 scenes, base_url, model, ttl_seconds=ttl,
                 style_anchor=style_anchor,
                 character_description=character_description,
@@ -181,7 +147,7 @@ def run_scene_analysis(
         # No embedding model available — fall back to LLM grouping, then duration.
         log(f"Эмбеддинги недоступны ({exc}); группирую сцены через LLM...")
         try:
-            scenes = pipeline.call_lm_studio_for_segments(
+            scenes = scene_tools.call_lm_studio_for_segments(
                 base_url, model, t_segments, ttl_seconds=ttl,
                 style_anchor=style_anchor,
                 character_description=character_description,
@@ -189,7 +155,7 @@ def run_scene_analysis(
             )
         except Exception as exc2:
             log(f"LLM-группировка не удалась ({exc2}); режу по длительности")
-            scenes = pipeline.build_scenes_from_segments(t_segments)
+            scenes = scene_tools.build_scenes_from_segments(t_segments)
 
     _maybe_unload_lm(settings, "scene analysis finished", log)
 
@@ -211,7 +177,7 @@ def run_shot_generation(
         if log_callback:
             log_callback(msg)
 
-    pipeline_scenes = [pipeline.Scene(**s) for s in scenes_data]
+    pipeline_scenes = [Scene(**s) for s in scenes_data]
     image_pref = settings.get("image_model_preference", "Auto")
     base_url = settings.get("lm_url", "http://127.0.0.1:1234/v1")
     model = settings.get("lm_model", "local-model")
@@ -225,13 +191,23 @@ def run_shot_generation(
     segments_path = project_dir / "01_transcript_segments.json"
     if segments_path.exists():
         seg_data = json.loads(segments_path.read_text("utf-8"))
-        pipeline_segments = [pipeline.TranscriptSegment(s["start"], s["end"], s["text"]) for s in seg_data]
+        pipeline_segments = [TranscriptSegment(s["start"], s["end"], s["text"]) for s in seg_data]
     else:
         pipeline_segments = []
 
+    # Shot mode: "ai" (all AI, default), "stock" (all stock), "hybrid" (LLM picks
+    # per shot). Fall back to the legacy stock_mode flag for old projects.
+    shot_mode = str(settings.get("shot_mode") or ("stock" if settings.get("stock_mode") else "ai")).lower()
+    route_priority = str(settings.get("route_priority") or "balanced").lower()
+
     _ensure_lm_context(settings, log)
-    log("Generating shot list via LM Studio...")
-    shots = pipeline.call_lm_studio_for_shots(
+    log(f"Generating shot list via LM Studio (mode={shot_mode}, route_priority={route_priority})...")
+    reference_density = (
+        str(settings.get("reference_density", "normal") or "normal")
+        if settings.get("reference_enable", True)
+        else "off"
+    )
+    shots = shot_planner.call_lm_studio_for_shots(
         base_url, model, pipeline_scenes, image_pref,
         segments=pipeline_segments, ttl_seconds=ttl,
         on_scene_shots=on_scene_shots,
@@ -239,12 +215,34 @@ def run_shot_generation(
         character_description=character_description,
         video_style=video_style,
         log_callback=log,
+        hybrid=(shot_mode == "hybrid"),
+        route_priority=route_priority,
+        # AI mode with distribution: kenburns/LTX mix under the same priority
+        # selector (no stock — the style stays fully generated).
+        ai_route_mix=(shot_mode == "ai"),
+        reference_density=reference_density,
     )
 
     _maybe_unload_lm(settings, "shot list generation finished", log)
 
+    cut = int(settings.get("stock_cut_seconds", 5) or 5)
+    variable = bool(settings.get("stock_variable_rhythm", True))
+    if shot_mode == "stock":
+        shots = shot_tools.split_shots_for_stock(
+            shots, cut, segments=pipeline_segments, variable=variable,
+        )
+        log(f"Стоковый режим: кадры разбиты на куски ≤{cut}с"
+            + (" (переменный ритм, каты по границам фраз)" if variable else "")
+            + f", всего кадров: {len(shots)}")
+    elif shot_mode == "hybrid":
+        shots = shot_tools.split_stock_shots_only(
+            shots, cut, segments=pipeline_segments, variable=variable,
+        )
+        n_stock = sum(1 for s in shots if (s.visual_type or '').lower() == 'stock_video')
+        log(f"Гибрид: сток-кадры разбиты на ≤{cut}с; всего кадров {len(shots)} (стоковых {n_stock})")
+
     log("Building asset board...")
-    cards = pipeline.build_asset_board(project_dir, shots=shots)
+    cards = board_store.build_asset_board(project_dir, shots=shots)
 
     shots_out = [{"index": s.index, "scene_index": s.scene_index,
                   "start": s.start, "end": s.end, "visual_type": s.visual_type,
@@ -252,8 +250,7 @@ def run_shot_generation(
                   "image_model": s.image_model, "video_model": s.video_model,
                   "image_prompt": s.image_prompt, "video_prompt": s.video_prompt,
                   "screen_text": s.screen_text, "motion": s.motion,
-                  "priority": s.priority, "fallback": s.fallback} for s in shots]
+                  "priority": s.priority, "fallback": s.fallback,
+                  "sfx_query": getattr(s, "sfx_query", "")} for s in shots]
 
     return shots_out, _to_cards(cards)
-
-

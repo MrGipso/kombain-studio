@@ -8,11 +8,32 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from core.config import load_settings
-from core.project import open_project
+from core.project import open_project, safe_project_path, is_within
+from backend.services import jobs
 
 router = APIRouter()
 
 EXCLUDED_STATUSES = {"skipped", "rejected"}
+
+MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".avif": "image/avif",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+}
 
 
 class TimelineSettings(BaseModel):
@@ -24,10 +45,10 @@ def _media_url(path: Path | str) -> str:
 
 
 def _resolve_project(project_id: str):
-    path = Path(project_id)
-    if not path.is_absolute():
-        output_base = Path(load_settings().output_base or "projects")
-        path = output_base / project_id
+    try:
+        path = safe_project_path(project_id, load_settings().output_base)
+    except ValueError:
+        raise HTTPException(404, "Project not found")
     project = open_project(path, load_settings())
     if not project:
         raise HTTPException(404, "Project not found")
@@ -71,37 +92,37 @@ def _read_timeline_settings(project) -> dict:
 
 
 def _write_timeline_settings(project, settings: dict) -> None:
-    path = _timeline_settings_path(project)
-    path.write_text(
-        __import__("json").dumps(settings, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    project.write_json("timeline", settings)
 
 
 @router.get("/media/{file_path:path}")
 async def serve_media(file_path: str):
-    path = Path(file_path)
-    if not path.exists():
+    path = Path(file_path).resolve()
+    # Confine media serving to the projects root so a crafted URL cannot read
+    # arbitrary files on disk (e.g. /api/media/C:/Users/.../secret).
+    projects_root = Path(load_settings().output_base or "projects").resolve()
+    if not is_within(path, projects_root):
+        raise HTTPException(403, "Forbidden")
+    if not path.exists() or not path.is_file():
         raise HTTPException(404, "File not found")
 
+    # The old endpoint allowed every file under output_base, including cache,
+    # SQLite and JSON metadata. Require an actual project directory and a
+    # browser-consumable media extension. Absolute paths remain accepted for
+    # compatibility with legacy boards, but never become an arbitrary file API.
+    try:
+        relative = path.relative_to(projects_root)
+    except ValueError:
+        raise HTTPException(403, "Forbidden")
+    if len(relative.parts) < 2:
+        raise HTTPException(403, "Forbidden")
+    project_dir = projects_root / relative.parts[0]
+    if relative.parts[0].startswith(".") or not (project_dir / ".project.json").is_file():
+        raise HTTPException(403, "Forbidden")
     ext = path.suffix.lower()
-    media_types = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".mp4": "video/mp4",
-        ".webm": "video/webm",
-        ".mov": "video/quicktime",
-        ".wav": "audio/wav",
-        ".mp3": "audio/mpeg",
-        ".m4a": "audio/mp4",
-        ".aac": "audio/aac",
-        ".flac": "audio/flac",
-        ".ogg": "audio/ogg",
-        ".opus": "audio/ogg",
-    }
-    media_type = media_types.get(ext, "application/octet-stream")
+    media_type = MEDIA_TYPES.get(ext)
+    if media_type is None:
+        raise HTTPException(403, "Unsupported media type")
     return FileResponse(str(path), media_type=media_type, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
@@ -124,15 +145,36 @@ async def timeline_media(project_id: str):
         else []
     )
 
-    export_path = _first_existing(
-        sorted(
-            [p for p in project.exports_dir.glob("*.mp4")],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if project.exports_dir.exists()
-        else []
+    # Preview only an export that reached the stage commit. A raw MP4 may be a
+    # cancelled render, a failed technical-QC candidate, or an orphan left by a
+    # crash and must not be presented as the latest delivery.
+    export_path: Path | None = None
+    export_state = project.stage_state("export")
+    export_metadata = (
+        export_state.get("metadata")
+        if isinstance(export_state.get("metadata"), dict)
+        else {}
     )
+    if export_state.get("status") == "completed":
+        configured = Path(str(export_metadata.get("path", "") or ""))
+        if configured.name:
+            if not configured.is_absolute():
+                configured = project.exports_dir / configured
+            if (
+                configured.suffix.lower() == ".mp4"
+                and configured.is_file()
+                and is_within(configured, project.exports_dir)
+            ):
+                export_path = configured.resolve()
+        if export_path is None and not export_metadata and project.exports_dir.exists():
+            # Legacy projects had no committed export metadata.
+            export_path = _first_existing(
+                sorted(
+                    project.exports_dir.glob("*.mp4"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+            )
 
     items = []
     for index, card in enumerate(cards):
@@ -181,9 +223,20 @@ async def timeline_media(project_id: str):
 
 @router.put("/projects/{project_id:str}/timeline-settings")
 async def save_timeline_settings(project_id: str, settings: TimelineSettings):
-    project = _resolve_project(project_id)
-    data = {"voice_start": settings.voice_start or "00:00:00"}
-    _write_timeline_settings(project, data)
+    resolved = _resolve_project(project_id)
+    try:
+        with jobs.project_mutation(resolved.dir.name, "Изменение таймлайна"):
+            # Re-open after acquiring the project lock so both the timeline
+            # document and its manifest hash are derived from one fresh state.
+            project = _resolve_project(project_id)
+            data = {"voice_start": settings.voice_start or "00:00:00"}
+            _write_timeline_settings(project, data)
+            cards = project.read_json("asset_board") or []
+            project.mark_stage_completed(
+                "timeline",
+                {"settings": data, "cards": cards},
+                input_hash=project.content_hash(cards),
+            )
+    except jobs.ProjectBusy as exc:
+        raise HTTPException(409, str(exc))
     return data
-
-

@@ -8,11 +8,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from core.config import load_settings
-from core.project import open_project
+from core.board import write_asset_board
+from core.models import AssetCard
+from core.project import open_project, safe_project_path
 
-import content_pipeline_gui as cpg
 from backend.services.pipeline_orch import run_shot_generation
 from backend.services.sse_manager import SSEManager
+from backend.services import jobs, runlog
 
 router = APIRouter()
 sse = SSEManager()
@@ -20,10 +22,10 @@ sse = SSEManager()
 
 @router.get("/{project_id:str}/shots")
 async def get_shots(project_id: str):
-    path = Path(project_id)
-    if not path.is_absolute():
-        output_base = Path(load_settings().output_base or "projects")
-        path = output_base / project_id
+    try:
+        path = safe_project_path(project_id, load_settings().output_base)
+    except ValueError:
+        raise HTTPException(404, "Project not found")
 
     project = open_project(path, load_settings())
     if not project:
@@ -35,23 +37,17 @@ async def get_shots(project_id: str):
 
 @router.post("/{project_id:str}/generate-shots")
 async def generate_shots(project_id: str):
-    path = Path(project_id)
-    if not path.is_absolute():
-        output_base = Path(load_settings().output_base or "projects")
-        path = output_base / project_id
+    try:
+        path = safe_project_path(project_id, load_settings().output_base)
+    except ValueError:
+        raise HTTPException(404, "Project not found")
 
     project = open_project(path, load_settings())
     if not project:
         raise HTTPException(404, "Project not found")
 
-    scenes_data = project.read_json("scenes")
-    if not scenes_data:
+    if not project.read_json("scenes"):
         raise HTTPException(400, "No scenes. Run scene analysis first.")
-
-    settings_dict = {f.name: getattr(project.settings, f.name) for f in project.settings.__dataclass_fields__.values()}
-    settings_dict["video_style"] = project.metadata.get("video_style", "knitted")
-    settings_dict["style_anchor"] = project.metadata.get("style_anchor", "")
-    settings_dict["character_description"] = project.metadata.get("character_description", "")
 
     async def event_stream():
         sub_id, q = sse.subscribe(project.dir.name)
@@ -60,31 +56,111 @@ async def generate_shots(project_id: str):
         def log_handler(msg: str):
             loop.call_soon_threadsafe(sse.emit, project.dir.name, "log", {"message": msg})
 
-        total_scenes = len(scenes_data) or 1
-
         def run_sync():
             try:
-                accumulated_shots = []
-                scenes_done = {"n": 0}
-                def _on_scene_shots(raw_shots):
-                    accumulated_shots.extend(raw_shots)
-                    project.write_json("shot_list", [s.__dict__ for s in accumulated_shots])
-                    scenes_done["n"] += 1
-                    loop.call_soon_threadsafe(
-                        sse.emit, project.dir.name, "scene_shots",
-                        {"shots": [s.__dict__ if hasattr(s, '__dict__') else s for s in raw_shots]},
-                    )
-                    loop.call_soon_threadsafe(
-                        sse.emit, project.dir.name, "progress",
-                        {"step": "shots", "progress": min(1.0, scenes_done["n"] / total_scenes)},
-                    )
-                shots, cards = run_shot_generation(
-                    project.dir, scenes_data, settings_dict, log_handler,
-                    on_scene_shots=_on_scene_shots,
+                with jobs.project_job(project.dir.name, "Генерация шот-листа", resource="llm") as cancel_event:
+                    current_project = open_project(project.dir, load_settings()) or project
+                    scenes_data = current_project.read_json("scenes")
+                    if not isinstance(scenes_data, list) or not scenes_data:
+                        raise ValueError("No scenes. Run scene analysis first.")
+                    settings_dict = current_project.effective_settings()
+                    total_scenes = len(scenes_data)
+                    try:
+                        accumulated_shots = []
+                        scenes_done = {"n": 0}
+
+                        def _on_scene_shots(raw_shots):
+                            # Per-scene hook doubles as a cancellation checkpoint:
+                            # the LLM loop stops after the current scene.
+                            jobs.check(cancel_event)
+                            accumulated_shots.extend(raw_shots)
+                            current_project.write_json(
+                                "04_shot_list.partial.json",
+                                [s.__dict__ for s in accumulated_shots],
+                            )
+                            scenes_done["n"] += 1
+                            progress = min(1.0, scenes_done["n"] / total_scenes)
+                            jobs.update_progress(
+                                cancel_event,
+                                progress,
+                                f"Сцена {scenes_done['n']} из {total_scenes}",
+                            )
+                            loop.call_soon_threadsafe(
+                                sse.emit,
+                                current_project.dir.name,
+                                "scene_shots",
+                                {"shots": [
+                                    shot.__dict__ if hasattr(shot, "__dict__") else shot
+                                    for shot in raw_shots
+                                ]},
+                            )
+                            loop.call_soon_threadsafe(
+                                sse.emit,
+                                current_project.dir.name,
+                                "progress",
+                                {"step": "shots", "progress": progress},
+                            )
+
+                        shots, cards = run_shot_generation(
+                            current_project.dir,
+                            scenes_data,
+                            settings_dict,
+                            jobs.checking_logger(
+                                runlog.tee(
+                                    current_project.dir,
+                                    "Генерация шот-листа",
+                                    log_handler,
+                                ),
+                                cancel_event,
+                            ),
+                            on_scene_shots=_on_scene_shots,
+                        )
+                        jobs.check(cancel_event)
+                        current_project.write_json("shot_list", shots)
+                        write_asset_board(
+                            current_project.dir,
+                            [AssetCard(**card) for card in cards],
+                        )
+                        current_project.mark_stage_completed(
+                            "shots",
+                            shots,
+                            input_hash=current_project.content_hash({
+                                "scenes": scenes_data,
+                                "settings": {
+                                    key: settings_dict.get(key)
+                                    for key in (
+                                        "lm_model", "lm_context", "video_style", "style_anchor",
+                                        "character_description", "shot_mode", "route_priority",
+                                        "stock_mode", "stock_cut_seconds", "image_model_preference",
+                                    )
+                                },
+                            }),
+                        )
+                        current_project.mark_stage_completed(
+                            "assets",
+                            cards,
+                            input_hash=current_project.content_hash(shots),
+                        )
+                        (current_project.dir / "04_shot_list.partial.json").unlink(
+                            missing_ok=True
+                        )
+                    except jobs.JobCancelled:
+                        raise
+                    except Exception as exc:
+                        current_project.mark_stage_failed(
+                            "shots",
+                            str(exc),
+                            input_hash=current_project.content_hash(scenes_data),
+                        )
+                        raise
+                loop.call_soon_threadsafe(
+                    sse.emit,
+                    project.dir.name,
+                    "done",
+                    {"shots": shots, "cards": cards},
                 )
-                project.write_json("shot_list", shots)
-                cpg.write_asset_board(project.dir, [cpg.AssetCard(**c) for c in cards])
-                loop.call_soon_threadsafe(sse.emit, project.dir.name, "done", {"shots": shots, "cards": cards})
+            except (jobs.ProjectBusy, jobs.JobCancelled) as exc:
+                loop.call_soon_threadsafe(sse.emit, project.dir.name, "error", {"message": str(exc)})
             except Exception as exc:
                 loop.call_soon_threadsafe(sse.emit, project.dir.name, "error", {"message": str(exc)})
 
