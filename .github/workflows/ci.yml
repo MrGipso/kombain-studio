@@ -1,0 +1,77 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Install Python dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Run Python tests
+        run: uv run --extra dev pytest
+
+      - name: OpenAPI smoke
+        run: uv run python -c "from backend.main import app; schema = app.openapi(); assert schema['paths']; print(len(schema['paths']), 'paths')"
+
+      - name: Generate deterministic CycloneDX SBOM
+        if: matrix.python-version == '3.12'
+        run: uv run --locked python tools/generate_sbom.py --output artifacts/pipeline-studio.cdx.json
+
+      - name: Upload release SBOM
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pipeline-studio-sbom
+          path: artifacts/pipeline-studio.cdx.json
+          if-no-files-found: error
+
+  frontend:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
