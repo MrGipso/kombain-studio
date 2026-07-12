@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import * as api from '../api/client'
-import { useToast } from '../components/Toast'
+import { useToast } from '../components/toast-context'
 import type { ProjectInfo } from '../api/types'
 
 export default function StartScreen() {
@@ -14,7 +14,7 @@ export default function StartScreen() {
 
   useEffect(() => {
     api.getProjects().then(setProjects).catch((e) => toast.error(`Не удалось загрузить проекты: ${(e as Error).message}`))
-  }, [])
+  }, [toast])
 
   const handleCreate = async () => {
     if (!newName.trim()) { toast.error('Введите название проекта'); return }

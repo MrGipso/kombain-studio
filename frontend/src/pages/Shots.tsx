@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import { useSSE } from '../hooks/useSSE'
-import { useToast } from '../components/Toast'
+import { useToast } from '../components/toast-context'
 import type { Shot, AssetCard } from '../api/types'
 
 interface Context {
@@ -21,18 +21,48 @@ export default function Shots() {
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<number | null>(null)
   const [hasScenes, setHasScenes] = useState(false)
+  const [shotMode, setShotMode] = useState('ai')
+  const [routePriority, setRoutePriority] = useState('balanced')
+  const [stockCut, setStockCut] = useState(5)
   const lockedElsewhere = Boolean(busy) && !running
 
   useEffect(() => {
     api.getShots(projectId).then((d) => {
       const s = d as Shot[]
       setShots(s)
-      if (s.length > 0 && !selected) setSelected(s[0])
+      if (s.length > 0) setSelected((current) => current || s[0])
     }).catch((e) => toast.error(`Не удалось загрузить шоты: ${(e as Error).message}`))
     api.getScenes(projectId).then((d) => {
       setHasScenes(Array.isArray(d) && d.length > 0)
     }).catch(() => {})
-  }, [projectId])
+    api.getProject(projectId).then((d) => {
+      setShotMode(d.shot_mode || 'ai')
+      setRoutePriority(d.route_priority || 'balanced')
+      setStockCut(d.stock_cut_seconds ?? 5)
+    }).catch(() => {})
+  }, [projectId, toast])
+
+  const saveMode = (mode: string, cut: number, priority = routePriority) => {
+    api.updateProjectSettings(projectId, { shot_mode: mode, route_priority: priority, stock_cut_seconds: cut })
+      .catch((e) => toast.error(`Сохранение режима кадров: ${(e as Error).message}`))
+  }
+
+  const MODES: { key: string; label: string; hint: string }[] = [
+    { key: 'ai', label: 'AI', hint: 'всё нейросетью (Krea + LTX)' },
+    { key: 'stock', label: 'Стоки', hint: 'всё из стоков, кусками ≤N сек' },
+    { key: 'hybrid', label: 'Гибрид', hint: 'LM Studio сама распределяет: сток / зум / AI' },
+  ]
+  // Same selector, mode-specific semantics: hybrid = stock/zoom/AI, AI mode =
+  // zoom/LTX (style stays fully generated, animation only where motion matters).
+  const ROUTE_PRIORITIES: { key: string; label: string; hint: string }[] = shotMode === 'ai' ? [
+    { key: 'economy', label: 'Экономно', hint: 'LTX ≤30% времени: анимация только там, где движение несёт смысл; остальное — Krea-стилл с зумом' },
+    { key: 'balanced', label: 'Баланс', hint: 'примерно половина времени — живые LTX-кадры, половина — стиллы с зумом' },
+    { key: 'rich', label: 'Богато', hint: 'всё анимируется LTX (максимальное качество и время)' },
+  ] : [
+    { key: 'economy', label: 'Экономно', hint: 'максимум стока и зума, AI только когда без него нельзя' },
+    { key: 'balanced', label: 'Баланс', hint: 'дешёвый уместный маршрут, AI для важных/неснимаемых кадров' },
+    { key: 'rich', label: 'Богато', hint: 'чаще AI-видео для выразительности и ключевых моментов' },
+  ]
 
   const handleGenerate = () => {
     if (busy) { toast.error('Дождитесь завершения текущей задачи'); return }
@@ -90,23 +120,11 @@ export default function Shots() {
     try {
       setLogs((prev) => [...prev, '⏳ Пересборка доски кадров...'])
       const existing = await api.getAssetBoard(projectId)
-      const byShot = new Map<number, AssetCard>()
-      for (const c of existing) byShot.set(c.shot_index, c)
-      // Preserve status/outputs/approval from any existing card with the same shot_index.
-      const merged = existing.map((c) => {
-        const prev = byShot.get(c.shot_index)
-        if (!prev) return c
-        return {
-          ...c,
-          status: prev.status || c.status,
-          approved: prev.approved ?? c.approved,
-          image_output: prev.image_output || c.image_output,
-          video_output: prev.video_output || c.video_output,
-        }
-      })
-      await api.saveAssetBoard(projectId, merged as unknown as AssetCard[])
-      setLogs((prev) => [...prev, `✅ Доска пересобрана: ${merged.length} карточек (статусы сохранены)`])
-      toast.success(`Доска пересобрана: ${merged.length} карточек`)
+      const result = await api.rebuildAssetBoard(projectId)
+      const removed = Math.max(0, existing.length - result.cards.length)
+      const suffix = removed ? `, удалено устаревших: ${removed}` : ''
+      setLogs((prev) => [...prev, `✅ Доска пересобрана: ${result.count} карточек (статусы сохранены${suffix})`])
+      toast.success(`Доска пересобрана: ${result.count} карточек`)
     } catch (e) {
       setLogs((prev) => [...prev, `❌ Ошибка: ${(e as Error).message}`])
       toast.error(`Пересборка: ${(e as Error).message}`)
@@ -132,6 +150,57 @@ export default function Shots() {
   return (
     <div className="p-8 space-y-6">
       <h1 className="text-2xl font-bold text-white">Шот-лист</h1>
+
+      <div className="flex flex-wrap items-center gap-4 rounded-xl bg-slate-900 border border-slate-800 p-4">
+        <span className="text-sm text-slate-400">Режим кадров:</span>
+        <div className="flex rounded-lg overflow-hidden border border-slate-700">
+          {MODES.map((m) => (
+            <button
+              key={m.key}
+              onClick={() => { setShotMode(m.key); saveMode(m.key, stockCut) }}
+              title={m.hint}
+              className={`px-4 py-1.5 text-sm font-semibold transition-colors ${
+                shotMode === m.key ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        {(shotMode === 'hybrid' || shotMode === 'ai') && (
+          <>
+            <span className="text-sm text-slate-400">Приоритет:</span>
+            <div className="flex rounded-lg overflow-hidden border border-slate-700">
+              {ROUTE_PRIORITIES.map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => { setRoutePriority(p.key); saveMode(shotMode, stockCut, p.key) }}
+                  title={p.hint}
+                  className={`px-3 py-1.5 text-sm font-semibold transition-colors ${
+                    routePriority === p.key ? 'bg-teal-700 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">Длина сток-куска ≤</span>
+          <input
+            type="number"
+            min={2}
+            max={15}
+            value={stockCut}
+            disabled={shotMode === 'ai'}
+            onChange={(e) => { const v = Math.max(2, Number(e.target.value) || 5); setStockCut(v); saveMode(shotMode, v) }}
+            className="w-16 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-white text-sm font-mono disabled:opacity-40"
+          />
+          <span className="text-xs text-slate-500">сек</span>
+        </div>
+        <span className="text-xs text-slate-600">{MODES.find((m) => m.key === shotMode)?.hint}. Режим применяется при генерации шот-листа.</span>
+      </div>
 
       <div className="flex gap-3">
         <button
@@ -168,6 +237,12 @@ export default function Shots() {
           <span className="text-indigo-300 text-sm font-semibold shrink-0">
             Генерация кадров… {progress !== null ? `${Math.round(progress * 100)}%` : `(${shots.length})`}
           </span>
+          <button
+            onClick={() => api.cancelJob(projectId).then(() => toast.info('Отмена — остановится после текущей сцены')).catch(() => {})}
+            className="shrink-0 text-xs px-3 py-1 rounded bg-rose-800 hover:bg-rose-700 text-white cursor-pointer"
+          >
+            Отменить
+          </button>
           <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
             {progress !== null ? (
               <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${Math.round(progress * 100)}%` }} />
@@ -255,4 +330,3 @@ export default function Shots() {
     </div>
   )
 }
-

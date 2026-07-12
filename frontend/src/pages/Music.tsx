@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import { useSSE } from '../hooks/useSSE'
-import { useToast } from '../components/Toast'
+import { useToast } from '../components/toast-context'
 import type { MusicState } from '../api/types'
 
 interface Context {
@@ -39,7 +39,7 @@ export default function Music() {
     api.getMusic(projectId)
       .then((d) => setMusic({ ...EMPTY, ...d }))
       .catch((e) => toast.error(`Не удалось загрузить музыку: ${(e as Error).message}`))
-  }, [projectId])
+  }, [projectId, toast])
 
   const patch = (p: Partial<MusicState>) => setMusic((m) => ({ ...m, ...p }))
 

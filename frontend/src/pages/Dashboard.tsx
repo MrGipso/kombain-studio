@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
-import type { AssetCard, ProjectInfo } from '../api/types'
+import type { AssetCard, JobRecord, ProjectInfo, RunLogRecord } from '../api/types'
 import { useSSE } from '../hooks/useSSE'
-import { useToast } from '../components/Toast'
+import { useToast } from '../components/toast-context'
 import { hasMedia, isExcluded, isIncluded } from '../lib/cards'
 
 interface Context {
@@ -54,27 +54,43 @@ function canRun(key: RunKey, steps: Record<string, boolean>): boolean {
 
 export default function Dashboard() {
   const { projectId, project, steps, setSteps, busy, setBusy } = useOutletContext<Context>()
-  const { startStream, stopStream } = useSSE()
+  const { startStream } = useSSE()
   const toast = useToast()
   const [cards, setCards] = useState<AssetCard[]>([])
   const [logs, setLogs] = useState<string[]>([])
   const [running, setRunning] = useState<RunKey | null>(null)
   const [progress, setProgress] = useState<number | null>(null)
+  const [jobItems, setJobItems] = useState<JobRecord[]>([])
+  const [runLogItems, setRunLogItems] = useState<RunLogRecord[]>([])
   const logEndRef = useRef<HTMLDivElement>(null)
   // Locked by a job started on another page of this project.
   const lockedElsewhere = Boolean(busy) && !running
 
-  const refresh = async () => {
-    const [board, state] = await Promise.all([
+  const refresh = useCallback(async () => {
+    const [board, state, jobState, runLogState] = await Promise.all([
       api.getAssetBoard(projectId).catch(() => [] as AssetCard[]),
       api.getProjectState(projectId).catch(() => null),
+      api.getProjectJobs(projectId, 8).catch(() => null),
+      api.getProjectRunLogs(projectId, 40).catch(() => null),
     ])
     setCards(board)
     if (state) setSteps(state.steps)
-  }
+    if (jobState) setJobItems(jobState.items)
+    if (runLogState) setRunLogItems(runLogState.items)
+  }, [projectId, setSteps])
 
   useEffect(() => {
     refresh()
+  }, [refresh])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      // Keep the durable job history independent from diagnostic log reads:
+      // a damaged/locked JSONL file must not stop the existing job refresh.
+      api.getProjectJobs(projectId, 8).then((state) => setJobItems(state.items)).catch(() => {})
+      api.getProjectRunLogs(projectId, 40).then((state) => setRunLogItems(state.items)).catch(() => {})
+    }, 2500)
+    return () => window.clearInterval(timer)
   }, [projectId])
 
   useEffect(() => {
@@ -160,15 +176,13 @@ export default function Dashboard() {
     }
   }
 
-  // Note: this only detaches the client view. The server task keeps running —
-  // there is no server-side cancellation for whisper/LM jobs.
-  const stop = () => {
-    stopStream()
-    setRunning(null)
-    setBusy(null)
-    setProgress(null)
-    setLogs((prev) => [...prev.slice(-160), 'Просмотр отключён (задача продолжает выполняться на сервере)'])
-    toast.info('Просмотр отключён. Задача продолжается на сервере.')
+  const cancel = async () => {
+    try {
+      const result = await api.cancelJob(projectId)
+      toast.info(result.cancelled ? `Отмена запрошена: ${result.cancelled}` : 'Активная задача не найдена')
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
   }
 
   const completion = cards.length ? Math.round((counts.included / cards.length) * 100) : 0
@@ -198,9 +212,9 @@ export default function Dashboard() {
           >
             Проверить QA
           </button>
-          {running && (
-            <button onClick={stop} className="px-4 py-2 rounded-lg bg-red-950 text-red-200 text-sm font-semibold border border-red-800">
-              Отключить просмотр
+          {(running || busy) && (
+            <button onClick={cancel} className="px-4 py-2 rounded-lg bg-red-950 text-red-200 text-sm font-semibold border border-red-800">
+              Отменить задачу
             </button>
           )}
         </div>
@@ -297,6 +311,60 @@ export default function Dashboard() {
           </div>
         </section>
       </div>
+
+      <section className="rounded-lg bg-slate-900 border border-slate-800">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800">
+          <h2 className="text-base font-semibold text-white">Задания</h2>
+          <span className="text-xs text-slate-500">история сохраняется после перезапуска</span>
+        </div>
+        <div className="divide-y divide-slate-800/70">
+          {jobItems.slice(0, 6).map((job) => (
+            <div key={job.id} className="flex items-center gap-3 px-5 py-2.5 text-sm">
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                job.status === 'running' ? 'animate-pulse bg-sky-400'
+                  : job.status === 'succeeded' ? 'bg-emerald-500'
+                    : job.status === 'failed' || job.status === 'interrupted' ? 'bg-red-500'
+                      : 'bg-amber-500'
+              }`} />
+              <span className="w-48 truncate text-slate-200">{job.name}</span>
+              <span className="w-24 text-xs text-slate-500">{job.resource || 'project'}</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-slate-500" title={job.error || job.message}>
+                {job.error || job.message || job.status}
+              </span>
+              <span className="text-xs font-mono text-slate-600">{Math.round((job.progress || 0) * 100)}%</span>
+            </div>
+          ))}
+          {!jobItems.length && <div className="px-5 py-5 text-sm text-slate-600">История заданий пока пуста.</div>}
+        </div>
+      </section>
+
+      <section className="rounded-lg bg-slate-900 border border-slate-800">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800">
+          <h2 className="text-base font-semibold text-white">Журнал запусков</h2>
+          <span className="text-xs text-slate-500">последние события проекта</span>
+        </div>
+        <div className="max-h-80 overflow-y-auto divide-y divide-slate-800/70">
+          {runLogItems.slice(0, 12).map((record, index) => (
+            <div key={`${record.run_id}-${record.ts}-${index}`} className="grid grid-cols-[7rem_10rem_7rem_minmax(0,1fr)] gap-3 px-5 py-2.5 text-xs">
+              <span className="font-mono text-slate-600" title={record.ts}>
+                {record.ts ? new Date(record.ts).toLocaleTimeString() : '—'}
+              </span>
+              <span className="truncate text-slate-300" title={`${record.job} / ${record.run_id}`}>
+                {record.job || record.run_id.slice(0, 8) || 'run'}
+              </span>
+              <span className={`truncate font-mono ${
+                record.level === 'error' ? 'text-red-400'
+                  : record.level === 'warning' ? 'text-amber-400'
+                    : 'text-sky-400'
+              }`} title={`${record.event} / ${record.level}`}>
+                {record.event} · {record.level}
+              </span>
+              <span className="truncate text-slate-400" title={record.msg}>{record.msg}</span>
+            </div>
+          ))}
+          {!runLogItems.length && <div className="px-5 py-5 text-sm text-slate-600">Журнал запусков пока пуст.</div>}
+        </div>
+      </section>
 
       <section className="rounded-lg bg-slate-900 border border-slate-800">
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800">

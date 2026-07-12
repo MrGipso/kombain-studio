@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import { useSSE } from '../hooks/useSSE'
-import { useToast } from '../components/Toast'
+import { useToast } from '../components/toast-context'
 import type { Scene, ProjectDetail, VideoStyle } from '../api/types'
 
 interface Context {
@@ -283,6 +283,12 @@ export default function Scenes() {
         <div className="flex items-center gap-3 px-4 py-3 bg-indigo-900/40 border border-indigo-700/50 rounded-lg">
           <span className="w-3 h-3 rounded-full bg-indigo-400 animate-ping" />
           <span className="text-indigo-300 text-sm font-semibold shrink-0">Анализ сцен… ({scenes.length} найдено)</span>
+          <button
+            onClick={() => api.cancelJob(projectId).then(() => toast.info('Отмена — остановится на ближайшем шаге')).catch(() => {})}
+            className="shrink-0 text-xs px-3 py-1 rounded bg-rose-800 hover:bg-rose-700 text-white cursor-pointer"
+          >
+            Отменить
+          </button>
           <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
             <div className="h-full w-1/3 bg-indigo-500 rounded-full animate-[indeterminate_1.2s_ease-in-out_infinite]" />
           </div>
@@ -359,5 +365,4 @@ export default function Scenes() {
     </div>
   )
 }
-
 

@@ -1,21 +1,11 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react'
-
-type ToastKind = 'success' | 'error' | 'info'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { ToastContext, type ToastApi, type ToastKind } from './toast-context'
 
 interface Toast {
   id: number
   kind: ToastKind
   message: string
 }
-
-interface ToastApi {
-  toast: (message: string, kind?: ToastKind) => void
-  success: (message: string) => void
-  error: (message: string) => void
-  info: (message: string) => void
-}
-
-const ToastContext = createContext<ToastApi | null>(null)
 
 let nextId = 1
 
@@ -39,20 +29,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setTimeout(() => remove(id), ttl)
   }, [remove])
 
-  const api: ToastApi = {
-    toast,
-    success: (m) => toast(m, 'success'),
-    error: (m) => toast(m, 'error'),
-    info: (m) => toast(m, 'info'),
-  }
+  const success = useCallback((message: string) => toast(message, 'success'), [toast])
+  const error = useCallback((message: string) => toast(message, 'error'), [toast])
+  const info = useCallback((message: string) => toast(message, 'info'), [toast])
+  const api = useMemo<ToastApi>(() => ({ toast, success, error, info }), [toast, success, error, info])
 
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+      <div aria-live="polite" aria-relevant="additions" className="fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2">
         {toasts.map((t) => (
           <button
             key={t.id}
+            type="button"
+            role={t.kind === 'error' ? 'alert' : 'status'}
+            aria-label={`${t.kind === 'error' ? 'Ошибка' : 'Уведомление'}: ${t.message}. Закрыть`}
             onClick={() => remove(t.id)}
             className={`text-left rounded-lg border px-4 py-3 text-sm shadow-lg backdrop-blur cursor-pointer ${KIND_STYLES[t.kind]}`}
           >
@@ -62,18 +53,4 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       </div>
     </ToastContext.Provider>
   )
-}
-
-export function useToast(): ToastApi {
-  const ctx = useContext(ToastContext)
-  if (!ctx) {
-    // Fallback so the app never crashes if a component renders outside the provider.
-    return {
-      toast: (m) => console.log(m),
-      success: (m) => console.log(m),
-      error: (m) => console.error(m),
-      info: (m) => console.log(m),
-    }
-  }
-  return ctx
 }

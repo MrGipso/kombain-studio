@@ -36,7 +36,15 @@ export function useSSE() {
     fetch(`/api${url}`, { method: 'POST', signal: controller.signal }).then(async (res) => {
       if (!res.ok || !res.body) {
         terminalEvent = true
-        handlers.onError?.(`Stream failed with HTTP ${res.status}`)
+        const body = await res.text().catch(() => '')
+        let message = body || `Stream failed with HTTP ${res.status}`
+        try {
+          const parsed = JSON.parse(body)
+          if (typeof parsed.detail === 'string') message = parsed.detail
+        } catch {
+          // Plain-text response.
+        }
+        handlers.onError?.(message)
         close('completed')
         return
       }

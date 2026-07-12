@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
-import { useToast } from '../components/Toast'
-import { hasMedia, isExcluded, isIncluded } from '../lib/cards'
+import { useToast } from '../components/toast-context'
+import { cardMediaPath, hasMedia, isExcluded, isIncluded } from '../lib/cards'
 import type { AssetCard, TimelineMedia, TimelineMediaItem } from '../api/types'
 
 interface Context {
   projectId: string
+  busy: string | null
+  setBusy: (busy: string | null) => void
 }
 
 type SequenceEntry = {
@@ -23,12 +25,22 @@ const TEXT_STYLES = [
   ['caption', 'Caption'],
   ['label', 'Label'],
   ['quote', 'Quote'],
+  ['stat', 'Stat'],
+  ['terminal', 'Terminal'],
+  ['badge', 'Badge'],
+  ['warning', 'Warning'],
 ]
 
 const TEXT_POSITIONS = [
   ['bottom', 'Bottom'],
-  ['center', 'Center'],
   ['top', 'Top'],
+  ['center', 'Center'],
+  ['top_left', 'Top left'],
+  ['top_right', 'Top right'],
+  ['bottom_left', 'Bottom left'],
+  ['bottom_right', 'Bottom right'],
+  ['left', 'Left'],
+  ['right', 'Right'],
   ['manual', 'Manual'],
 ]
 
@@ -58,7 +70,7 @@ function mediaUrl(path: string) {
 }
 
 function clipMediaPath(card: AssetCard) {
-  return card.assigned_media || card.video_output || card.image_output || ''
+  return cardMediaPath(card)
 }
 
 function sourceDuration(card: AssetCard) {
@@ -77,7 +89,7 @@ function isImage(path: string) {
 
 function overlayText(card: AssetCard | null) {
   if (!card?.text_overlay_enabled) return ''
-  return (card.text_overlay_text || '').trim()
+  return (card.text_overlay_text || card.screen_text || '').trim()
 }
 
 function overlayStyleClass(card: AssetCard) {
@@ -86,6 +98,10 @@ function overlayStyleClass(card: AssetCard) {
   if (style === 'caption') return 'text-lg font-semibold max-w-[46%] text-left'
   if (style === 'label') return 'text-xl font-bold uppercase tracking-normal max-w-[50%] text-left'
   if (style === 'quote') return 'text-3xl font-semibold italic max-w-[72%]'
+  if (style === 'stat') return 'text-4xl font-bold tracking-normal max-w-[46%] bg-black/40 px-4 py-2 rounded-md'
+  if (style === 'terminal') return 'text-sm font-mono tracking-normal max-w-[44%] bg-black/50 px-3 py-2 rounded-md text-left'
+  if (style === 'badge') return 'text-lg font-bold uppercase tracking-normal max-w-[42%] bg-teal-700/60 px-3 py-1.5 rounded-md text-left'
+  if (style === 'warning') return 'text-xl font-bold tracking-normal max-w-[54%] bg-red-800/70 px-4 py-2 rounded-md'
   return 'text-2xl font-semibold max-w-[76%]'
 }
 
@@ -100,6 +116,12 @@ function overlayPositionStyle(card: AssetCard): React.CSSProperties {
   }
   if (position === 'top') return { left: '50%', top: '12%', transform: 'translate(-50%, 0)' }
   if (position === 'center') return { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }
+  if (position === 'left') return { left: '7%', top: '50%', transform: 'translate(0, -50%)' }
+  if (position === 'right') return { right: '7%', top: '50%', transform: 'translate(0, -50%)' }
+  if (position === 'top_left') return { left: '7%', top: '10%', transform: 'translate(0, 0)' }
+  if (position === 'top_right') return { right: '7%', top: '10%', transform: 'translate(0, 0)' }
+  if (position === 'bottom_left') return { left: '7%', bottom: '10%', transform: 'translate(0, 0)' }
+  if (position === 'bottom_right') return { right: '7%', bottom: '10%', transform: 'translate(0, 0)' }
   return { left: '50%', bottom: '10%', transform: 'translate(-50%, 0)' }
 }
 
@@ -126,7 +148,7 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export default function Timeline() {
-  const { projectId } = useOutletContext<Context>()
+  const { projectId, busy, setBusy } = useOutletContext<Context>()
   const toast = useToast()
   const [cards, setCards] = useState<AssetCard[]>([])
   const [media, setMedia] = useState<TimelineMedia | null>(null)
@@ -312,7 +334,12 @@ export default function Timeline() {
   }
 
   const saveTimeline = async () => {
+    if (busy && !saving) {
+      toast.error(`Проект занят: ${busy}`)
+      return
+    }
     setSaving(true)
+    setBusy('Сохранение Timeline')
     try {
       const normalized = sequentialCardsForSave()
       setCards(normalized)
@@ -324,11 +351,16 @@ export default function Timeline() {
       toast.error(`Сохранение timeline: ${(e as Error).message}`)
     } finally {
       setSaving(false)
+      setBusy(null)
     }
   }
 
   const toggleExcludeSelected = async () => {
-    if (!selectedCard) return
+    if (!selectedCard || busy) {
+      if (busy) toast.error(`Проект занят: ${busy}`)
+      return
+    }
+    setBusy('Изменение Timeline')
     try {
       const patch = isExcluded(selectedCard)
         ? { status: hasMedia(selectedCard) ? 'generated' : 'planned' }
@@ -338,6 +370,8 @@ export default function Timeline() {
       toast.success(isExcluded(selectedCard) ? 'Кадр возвращён в финал' : 'Кадр исключён из финала')
     } catch (e) {
       toast.error((e as Error).message)
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -561,7 +595,7 @@ export default function Timeline() {
                   </label>
 
                   <div className="flex gap-2">
-                    <button onClick={toggleExcludeSelected} className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold text-white ${selectedCard && isExcluded(selectedCard) ? 'bg-slate-700' : 'bg-rose-800'}`}>{selectedCard && isExcluded(selectedCard) ? 'Вернуть в финал' : 'Исключить'}</button>
+                    <button onClick={toggleExcludeSelected} disabled={Boolean(busy)} className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-45 ${selectedCard && isExcluded(selectedCard) ? 'bg-slate-700' : 'bg-rose-800'}`}>{selectedCard && isExcluded(selectedCard) ? 'Вернуть в финал' : 'Исключить'}</button>
                     <button onClick={() => updateCard(selectedIndex, { assigned_media: '', timeline_start: '', timeline_end: '' })} className="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm">Reset</button>
                   </div>
                 </>
@@ -619,7 +653,7 @@ export default function Timeline() {
         <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800">
           <div className="text-sm font-semibold text-white">Timeline</div>
           <div className="flex items-center gap-3">
-            <button onClick={saveTimeline} disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-45">
+            <button onClick={saveTimeline} disabled={saving || Boolean(busy)} className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-45">
               {saving ? 'Saving' : 'Save'}
             </button>
             <label className="flex items-center gap-2 text-xs text-slate-500">

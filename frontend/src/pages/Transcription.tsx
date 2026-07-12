@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import { useSSE } from '../hooks/useSSE'
-import { useToast } from '../components/Toast'
+import { useToast } from '../components/toast-context'
 import type { TranscriptSegment } from '../api/types'
 
 interface Context {
