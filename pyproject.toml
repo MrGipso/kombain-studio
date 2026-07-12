@@ -1,0 +1,37 @@
+[project]
+name = "pipeline-studio"
+version = "1.0.0rc1"
+description = "Universal content production pipeline (transcription -> scenes -> shots -> stock/AI media -> export)."
+requires-python = ">=3.12"  # supported and tested project baseline
+
+# Web server (backend/) runtime dependencies.
+# The web server is headless and does not require Tk or Qt. The legacy Tk entry
+# uses the Python tkinter system package; the PySide interface is the optional
+# `desktop` extra below. External tools are NOT Python packages: whisper.cpp,
+# ffmpeg, LM Studio and ComfyUI must be installed/run separately.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "python-multipart>=0.0.9",  # required by FastAPI for file uploads (transcription audio)
+    "pillow>=10.0",             # perceptual-hash dedup for the stock route (optional but recommended)
+]
+
+[project.optional-dependencies]
+# Desktop UI (ui/, main.py, content_pipeline_qt.py). Not needed for the web server.
+desktop = ["PySide6>=6.6"]
+# Reference-insert route (Wikipedia / arXiv screenshots). Optional: without it
+# the route still works, falling back to a clean card rendered from the page's
+# API summary (needs only Pillow, already a core dep). Install for real page
+# screenshots, then run `playwright install chromium` once.
+reference = ["playwright>=1.40"]
+# Development / testing.
+dev = [
+    "httpx2>=2.0.0",  # Starlette TestClient transport; avoids deprecated httpx fallback
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q --basetemp=.pytest-tmp/pytest"

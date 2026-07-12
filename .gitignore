@@ -5,9 +5,17 @@ __pycache__/
 .venv/
 venv/
 env/
+.pytest_cache/
+.pytest-tmp*/
 
 # Logs and runtime output
 *.log
+.pipeline_jobs.sqlite3*
+pipeline-studio-server.lock
+.pipeline-studio-server.lock
+
+# Woosh is an independently versioned, multi-GB checkout with local weights and
+# a virtualenv. Install and verify it separately; never vendor it accidentally.
 backend_out.log
 backend_err.log
 backend_stdout.txt
@@ -22,10 +30,15 @@ remotion_graphics/node_modules/
 frontend/dist/
 backend/static/assets/
 backend/static/index.html
+/artifacts/
 
 # Heavy local models and bundled tools
 /models/
 /wishper/
+# Woosh SFX server: externally installed checkout (~5.7 GB, its own repository,
+# CC-BY-NC weights). Not part of this project's source tree.
+/Woosh/
+streamer.zip
 
 # Generated projects and media
 /projects/
@@ -44,6 +57,7 @@ backend/static/index.html
 
 # Local machine settings
 content_pipeline_settings.json
+/stock_registry.json
 
 # OS/editor
 .DS_Store
