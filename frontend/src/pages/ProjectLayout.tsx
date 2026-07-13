@@ -4,17 +4,42 @@ import * as api from '../api/client'
 import type { PipelineStageState, ProjectInfo } from '../api/types'
 
 const NAV_ITEMS = [
-  { to: '', label: 'Обзор', icon: '01' },
-  { to: 'script', label: 'Сценарий', icon: '00' },
-  { to: 'transcription', label: 'Транскрипция', icon: '02' },
-  { to: 'scenes', label: 'Сцены', icon: '03' },
-  { to: 'shots', label: 'Кадры', icon: '04' },
-  { to: 'board', label: 'Asset Board', icon: '05' },
-  { to: 'timeline', label: 'Timeline', icon: '06' },
-  { to: 'music', label: 'Музыка', icon: '07' },
-  { to: 'sounds', label: 'Звуки', icon: '08' },
-  { to: 'preview', label: 'Preview', icon: '09' },
-]
+  { to: '', label: 'Обзор', marker: '00' },
+  { to: 'script', label: 'Сценарий', marker: '01' },
+  { to: 'transcription', label: 'Транскрипция', marker: '02' },
+  { to: 'scenes', label: 'Сцены', marker: '03' },
+  { to: 'shots', label: 'Кадры', marker: '04' },
+  { to: 'board', label: 'Материалы', marker: '05' },
+  { to: 'timeline', label: 'Монтаж', marker: '06' },
+  { to: 'music', label: 'Музыка', marker: '07' },
+  { to: 'sounds', label: 'Звуки', marker: '08' },
+  { to: 'preview', label: 'Предпросмотр', marker: '09' },
+] as const
+
+const PIPELINE_STAGES = [
+  ['transcript', 'Транскрипция'],
+  ['scenes', 'Сцены'],
+  ['shots', 'Кадры'],
+  ['assets', 'Материалы'],
+  ['validation', 'Проверка'],
+  ['export', 'Экспорт'],
+] as const
+
+const STAGE_APPEARANCE = {
+  pending: { label: 'ожидает', dot: 'bg-slate-700', text: 'text-slate-500' },
+  running: { label: 'выполняется', dot: 'bg-sky-400 motion-safe:animate-pulse', text: 'text-sky-300' },
+  completed: { label: 'готово', dot: 'bg-emerald-400', text: 'text-slate-300' },
+  stale: { label: 'нужно обновить', dot: 'bg-amber-400', text: 'text-amber-300' },
+  failed: { label: 'ошибка', dot: 'bg-rose-400', text: 'text-rose-300' },
+} as const
+
+type DisplayStageStatus = keyof typeof STAGE_APPEARANCE
+
+function displayStageStatus(status: string | undefined): DisplayStageStatus {
+  return status === 'running' || status === 'completed' || status === 'stale' || status === 'failed'
+    ? status
+    : 'pending'
+}
 
 export default function ProjectLayout() {
   const { projectId } = useParams()
@@ -66,98 +91,195 @@ export default function ProjectLayout() {
     }
   }, [projectId])
 
-  if (!project) return null
+  if (!project) {
+    return (
+      <div role="status" aria-live="polite" className="flex min-h-screen items-center justify-center bg-slate-950 px-6 text-slate-400">
+        <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 shadow-xl shadow-black/20">
+          <span aria-hidden="true" className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500 text-[11px] font-black text-white">PS</span>
+          <span>
+            <span className="block text-sm font-semibold text-slate-200">Открываем проект</span>
+            <span className="mt-0.5 block text-xs text-slate-500">Загружаем состояние рабочего процесса…</span>
+          </span>
+        </div>
+      </div>
+    )
+  }
 
-  const stepKeys: [string, string][] = [
-    ['transcript', 'Транскрипция'],
-    ['scenes', 'Сцены'],
-    ['shots', 'Шоты'],
-    ['assets', 'Ассеты'],
-    ['validation', 'QC'],
-    ['export', 'Экспорт'],
-  ]
+  const pipelineStages = PIPELINE_STAGES.map(([key, label]) => {
+    const status = displayStageStatus(stageStates[key]?.status || (steps[key] ? 'completed' : 'pending'))
+    return { key, label, status, error: stageStates[key]?.error }
+  })
+  const completedStages = pipelineStages.filter(({ status }) => status === 'completed').length
+  const failedStages = pipelineStages.filter(({ status }) => status === 'failed').length
+  const staleStages = pipelineStages.filter(({ status }) => status === 'stale').length
+  const progressPercent = Math.round((completedStages / pipelineStages.length) * 100)
+  const progressSummary = failedStages > 0
+    ? 'Есть этапы с ошибками'
+    : staleStages > 0
+      ? 'Некоторые этапы нужно обновить'
+      : completedStages === pipelineStages.length
+        ? 'Все этапы завершены'
+        : 'Проект в работе'
+  const progressBarColor = failedStages > 0 ? 'bg-rose-500' : staleStages > 0 ? 'bg-amber-400' : 'bg-indigo-500'
+  const normalizedPreset = project.preset.trim().toLocaleLowerCase()
+  const normalizedLanguage = project.language.trim().toLocaleLowerCase()
+  const presetLabel = ({ universal: 'Универсальный', documentary: 'Документальный', tutorial: 'Обучающий' } as Record<string, string>)[normalizedPreset]
+    || project.preset
+    || 'Без шаблона'
+  const languageLabel = normalizedLanguage === 'ru'
+    ? 'Русский'
+    : normalizedLanguage === 'en'
+      ? 'Английский'
+      : normalizedLanguage === 'auto' || !normalizedLanguage
+        ? 'Авто'
+        : project.language
 
   return (
-    <div className="h-screen flex bg-slate-950">
+    <div className="flex h-screen overflow-hidden bg-slate-950 text-slate-100">
       {/* Sidebar */}
-      <aside className="flex w-16 shrink-0 flex-col border-r border-slate-800 bg-slate-900 md:w-60">
-        <div className="border-b border-slate-800 p-2 md:p-4">
+      <aside
+        aria-label={`Pipeline Studio. Навигация проекта «${project.name}»`}
+        className="flex w-16 shrink-0 flex-col border-r border-slate-800/90 bg-slate-900 md:w-64"
+      >
+        <div className="border-b border-slate-800 px-2 py-3 md:px-4 md:py-4">
+          <div className="flex items-center justify-center gap-3 md:justify-start">
+            <div aria-hidden="true" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-500 text-[11px] font-black tracking-tight text-white shadow-lg shadow-indigo-950/50">
+              PS
+            </div>
+            <div className="hidden min-w-0 md:block">
+              <p className="truncate text-sm font-bold tracking-tight text-white">Pipeline Studio</p>
+              <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Видеопроизводство</p>
+            </div>
+          </div>
           <button
+            type="button"
             onClick={() => navigate('/')}
             aria-label="Все проекты"
-            className="w-full cursor-pointer text-center text-sm font-semibold text-indigo-400 hover:text-indigo-300 md:text-left"
+            title="Вернуться ко всем проектам"
+            className="mt-3 flex h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-800 bg-slate-950/40 text-sm font-medium text-slate-400 transition-colors hover:border-slate-700 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 md:justify-start md:px-3"
           >
-            <span className="md:hidden">←</span><span className="hidden md:inline">Все проекты</span>
+            <span aria-hidden="true" className="text-base leading-none">←</span>
+            <span className="hidden md:inline">Все проекты</span>
           </button>
-          <h2 className="mt-1 hidden truncate font-bold text-white md:block">{project.name}</h2>
-          <p className="hidden text-xs text-slate-500 md:block">{project.preset} · {project.language}</p>
+
+          <div className="mt-3 hidden rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2.5 md:block">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">Текущий проект</p>
+            <h2 className="mt-1 truncate text-sm font-semibold text-white" title={project.name}>{project.name}</h2>
+            <p className="mt-1 truncate text-[11px] text-slate-500" title={`Шаблон: ${presetLabel}. Язык: ${languageLabel}`}>
+              {presetLabel} <span aria-hidden="true">·</span> {languageLabel}
+            </p>
+          </div>
         </div>
 
-        <nav className="flex-1 p-2 space-y-1">
-          {NAV_ITEMS.map(({ to, label, icon }) => (
+        <nav aria-label="Разделы проекта" className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+          <p className="mb-1 hidden px-3 pt-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-600 md:block">Рабочий процесс</p>
+          {NAV_ITEMS.map(({ to, label, marker }) => (
             <NavLink
               key={to}
               to={to}
               end={to === ''}
               aria-label={label}
+              title={`Открыть раздел «${label}»`}
               className={({ isActive }) =>
-              `flex items-center justify-center gap-3 rounded-lg px-2 py-2.5 text-sm transition-colors md:justify-start md:px-3 ${
+              `group flex items-center justify-center gap-3 rounded-lg px-2 py-2 text-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 md:justify-start md:px-3 ${
                   isActive
-                    ? 'bg-indigo-600/20 text-indigo-400 font-semibold'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    ? 'bg-indigo-500/15 font-semibold text-indigo-300 ring-1 ring-inset ring-indigo-500/20'
+                    : 'text-slate-400 hover:bg-slate-800/80 hover:text-white'
                 }`
               }
             >
-              <span className="w-6 text-center font-mono text-[11px] text-slate-500 md:text-left">{icon}</span>
-              <span className="hidden md:inline">{label}</span>
+              <span aria-hidden="true" className="flex h-6 w-7 shrink-0 items-center justify-center rounded-md bg-slate-950/60 font-mono text-[10px] text-slate-500 transition-colors group-hover:text-slate-300">{marker}</span>
+              <span className="hidden truncate md:inline">{label}</span>
             </NavLink>
           ))}
         </nav>
 
         {/* Pipeline progress + Settings at bottom */}
-        <div className="border-t border-slate-800">
+        <div className="border-t border-slate-800 bg-slate-900/95">
           {busy && (
-            <div role="status" aria-live="polite" className="mx-2 mt-3 flex items-center justify-center gap-2 rounded-lg border border-sky-800 bg-sky-950/40 px-2 py-2 text-xs text-sky-300 md:mx-3 md:justify-start md:px-3">
-              <span className="h-2.5 w-2.5 shrink-0 animate-ping rounded-full bg-sky-400" />
-              <span className="hidden truncate md:inline">Идёт: {busy}</span>
+            <div
+              role="status"
+              aria-live="polite"
+              aria-label={`Выполняется задача: ${busy}`}
+              title={`Выполняется: ${busy}`}
+              className="mx-2 mt-2 flex min-h-10 items-center justify-center gap-2.5 rounded-lg border border-sky-800/70 bg-sky-950/40 px-2 py-2 text-sky-300 md:mx-3 md:justify-start md:px-3"
+            >
+              <span aria-hidden="true" className="relative flex h-2.5 w-2.5 shrink-0">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-60 motion-safe:animate-ping" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-sky-400" />
+              </span>
+              <span className="hidden min-w-0 md:block">
+                <span className="block text-[9px] font-semibold uppercase tracking-[0.14em] text-sky-500">Выполняется</span>
+                <span className="block truncate text-xs font-medium text-sky-200">{busy}</span>
+              </span>
             </div>
           )}
-          <div className="hidden p-3 md:block">
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Прогресс</p>
-            <div className="space-y-1">
-              {stepKeys.map(([key, label]) => (
-                <div key={key} className="flex items-center gap-2 text-xs" title={stageStates[key]?.error || stageStates[key]?.status || ''}>
-                  <span className={`w-3 h-3 rounded-full shrink-0 ${
-                    stageStates[key]?.status === 'completed' ? 'bg-green-500'
-                      : stageStates[key]?.status === 'stale' ? 'bg-amber-500'
-                        : stageStates[key]?.status === 'failed' ? 'bg-red-500'
-                          : 'bg-slate-700'
-                  }`} />
-                  <span className={stageStates[key]?.status === 'completed' ? 'text-slate-300' : stageStates[key]?.status === 'stale' ? 'text-amber-400' : 'text-slate-600'}>
-                    {label}{stageStates[key]?.status === 'stale' ? ' · устарело' : ''}
-                  </span>
-                </div>
-              ))}
+          <div className="hidden px-4 py-3 md:block">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-600">Готовность цикла</p>
+                <p className="mt-0.5 text-xs text-slate-400">{progressSummary}</p>
+              </div>
+              <span className="font-mono text-xs font-semibold text-slate-300">{progressPercent}%</span>
+            </div>
+            <div
+              role="progressbar"
+              aria-label="Готовность проекта"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progressPercent}
+              aria-valuetext={`${completedStages} из ${pipelineStages.length} этапов завершено`}
+              className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"
+            >
+              <div className={`h-full rounded-full transition-[width] duration-500 ${progressBarColor}`} style={{ width: `${progressPercent}%` }} />
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5">
+              {pipelineStages.map(({ key, label, status, error }) => {
+                const appearance = STAGE_APPEARANCE[status]
+                const statusText = `${label}: ${appearance.label}${error ? `. ${error}` : ''}`
+                return (
+                  <div key={key} aria-label={statusText} title={statusText} className="flex min-w-0 items-center gap-1.5 text-[11px]">
+                    <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${appearance.dot}`} />
+                    <span className={`truncate ${appearance.text}`}>{label}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          <div className="px-2 py-2 md:hidden">
+            <div
+              role="progressbar"
+              aria-label="Готовность проекта"
+              aria-valuemin={0}
+              aria-valuemax={pipelineStages.length}
+              aria-valuenow={completedStages}
+              aria-valuetext={`${completedStages} из ${pipelineStages.length} этапов завершено`}
+              title={`${progressSummary}: ${completedStages} из ${pipelineStages.length}`}
+              className="mx-auto flex h-8 w-10 items-center justify-center rounded-lg border border-slate-800 bg-slate-950/60 font-mono text-[10px] font-semibold text-slate-400"
+            >
+              {completedStages}/{pipelineStages.length}
             </div>
           </div>
           <NavLink
             to="/settings"
+            aria-label="Настройки приложения"
+            title="Настройки приложения"
             className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-3 text-sm transition-colors border-t border-slate-800 ${
+              `flex items-center justify-center gap-3 border-t border-slate-800 px-3 py-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 md:justify-start ${
                 isActive
-                  ? 'bg-indigo-600/20 text-indigo-400 font-semibold'
-                  : 'text-slate-500 hover:text-white hover:bg-slate-800'
+                  ? 'bg-indigo-500/15 font-semibold text-indigo-300'
+                  : 'text-slate-500 hover:bg-slate-800 hover:text-white'
               }`
             }
           >
-            <span className="w-6 text-[11px] text-slate-500 font-mono">SET</span>
+            <span aria-hidden="true" className="w-7 text-center text-base text-slate-500">⚙</span>
             <span className="hidden md:inline">Настройки</span>
           </NavLink>
         </div>
       </aside>
 
       {/* Main content */}
-      <main className="min-w-0 flex-1 overflow-auto">
+      <main aria-label={`Рабочая область проекта «${project.name}»`} className="min-w-0 flex-1 overflow-auto">
         <Outlet context={{ projectId, project, steps, setSteps, stageStates, setStageStates, busy, setBusy }} />
       </main>
     </div>

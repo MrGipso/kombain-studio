@@ -19,8 +19,21 @@ const Settings = lazy(() => import('./pages/Settings'))
 
 function PageLoader() {
   return (
-    <div role="status" aria-live="polite" className="flex min-h-48 items-center justify-center bg-slate-950 text-sm text-slate-400">
-      Загрузка интерфейса…
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex min-h-screen items-center justify-center bg-slate-950/80 px-6 text-slate-300"
+    >
+      <div className="flex items-center gap-4 rounded-2xl border border-white/10 bg-slate-900/80 px-5 py-4 shadow-2xl shadow-indigo-950/30 backdrop-blur-xl">
+        <span className="relative flex size-9 items-center justify-center rounded-xl bg-indigo-500 text-sm font-bold text-white shadow-lg shadow-indigo-500/20">
+          PS
+          <span className="absolute -inset-1 -z-10 animate-pulse rounded-2xl bg-indigo-500/20" />
+        </span>
+        <span>
+          <span className="block text-sm font-semibold text-slate-100">Pipeline Studio</span>
+          <span className="mt-0.5 block text-xs text-slate-500">Загрузка рабочего пространства…</span>
+        </span>
+      </div>
     </div>
   )
 }
