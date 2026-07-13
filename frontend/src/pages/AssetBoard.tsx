@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useOutletContext, useSearchParams } from 'react-router-dom'
+import { type BlockerFunction, useBlocker, useOutletContext, useSearchParams } from 'react-router-dom'
 import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
 import { hasMedia, isExcluded, isIncluded } from '../lib/cards'
@@ -13,6 +13,27 @@ interface Context {
 
 const STATUSES = ['all', 'planned', 'image_ready', 'generating', 'generated', 'needs_review', 'approved', 'rejected', 'skipped']
 const ROUTES = ['all', 'image+video', 'image', 'stock', 'kenburns', 'reference']
+
+const STATUS_LABELS: Record<string, string> = {
+  all: 'Все статусы',
+  planned: 'Запланировано',
+  image_ready: 'Картинка готова',
+  generating: 'Создаётся',
+  generated: 'Готово',
+  needs_review: 'Нужна проверка',
+  approved: 'Одобрено',
+  rejected: 'Отклонено',
+  skipped: 'Исключено',
+}
+
+const ROUTE_FILTER_LABELS: Record<string, string> = {
+  all: 'Все способы',
+  'image+video': 'Картинка → видео',
+  image: 'Только картинка',
+  stock: 'Сток-видео',
+  kenburns: 'Картинка + зум',
+  reference: 'Карточка источника',
+}
 
 // Manually-selectable routes in the card editor (no "all" pseudo-filter).
 const CARD_ROUTES = ['image+video', 'image', 'stock', 'kenburns', 'reference']
@@ -32,29 +53,58 @@ function routePatch(route: string): Partial<AssetCard> {
   return { route: 'image+video', visual_type: 'ai_image_then_i2v', video_model: 'ltx2.3_i2v' }
 }
 
+function editableCardPatch(card: Partial<AssetCard>): Partial<AssetCard> {
+  const patch: Partial<AssetCard> = {}
+  if (typeof card.description === 'string') patch.description = card.description
+  if (typeof card.route === 'string') patch.route = card.route
+  if (typeof card.visual_type === 'string') patch.visual_type = card.visual_type
+  if (typeof card.image_model === 'string') patch.image_model = card.image_model
+  if (typeof card.video_model === 'string') patch.video_model = card.video_model
+  if (typeof card.image_prompt === 'string') patch.image_prompt = card.image_prompt
+  if (typeof card.video_prompt === 'string') patch.video_prompt = card.video_prompt
+  if (typeof card.start === 'string') patch.start = card.start
+  if (typeof card.end === 'string') patch.end = card.end
+  if (typeof card.notes === 'string') patch.notes = card.notes
+  if (typeof card.text_overlay_enabled === 'boolean') patch.text_overlay_enabled = card.text_overlay_enabled
+  if (typeof card.text_overlay_text === 'string') patch.text_overlay_text = card.text_overlay_text
+  if (typeof card.text_overlay_position === 'string') patch.text_overlay_position = card.text_overlay_position
+  if (typeof card.text_overlay_style === 'string') patch.text_overlay_style = card.text_overlay_style
+  return patch
+}
+
+function cardPatchConflicts(serverCard: AssetCard, baseline: Partial<AssetCard>, patch: Partial<AssetCard>) {
+  const serverValues = serverCard as unknown as Record<string, unknown>
+  const baselineValues = baseline as unknown as Record<string, unknown>
+  const localValues = patch as unknown as Record<string, unknown>
+  return Object.keys(patch).some((key) => (
+    !Object.is(serverValues[key], baselineValues[key])
+    && !Object.is(serverValues[key], localValues[key])
+  ))
+}
+
 const TEXT_STYLES = [
-  ['subtitle', 'Subtitle'],
-  ['caption', 'Caption'],
-  ['title', 'Title'],
-  ['stat', 'Stat'],
-  ['terminal', 'Terminal'],
-  ['badge', 'Badge'],
-  ['warning', 'Warning'],
-  ['label', 'Label'],
-  ['quote', 'Quote'],
+  ['subtitle', 'Субтитр'],
+  ['caption', 'Подпись'],
+  ['title', 'Заголовок'],
+  ['stat', 'Показатель'],
+  ['terminal', 'Терминал'],
+  ['badge', 'Метка'],
+  ['warning', 'Предупреждение'],
+  ['label', 'Ярлык'],
+  ['quote', 'Цитата'],
 ]
 
 const TEXT_POSITIONS = [
-  ['bottom', 'Bottom'],
-  ['top', 'Top'],
-  ['center', 'Center'],
-  ['top_left', 'Top left'],
-  ['top_right', 'Top right'],
-  ['bottom_left', 'Bottom left'],
-  ['bottom_right', 'Bottom right'],
-  ['left', 'Left'],
-  ['right', 'Right'],
-  ['manual', 'Manual'],
+  ['bottom', 'Снизу'],
+  ['top', 'Сверху'],
+  ['center', 'По центру'],
+  ['top_left', 'Сверху слева'],
+  ['top_right', 'Сверху справа'],
+  ['bottom_left', 'Снизу слева'],
+  ['bottom_right', 'Снизу справа'],
+  ['left', 'Слева'],
+  ['right', 'Справа'],
+  ['manual', 'Вручную'],
 ]
 
 const STATUS_COLORS: Record<string, string> = {
@@ -89,11 +139,11 @@ function bestMedia(card: AssetCard) {
 }
 
 const VARIANT_FIELD_LABELS: Record<string, string> = {
-  image_output: 'Image',
-  video_output: 'Video',
-  reference_output: 'Reference',
-  remotion_output: 'Graphic',
-  assigned_media: 'Assigned',
+  image_output: 'Изображение',
+  video_output: 'Видео',
+  reference_output: 'Источник',
+  remotion_output: 'Графика',
+  assigned_media: 'Назначенное медиа',
 }
 
 function variantFileName(path: string) {
@@ -101,82 +151,269 @@ function variantFileName(path: string) {
 }
 
 function variantSize(bytes: number) {
-  if (!bytes) return '0 B'
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (!bytes) return '0 Б'
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} КБ`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
+}
+
+function activityLabel(value: string) {
+  if (value === 'save') return 'Сохранение карточки'
+  if (value.startsWith('generate-')) return 'Создание материала'
+  if (value.startsWith('finalize-')) return 'Финальный рендер'
+  if (value.startsWith('stock-')) return 'Подбор сток-видео'
+  if (value.startsWith('exclude-')) return 'Изменение участия в финале'
+  if (value.startsWith('prompt-')) return 'Улучшение промпта'
+  if (value.startsWith('variant-')) return 'Выбор версии материала'
+  if (value === 'batch-route') return 'Сборка материалов'
+  if (value === 'batch-fill') return 'Заполнение через ИИ'
+  if (value === 'batch-finalize') return 'Финальное качество'
+  if (value === 'batch-stock') return 'Пакетный подбор стока'
+  if (value === 'batch-image') return 'Пакетная генерация картинок'
+  if (value === 'batch-video') return 'Пакетная генерация видео'
+  if (value === 'batch-exclude') return 'Пакетное исключение из финала'
+  return 'Операция проекта'
 }
 
 export default function AssetBoard() {
   const { projectId, busy: projectBusy, setBusy } = useOutletContext<Context>()
   const toast = useToast()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [cards, setCards] = useState<AssetCard[]>([])
+  const [boardLoading, setBoardLoading] = useState(true)
+  const [boardError, setBoardError] = useState<string | null>(null)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
-  const [checked, setChecked] = useState<Set<number>>(new Set())
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [dirtyCardIds, setDirtyCardIds] = useState<Set<string>>(new Set())
+  const [conflictedCardIds, setConflictedCardIds] = useState<Set<string>>(new Set())
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterRoute, setFilterRoute] = useState('all')
   const [query, setQuery] = useState('')
+  const [compactMode, setCompactMode] = useState(false)
   const [localBusy, setLocalBusyState] = useState<string | null>(null)
   const [mediaVersion, setMediaVersion] = useState(0)
   const [stockProgress, setStockProgress] = useState<{ label: string; done: number; total: number } | null>(null)
   const [cancelRequested, setCancelRequested] = useState(false)
   const [variantHistory, setVariantHistory] = useState<AssetVariantHistory | null>(null)
   const [variantsLoading, setVariantsLoading] = useState(false)
+  const [variantsError, setVariantsError] = useState<string | null>(null)
   const [selectingVariant, setSelectingVariant] = useState<string | null>(null)
   const cancelBatchRef = useRef(false)
+  const boardRequestRef = useRef(0)
   const variantRequestRef = useRef(0)
+  const hasLoadedBoardRef = useRef(false)
+  const selectedCardIdRef = useRef<string | null>(null)
+  const selectedIndexRef = useRef<number | null>(null)
+  const lastHandledCardParamRef = useRef<string | null>(null)
+  const dirtyCardIdsRef = useRef<Set<string>>(new Set())
+  const dirtyPatchesRef = useRef<Map<string, Partial<AssetCard>>>(new Map())
+  const dirtyBaselinesRef = useRef<Map<string, Partial<AssetCard>>>(new Map())
+  const conflictedCardIdsRef = useRef<Set<string>>(new Set())
+  const editorRef = useRef<HTMLElement | null>(null)
+  const materialsListRef = useRef<HTMLElement | null>(null)
+  const navigationDialogRef = useRef<HTMLDivElement | null>(null)
   const busy = localBusy || projectBusy
   const setLocalBusy = (value: string | null) => {
+    if (value) boardRequestRef.current += 1
     setLocalBusyState(value)
     setBusy(value)
   }
+  const scrollToSection = useCallback((element: HTMLElement | null) => {
+    if (!element) return
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+    window.requestAnimationFrame(() => element.scrollIntoView({ behavior, block: 'start' }))
+  }, [])
   // Generation/render is blocked while a pipeline step runs on another page.
 
-  const load = useCallback(async () => {
-    const board = await api.getAssetBoard(projectId).catch((e) => {
-      toast.error(`Не удалось загрузить доску: ${(e as Error).message}`)
-      return [] as AssetCard[]
-    })
-    setCards(board)
-    setSelectedIndex((current) => {
-      if (!board.length) return null
-      if (current === null || current >= board.length) return 0
-      return current
-    })
-  }, [projectId, toast])
+  const load = useCallback(async (): Promise<boolean> => {
+    const requestId = ++boardRequestRef.current
+    try {
+      const board = await api.getAssetBoard(projectId)
+      if (requestId !== boardRequestRef.current) return false
+      const boardCardIds = new Set(board.map((card) => card.card_id))
+      const retainedPatches = new Map(
+        [...dirtyPatchesRef.current].filter(([cardId]) => boardCardIds.has(cardId)),
+      )
+      const retainedBaselines = new Map(
+        [...dirtyBaselinesRef.current].filter(([cardId]) => boardCardIds.has(cardId)),
+      )
+      const retainedDirtyIds = new Set(retainedPatches.keys())
+      const nextConflicts = new Set<string>()
+      for (const serverCard of board) {
+        const patch = retainedPatches.get(serverCard.card_id)
+        const baseline = retainedBaselines.get(serverCard.card_id)
+        if (patch && baseline && cardPatchConflicts(serverCard, baseline, patch)) nextConflicts.add(serverCard.card_id)
+      }
+      dirtyPatchesRef.current = retainedPatches
+      dirtyBaselinesRef.current = retainedBaselines
+      dirtyCardIdsRef.current = retainedDirtyIds
+      conflictedCardIdsRef.current = nextConflicts
+      setDirtyCardIds(retainedDirtyIds)
+      setConflictedCardIds(nextConflicts)
+      setChecked((current) => new Set([...current].filter((cardId) => boardCardIds.has(cardId))))
+      setCards(() => board.map((serverCard) => {
+        const localPatch = retainedPatches.get(serverCard.card_id)
+        return hasLoadedBoardRef.current
+          && localPatch
+          ? { ...serverCard, ...localPatch }
+          : serverCard
+      }))
+      const previousIndex = selectedIndexRef.current
+      const wasLoaded = hasLoadedBoardRef.current
+      if (!board.length) {
+        selectedCardIdRef.current = null
+        selectedIndexRef.current = null
+        setSelectedIndex(null)
+      } else {
+        const selectedById = selectedCardIdRef.current
+          ? board.findIndex((card) => card.card_id === selectedCardIdRef.current)
+          : -1
+        const nextIndex = selectedById >= 0
+          ? selectedById
+          : previousIndex === null || previousIndex >= board.length ? 0 : previousIndex
+        selectedCardIdRef.current = board[nextIndex].card_id
+        selectedIndexRef.current = nextIndex
+        setSelectedIndex(nextIndex)
+        if (wasLoaded && nextIndex !== previousIndex) {
+          const cardParam = String(nextIndex)
+          lastHandledCardParamRef.current = cardParam
+          setSearchParams((current) => {
+            const next = new URLSearchParams(current)
+            next.set('card', cardParam)
+            return next
+          }, { replace: true })
+        }
+      }
+      hasLoadedBoardRef.current = true
+      setBoardError(null)
+      return true
+    } catch (error) {
+      if (requestId !== boardRequestRef.current) return false
+      const message = (error as Error).message || 'Неизвестная ошибка'
+      setBoardError(message)
+      if (!hasLoadedBoardRef.current) toast.error(`Не удалось загрузить материалы: ${message}`)
+      return false
+    } finally {
+      if (requestId === boardRequestRef.current) setBoardLoading(false)
+    }
+  }, [projectId, setSearchParams, toast])
+
+  const refreshBoardAfterConflict = useCallback(async (successMessage: string, failureMessage: string) => {
+    setBoardLoading(true)
+    const refreshed = await load()
+    if (refreshed) toast.info(successMessage)
+    else toast.error(failureMessage)
+    return refreshed
+  }, [load, toast])
 
   useEffect(() => {
-    load()
+    boardRequestRef.current += 1
+    hasLoadedBoardRef.current = false
+    selectedCardIdRef.current = null
+    selectedIndexRef.current = null
+    lastHandledCardParamRef.current = null
+    dirtyCardIdsRef.current = new Set()
+    dirtyPatchesRef.current = new Map()
+    dirtyBaselinesRef.current = new Map()
+    conflictedCardIdsRef.current = new Set()
+    setDirtyCardIds(new Set())
+    setConflictedCardIds(new Set())
+    setChecked(new Set())
+    setCards([])
+    setBoardError(null)
+    setBoardLoading(true)
+    void load()
   }, [load])
 
-  const loadVariants = useCallback(async (cardIndex: number) => {
+  const selected = selectedIndex === null ? null : cards[selectedIndex]
+
+  const loadVariants = useCallback(async (cardIndex: number, cardId: string) => {
+    if (selectedCardIdRef.current !== cardId) return
     const requestId = ++variantRequestRef.current
     setVariantsLoading(true)
+    setVariantHistory(null)
+    setVariantsError(null)
     try {
       const history = await api.getAssetVariants(projectId, cardIndex)
-      if (requestId === variantRequestRef.current) setVariantHistory(history)
-    } catch {
-      if (requestId === variantRequestRef.current) setVariantHistory(null)
+      if (requestId === variantRequestRef.current && selectedCardIdRef.current === cardId) {
+        if (history.card_id === cardId) {
+          setVariantHistory(history)
+        } else {
+          setVariantHistory(null)
+          setVariantsError('Состав доски изменился; обновляю выбранную карточку…')
+          setBoardLoading(true)
+          void load()
+        }
+      }
+    } catch (error) {
+      if (requestId === variantRequestRef.current && selectedCardIdRef.current === cardId) {
+        setVariantHistory(null)
+        setVariantsError((error as Error).message || 'Неизвестная ошибка')
+        if (api.isApiError(error, 404)) {
+          setBoardLoading(true)
+          void load()
+        }
+      }
     } finally {
-      if (requestId === variantRequestRef.current) setVariantsLoading(false)
+      if (requestId === variantRequestRef.current && selectedCardIdRef.current === cardId) {
+        setVariantsLoading(false)
+      }
     }
-  }, [projectId])
-
-  useEffect(() => {
-    if (selectedIndex === null) {
-      setVariantHistory(null)
-      return
-    }
-    void loadVariants(selectedIndex)
-  }, [loadVariants, selectedIndex])
+  }, [load, projectId])
 
   // Deep link from the Preview QC list: /board?card=N opens that card.
-  const [searchParams] = useSearchParams()
   useEffect(() => {
     const c = searchParams.get('card')
     if (c === null || !cards.length) return
+    if (lastHandledCardParamRef.current === c) return
     const n = parseInt(c, 10)
-    if (!isNaN(n) && n >= 0 && n < cards.length) setSelectedIndex(n)
-  }, [searchParams, cards.length])
+    if (!isNaN(n) && n >= 0 && n < cards.length) {
+      lastHandledCardParamRef.current = c
+      selectedCardIdRef.current = cards[n].card_id
+      selectedIndexRef.current = n
+      setSelectedIndex(n)
+    }
+  }, [cards, searchParams])
+
+  useEffect(() => {
+    selectedIndexRef.current = selectedIndex
+    selectedCardIdRef.current = selectedIndex === null ? null : cards[selectedIndex]?.card_id || null
+  }, [cards, selectedIndex])
+
+  const selectedVariantRevision = selected
+    ? [
+        selected.card_id,
+        selected.status,
+        selected.image_output,
+        selected.video_output,
+        selected.reference_output,
+        selected.assigned_media,
+      ].join('\u0000')
+    : ''
+  const selectedVariantCardId = selected?.card_id ?? ''
+
+  useEffect(() => {
+    if (selectedIndex === null || !selectedVariantCardId) {
+      variantRequestRef.current += 1
+      setVariantHistory(null)
+      setVariantsError(null)
+      setVariantsLoading(false)
+      return
+    }
+    void loadVariants(selectedIndex, selectedVariantCardId)
+  }, [loadVariants, selectedIndex, selectedVariantCardId, selectedVariantRevision])
+
+  const selectCard = useCallback((index: number) => {
+    selectedCardIdRef.current = cards[index]?.card_id || null
+    selectedIndexRef.current = index
+    lastHandledCardParamRef.current = String(index)
+    setSelectedIndex(index)
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('card', String(index))
+      return next
+    }, { replace: true })
+    if (window.matchMedia('(max-width: 1279px)').matches) scrollToSection(editorRef.current)
+  }, [cards, scrollToSection, setSearchParams])
 
   // Auto-refresh while any card is still generating, so renders that finished
   // on the server (e.g. while you were on another tab) get picked up here.
@@ -185,13 +422,13 @@ export default function AssetBoard() {
     [cards],
   )
   useEffect(() => {
-    if (!anyGenerating) return
+    if (!anyGenerating || busy) return
     const id = setInterval(() => {
       load()
       setMediaVersion((v) => v + 1)
     }, 4000)
     return () => clearInterval(id)
-  }, [anyGenerating, load])
+  }, [anyGenerating, busy, load])
 
   const visibleIndexes = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -207,8 +444,10 @@ export default function AssetBoard() {
       .map(({ index }) => index)
   }, [cards, filterRoute, filterStatus, query])
 
-  const selected = selectedIndex === null ? null : cards[selectedIndex]
-  const checkedIndexes = [...checked].filter((index) => index >= 0 && index < cards.length)
+  const checkedIndexes = cards.reduce<number[]>((indexes, card, index) => {
+    if (checked.has(card.card_id)) indexes.push(index)
+    return indexes
+  }, [])
 
   const counts = useMemo(() => ({
     total: cards.length,
@@ -217,14 +456,66 @@ export default function AssetBoard() {
     excluded: cards.filter(isExcluded).length,
     review: cards.filter((c) => c.status === 'needs_review').length,
   }), [cards])
-  const isBatchBusy = Boolean(busy?.startsWith('batch-'))
+  const isBatchBusy = Boolean(localBusy?.startsWith('batch-'))
+
+  const clearDirtyCard = (cardId: string) => {
+    if (!dirtyPatchesRef.current.has(cardId)) return
+    const nextPatches = new Map(dirtyPatchesRef.current)
+    nextPatches.delete(cardId)
+    dirtyPatchesRef.current = nextPatches
+    const nextBaselines = new Map(dirtyBaselinesRef.current)
+    nextBaselines.delete(cardId)
+    dirtyBaselinesRef.current = nextBaselines
+    const nextConflicts = new Set(conflictedCardIdsRef.current)
+    nextConflicts.delete(cardId)
+    conflictedCardIdsRef.current = nextConflicts
+    setConflictedCardIds(nextConflicts)
+    const nextIds = new Set(nextPatches.keys())
+    dirtyCardIdsRef.current = nextIds
+    setDirtyCardIds(nextIds)
+  }
 
   const updateCardAt = (index: number, card: AssetCard) => {
+    // A poll may have started while the mutation was running. Its snapshot is
+    // older than this successful response and must not overwrite the card.
+    boardRequestRef.current += 1
     setCards((prev) => {
+      const targetIndex = prev[index]?.card_id === card.card_id
+        ? index
+        : prev.findIndex((candidate) => candidate.card_id === card.card_id)
+      if (targetIndex < 0) return prev
       const next = [...prev]
-      next[index] = card
+      next[targetIndex] = card
       return next
     })
+    clearDirtyCard(card.card_id)
+  }
+
+  const editCardAt = (index: number, changes: Partial<AssetCard>) => {
+    const currentCard = cards[index]
+    if (!currentCard) return
+    const patch = editableCardPatch(changes)
+    if (!Object.keys(patch).length) return
+    setCards((prev) => {
+      const next = [...prev]
+      next[index] = { ...next[index], ...patch }
+      return next
+    })
+    const nextPatches = new Map(dirtyPatchesRef.current)
+    nextPatches.set(currentCard.card_id, { ...nextPatches.get(currentCard.card_id), ...patch })
+    dirtyPatchesRef.current = nextPatches
+    const nextBaselines = new Map(dirtyBaselinesRef.current)
+    const baseline = { ...nextBaselines.get(currentCard.card_id) }
+    const baselineValues = baseline as unknown as Record<string, unknown>
+    const currentValues = currentCard as unknown as Record<string, unknown>
+    for (const key of Object.keys(patch)) {
+      if (!(key in baselineValues)) baselineValues[key] = currentValues[key]
+    }
+    nextBaselines.set(currentCard.card_id, baseline)
+    dirtyBaselinesRef.current = nextBaselines
+    const nextIds = new Set(nextPatches.keys())
+    dirtyCardIdsRef.current = nextIds
+    setDirtyCardIds(nextIds)
   }
 
   const patchCardAt = (index: number, patch: Partial<AssetCard>) => {
@@ -236,50 +527,99 @@ export default function AssetBoard() {
     })
   }
 
-  const saveSelected = async () => {
+  const saveSelected = async (overwriteConflict = false) => {
     if (selectedIndex === null || !selected) return
+    const patch = dirtyPatchesRef.current.get(selected.card_id)
+    if (!patch) return
+    if (conflictedCardIdsRef.current.has(selected.card_id) && !overwriteConflict) {
+      toast.error('Сначала выберите, какую версию конфликтующих полей сохранить')
+      return
+    }
     setLocalBusy('save')
     try {
-      const updated = await api.updateCard(projectId, selectedIndex, selected)
+      const updated = await api.updateCard(projectId, selectedIndex, { card_id: selected.card_id, ...patch })
       updateCardAt(selectedIndex, updated)
       toast.success('Карточка сохранена')
     } catch (e) {
-      toast.error((e as Error).message)
+      if (api.isBoardRevisionConflict(e)) {
+        await refreshBoardAfterConflict(
+          'Доска изменилась на сервере. Данные обновлены, а ваши правки сохранены локально — проверьте конфликт и повторите сохранение.',
+          'Доска изменилась на сервере, но обновить её не удалось. Повторите загрузку.',
+        )
+      } else {
+        toast.error((e as Error).message)
+      }
     } finally {
       setLocalBusy(null)
     }
   }
 
+  const discardSelectedChanges = () => {
+    if (!selected) return
+    clearDirtyCard(selected.card_id)
+    setBoardLoading(true)
+    void load()
+    toast.info('Локальные правки отменены; загружаю серверную версию')
+  }
+
   const activateVariant = async (variant: AssetVariant) => {
-    if (selectedIndex === null || variant.selected || busy) return
+    if (selectedIndex === null || variant.selected || busy || selectingVariant !== null) return
+    const card = cards[selectedIndex]
+    if (!card || dirtyPatchesRef.current.has(card.card_id)) return
     setSelectingVariant(variant.id)
+    setLocalBusy(`variant-${selectedIndex}`)
     try {
       const result = await api.selectAssetVariant(projectId, selectedIndex, variant.id)
       updateCardAt(selectedIndex, result.card)
       setMediaVersion((value) => value + 1)
-      await loadVariants(selectedIndex)
+      if (selectedCardIdRef.current === result.card.card_id) {
+        await loadVariants(selectedIndex, result.card.card_id)
+      }
       toast.success(`${VARIANT_FIELD_LABELS[variant.output_field] || variant.output_field}: версия выбрана`)
     } catch (error) {
-      toast.error(`Не удалось выбрать версию: ${(error as Error).message}`)
+      if (api.isBoardRevisionConflict(error)) {
+        await refreshBoardAfterConflict(
+          'Доска обновлена после параллельного изменения. Повторите выбор версии.',
+          'Не удалось обновить доску после параллельного изменения.',
+        )
+      } else {
+        toast.error(`Не удалось выбрать версию: ${(error as Error).message}`)
+      }
     } finally {
       setSelectingVariant(null)
+      setLocalBusy(null)
     }
   }
 
   const patchCard = async (index: number, patch: Partial<AssetCard>) => {
-    const updated = await api.updateCard(projectId, index, patch)
+    const card = cards[index]
+    if (!card) throw new Error('Карточка не найдена')
+    const updated = await api.updateCard(projectId, index, { card_id: card.card_id, ...patch })
     updateCardAt(index, updated)
   }
 
   const saveCardForAction = async (index: number): Promise<boolean> => {
     const card = cards[index]
     if (!card) return false
+    const patch = dirtyPatchesRef.current.get(card.card_id)
+    if (!patch) return true
+    if (conflictedCardIdsRef.current.has(card.card_id)) {
+      toast.error(`Кадр #${card.shot_index}: сначала разрешите конфликт правок`)
+      return false
+    }
     try {
-      const updated = await api.updateCard(projectId, index, card)
+      const updated = await api.updateCard(projectId, index, { card_id: card.card_id, ...patch })
       updateCardAt(index, updated)
       return true
     } catch (e) {
-      toast.error(`Не удалось сохранить карточку перед запуском: ${(e as Error).message}`)
+      if (api.isBoardRevisionConflict(e)) {
+        await refreshBoardAfterConflict(
+          'Доска обновлена после параллельного изменения. Локальные правки сохранены; проверьте карточку и повторите запуск.',
+          'Не удалось обновить доску после параллельного изменения. Повторите загрузку.',
+        )
+      } else {
+        toast.error(`Не удалось сохранить карточку перед запуском: ${(e as Error).message}`)
+      }
       return false
     }
   }
@@ -295,7 +635,14 @@ export default function AssetBoard() {
         await patchCard(index, { status: 'skipped' })
       }
     } catch (e) {
-      toast.error((e as Error).message)
+      if (api.isBoardRevisionConflict(e)) {
+        await refreshBoardAfterConflict(
+          'Доска обновлена после параллельного изменения. Повторите изменение участия в финале.',
+          'Не удалось обновить доску после параллельного изменения.',
+        )
+      } else {
+        toast.error((e as Error).message)
+      }
     } finally {
       setLocalBusy(null)
     }
@@ -307,7 +654,7 @@ export default function AssetBoard() {
       const result = await api.generateCard(projectId, index, cards[index].card_id, mode, skipStock, forceFull)
       if (result.card) {
         updateCardAt(index, result.card)
-        if (selectedIndex === index) void loadVariants(index)
+        if (selectedCardIdRef.current === result.card.card_id) void loadVariants(index, result.card.card_id)
         setMediaVersion((v) => v + 1)
         return result.card
       }
@@ -334,8 +681,8 @@ export default function AssetBoard() {
     setLocalBusy(`finalize-${index}`)
     try {
       if (!(await saveCardForAction(index))) return
-      await runGenerateCard(index, 'video', false, true)
-      toast.success('Кадр отрендерен в финальном качестве')
+      const result = await runGenerateCard(index, 'video', false, true)
+      if (result) toast.success('Кадр отрендерен в финальном качестве')
     } finally {
       setLocalBusy(null)
     }
@@ -372,7 +719,7 @@ export default function AssetBoard() {
       const result = await api.resolveStock(projectId, index, cards[index].card_id)
       if (result.ok && result.card) {
         updateCardAt(index, result.card)
-        if (selectedIndex === index) void loadVariants(index)
+        if (selectedCardIdRef.current === result.card.card_id) void loadVariants(index, result.card.card_id)
         setMediaVersion((v) => v + 1)
         if (showToast) toast.success(`Сток подобран${result.source ? ` (${result.source})` : ''}`)
         return result.card
@@ -514,6 +861,7 @@ export default function AssetBoard() {
         // No stock found — defer to the Krea phase as a Ken Burns still.
         try {
           const updated = await api.updateCard(projectId, i, {
+            card_id: live[i].card_id,
             visual_type: 'still_kenburns',
             route: 'kenburns',
             notes: `${live[i].notes ? live[i].notes + '\n' : ''}Сток не найден → Ken Burns`,
@@ -622,410 +970,666 @@ export default function AssetBoard() {
 
   const batchExclude = async () => {
     const targets = checkedIndexes.length ? checkedIndexes : visibleIndexes
-    setLocalBusy('batch-exclude')
-    try {
-      let n = 0
-      for (const index of targets) {
-        const updated = await api.updateCard(projectId, index, { status: 'skipped' })
+    if (!targets.length) { toast.error('Нет материалов для исключения'); return }
+    const scope = checkedIndexes.length
+      ? `${targets.length} выбранных материалов`
+      : `${targets.length} видимых материалов`
+    if (!window.confirm(`Исключить из финального видео ${scope}? Это действие изменит статус всех материалов в указанной области.`)) return
+    const label = 'Исключение из финала'
+    startBatch('batch-exclude', label, targets.length)
+    let n = 0
+    let failed = 0
+    let done = 0
+    let revisionConflict = false
+    let fatalError: string | null = null
+    for (const index of targets) {
+      if (cancelBatchRef.current) break
+      try {
+        const updated = await api.updateCard(projectId, index, { card_id: cards[index].card_id, status: 'skipped' })
         updateCardAt(index, updated)
         n++
+      } catch (error) {
+        failed++
+        if (api.isApiError(error, 409)) {
+          if (api.isBoardRevisionConflict(error)) revisionConflict = true
+          else fatalError = error.message
+          break
+        }
+        toast.error(`Кадр #${cards[index]?.shot_index ?? index}: ${(error as Error).message}`)
       }
-      toast.success(`Исключено из финала: ${n}`)
-    } catch (e) {
-      toast.error((e as Error).message)
-    } finally {
-      setLocalBusy(null)
+      done++
+      setStockProgress({ label, done, total: targets.length })
+    }
+    const stopped = cancelBatchRef.current
+    finishBatch()
+    if (revisionConflict) {
+      await refreshBoardAfterConflict(
+        'Очередь остановлена: доска была изменена параллельно и уже обновлена.',
+        'Очередь остановлена из-за параллельного изменения; обновить доску не удалось.',
+      )
+    } else if (fatalError) {
+      toast.error(`${label}: очередь остановлена — ${fatalError}`)
+    } else if (stopped) {
+      toast.info(`${label}: остановлено после ${done} из ${targets.length}`)
+    } else {
+      toast.success(`${label}: исключено ${n}, ошибок ${failed}`)
     }
   }
 
   const toggleVisible = () => {
     setChecked((prev) => {
       const next = new Set(prev)
-      const allVisibleChecked = visibleIndexes.every((index) => next.has(index))
-      for (const index of visibleIndexes) {
-        if (allVisibleChecked) next.delete(index)
-        else next.add(index)
+      const visibleCardIds = visibleIndexes.map((index) => cards[index].card_id)
+      const allVisibleChecked = visibleCardIds.every((cardId) => next.has(cardId))
+      for (const cardId of visibleCardIds) {
+        if (allVisibleChecked) next.delete(cardId)
+        else next.add(cardId)
       }
       return next
     })
   }
 
+  const allVisibleSelected = visibleIndexes.length > 0 && visibleIndexes.every((index) => checked.has(cards[index].card_id))
+  const hasActiveFilters = Boolean(query.trim()) || filterStatus !== 'all' || filterRoute !== 'all'
+  const batchProgressPercent = stockProgress
+    ? Math.round((stockProgress.done / Math.max(1, stockProgress.total)) * 100)
+    : 0
+  const selectedMedia = selected ? bestMedia(selected) : null
+  const selectedDirty = Boolean(selected && dirtyCardIds.has(selected.card_id))
+  const selectedConflict = Boolean(selected && conflictedCardIds.has(selected.card_id))
+  const hasUnsavedChanges = dirtyCardIds.size > 0
+  const shouldBlockNavigation = useCallback<BlockerFunction>(
+    ({ currentLocation, nextLocation }) => (hasUnsavedChanges || isBatchBusy) && currentLocation.pathname !== nextLocation.pathname,
+    [hasUnsavedChanges, isBatchBusy],
+  )
+  const navigationBlocker = useBlocker(shouldBlockNavigation)
+  const resetBlockedNavigation = navigationBlocker.state === 'blocked' ? navigationBlocker.reset : null
+  const proceedBlockedNavigation = navigationBlocker.state === 'blocked' ? navigationBlocker.proceed : null
+  useEffect(() => {
+    if (proceedBlockedNavigation && !hasUnsavedChanges && !isBatchBusy) proceedBlockedNavigation()
+  }, [hasUnsavedChanges, isBatchBusy, proceedBlockedNavigation])
+  useEffect(() => {
+    if (!resetBlockedNavigation) return
+    const dialog = navigationDialogRef.current
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const focusable = () => [...(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])]
+    const keepFocusInside = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        resetBlockedNavigation()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const elements = focusable()
+      if (!elements.length) return
+      const first = elements[0]
+      const last = elements[elements.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', keepFocusInside, true)
+    window.requestAnimationFrame(() => focusable()[0]?.focus())
+    return () => {
+      document.removeEventListener('keydown', keepFocusInside, true)
+      previouslyFocused?.focus()
+    }
+  }, [resetBlockedNavigation])
+  useEffect(() => {
+    if (!hasUnsavedChanges && !isBatchBusy) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [hasUnsavedChanges, isBatchBusy])
+  const currentActivityLabel = stockProgress?.label || (busy ? activityLabel(busy) : '')
+  const bulkScopeLabel = checkedIndexes.length
+    ? `${checkedIndexes.length} выбранных`
+    : `${visibleIndexes.length} видимых`
+
   return (
-    <div className="p-6 space-y-5 max-w-[1700px]">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-white">Asset Board</h1>
-          <p className="text-sm text-slate-500 mt-1">{counts.included}/{counts.total} в финале, {counts.excluded} исключено, {counts.review} на проверке</p>
+    <div className="mx-auto max-w-[1800px] space-y-5 p-4 sm:p-6">
+      {navigationBlocker.state === 'blocked' && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm" role="presentation">
+          <div ref={navigationDialogRef} role="dialog" aria-modal="true" aria-labelledby="unsaved-title" aria-describedby="unsaved-description" className="w-full max-w-md rounded-2xl border border-amber-800/70 bg-slate-900 p-5 shadow-2xl shadow-black/50">
+            <h2 id="unsaved-title" className="text-lg font-semibold text-white">{isBatchBusy ? 'Идёт пакетная обработка' : 'Есть несохранённые правки'}</h2>
+            <p id="unsaved-description" className="mt-2 text-sm leading-6 text-slate-400">
+              {isBatchBusy
+                ? 'Эта страница управляет очередью следующих карточек. Сначала вернитесь и остановите очередь штатной кнопкой.'
+                : <>Несохранённых карточек: <strong className="font-semibold text-amber-300">{dirtyCardIds.size}</strong>. Если уйти со страницы, изменения будут потеряны.</>}
+            </p>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button type="button" autoFocus onClick={() => navigationBlocker.reset()} className="min-h-10 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">Вернуться к работе</button>
+              {!isBatchBusy && <button type="button" onClick={() => navigationBlocker.proceed()} className="min-h-10 rounded-lg border border-rose-800 bg-rose-950 px-4 py-2 text-sm font-semibold text-rose-200 hover:bg-rose-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400">Уйти без сохранения</button>}
+            </div>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Primary flow: build by route (skips finished), then fill gaps with AI. */}
-          <button onClick={() => batchGenerate('route')} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45" title="Очередь по фазам: 1) весь сток, 2) все Krea-картинки, 3) все зумы, 4) все LTX-видео — каждая модель грузится в VRAM один раз. Готовые кадры не перезаписываются.">
-            Собрать
-          </button>
-          <button onClick={batchFillGaps} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-fuchsia-700 text-white text-sm font-semibold disabled:opacity-45" title="Догенерировать AI только кадры без видео (где сток не нашёлся); подобранные стоки не трогаются">
-            Дополнить AI
-          </button>
-          <button onClick={batchFinalize} disabled={Boolean(busy)} className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold disabled:opacity-45" title="Перерендерить все черновые AI-кадры в финальном качестве (полный LTX)">
-            Финал
-          </button>
+      )}
+      <header className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-900/60 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-400">Визуальное производство</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white sm:text-3xl">Материалы</h1>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+            Подготовьте изображения, видео и источники для каждого кадра, затем выберите версии для финального монтажа.
+          </p>
+        </div>
+        {busy ? (
+          <div role="status" aria-live="polite" className="flex max-w-full items-center gap-2 rounded-xl border border-sky-800/70 bg-sky-950/40 px-3 py-2 text-sm text-sky-200" title={busy}>
+            <span aria-hidden="true" className="relative flex h-2.5 w-2.5 shrink-0">
+              <span className="absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-60 motion-safe:animate-ping" />
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-sky-400" />
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate font-semibold">{currentActivityLabel}</span>
+            </span>
+          </div>
+        ) : boardLoading ? (
+          <span role="status" aria-live="polite" className="inline-flex w-fit items-center gap-2 rounded-full border border-sky-900/70 bg-sky-950/30 px-3 py-1.5 text-xs font-medium text-sky-300">
+            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sky-400 motion-safe:animate-pulse" />
+            {hasLoadedBoardRef.current ? 'Обновляю материалы' : 'Загружаю материалы'}
+          </span>
+        ) : boardError ? (
+          <span role="status" className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${hasLoadedBoardRef.current ? 'border-amber-900/70 bg-amber-950/30 text-amber-300' : 'border-rose-900/70 bg-rose-950/30 text-rose-300'}`}>
+            <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${hasLoadedBoardRef.current ? 'bg-amber-400' : 'bg-rose-400'}`} />
+            {hasLoadedBoardRef.current ? 'Показана сохранённая версия' : 'Материалы недоступны'}
+          </span>
+        ) : (
+          <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-900/70 bg-emerald-950/30 px-3 py-1.5 text-xs font-medium text-emerald-300">
+            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Готово к работе
+          </span>
+        )}
+      </header>
 
-          <span className="mx-1 h-6 w-px bg-slate-700" aria-hidden="true" />
-          <span className="text-xs text-slate-500">вручную:</span>
+      <section aria-label="Сводка по материалам" className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        {[
+          { label: 'Всего кадров', value: counts.total, hint: 'в доске', accent: 'bg-slate-500' },
+          { label: 'Медиа готово', value: counts.media, hint: `${counts.total ? Math.round((counts.media / counts.total) * 100) : 0}%`, accent: 'bg-indigo-400' },
+          { label: 'В финале', value: counts.included, hint: 'включено', accent: 'bg-emerald-400' },
+          { label: 'Исключено', value: counts.excluded, hint: 'не войдёт', accent: 'bg-rose-400' },
+          { label: 'На проверке', value: counts.review, hint: 'нужно решение', accent: 'bg-amber-400' },
+        ].map(({ label, value, hint, accent }) => (
+          <div key={label} className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-900 px-4 py-3.5">
+            <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${accent}`} />
+            <div className="flex items-end justify-between gap-2">
+              <span className="text-2xl font-semibold text-white">{value}</span>
+              <span className="text-[10px] text-slate-600">{hint}</span>
+            </div>
+            <div className="mt-1 text-xs font-medium text-slate-400">{label}</div>
+          </div>
+        ))}
+      </section>
 
-          <button onClick={batchStock} disabled={Boolean(busy)} className="px-2.5 py-2 rounded-lg bg-slate-800 text-slate-300 text-sm border border-slate-700 disabled:opacity-45" title="Форсировать сток на все пустые кадры (игнорирует маршрут)">
-            Все стоки
-          </button>
-          <button onClick={() => batchGenerate('image')} disabled={Boolean(busy)} className="px-2.5 py-2 rounded-lg bg-slate-800 text-slate-300 text-sm border border-slate-700 disabled:opacity-45" title="Сгенерировать только Krea-картинку (без видео, мимо маршрута)">
-            Image
-          </button>
-          <button onClick={() => batchGenerate('video')} disabled={Boolean(busy)} className="px-2.5 py-2 rounded-lg bg-slate-800 text-slate-300 text-sm border border-slate-700 disabled:opacity-45" title="Сделать LTX-видео из готовой картинки (мимо маршрута)">
-            Video
-          </button>
-          <button onClick={batchExclude} disabled={Boolean(busy)} className="px-2.5 py-2 rounded-lg bg-slate-800 text-slate-300 text-sm border border-slate-700 disabled:opacity-45" title="Исключить выбранные (или видимые) кадры из финального видео">
-            Исключить
-          </button>
+      <section aria-labelledby="bulk-title" className="rounded-2xl border border-indigo-900/70 bg-indigo-950/20 p-4 shadow-lg shadow-slate-950/20">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 id="bulk-title" className="text-sm font-semibold text-white">Пакетная обработка</h2>
+            <p id="bulk-scope" className="mt-1 text-xs text-slate-400">
+              Область действия: <span className="font-semibold text-indigo-300">{bulkScopeLabel}</span>
+            </p>
+            {hasUnsavedChanges && <p id="bulk-dirty" role="status" className="mt-1 text-xs text-amber-300">Сначала сохраните все изменённые карточки ({dirtyCardIds.size}).</p>}
+          </div>
           {isBatchBusy && (
             <button
+              type="button"
               onClick={requestCancelBatch}
               disabled={cancelRequested}
-              className="px-3 py-2 rounded-lg bg-red-950 text-red-200 text-sm font-semibold border border-red-800 disabled:opacity-45"
-              title="Остановить очередь после текущей карточки. Уже запущенный ComfyUI/сток-запрос завершится сам."
+              className="min-h-10 rounded-lg border border-rose-800 bg-rose-950 px-3 py-2 text-sm font-semibold text-rose-200 transition-colors hover:bg-rose-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-45"
+              title="Остановить очередь после текущей карточки. Уже запущенная операция завершится сама."
             >
-              {cancelRequested ? 'Останавливаю...' : 'Остановить очередь'}
+              {cancelRequested ? 'Останавливаю…' : 'Остановить очередь'}
             </button>
           )}
         </div>
-      </div>
 
-      {stockProgress && (
-        <div className="flex items-center gap-3 px-4 py-3 bg-teal-900/30 border border-teal-700/50 rounded-lg">
-          <span className="w-3 h-3 rounded-full bg-teal-400 animate-ping shrink-0" />
-          <span className="text-teal-200 text-sm font-semibold shrink-0">
-            {stockProgress.label}… {stockProgress.done} из {stockProgress.total}
-          </span>
-          {cancelRequested && (
-            <span className="text-xs text-red-200 shrink-0">остановка после текущей карточки</span>
-          )}
-          <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-teal-500 rounded-full transition-all"
-              style={{ width: `${Math.round((stockProgress.done / Math.max(1, stockProgress.total)) * 100)}%` }}
-            />
+        <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+          <div>
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-indigo-400">Основной процесс</p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={() => batchGenerate('route')} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Выполнить очередь по маршрутам: источники, сток, картинки, зумы и LTX-видео. Готовые кадры не перезаписываются.'}>
+                Собрать материалы
+              </button>
+              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={batchFillGaps} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg bg-fuchsia-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-fuchsia-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-400 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Создать через ИИ только материалы без видео; уже подобранный сток не изменяется.'}>
+                Заполнить через ИИ
+              </button>
+              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={batchFinalize} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Перерендерить черновые LTX-клипы в финальном качестве.'}>
+                Финальное качество
+              </button>
+            </div>
           </div>
-          <span className="text-xs text-slate-400 shrink-0">{Math.round((stockProgress.done / Math.max(1, stockProgress.total)) * 100)}%</span>
+          <div className="border-t border-indigo-900/50 pt-4 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Дополнительные операции</p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={batchStock} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Подобрать сток для всех пустых кадров в области, игнорируя назначенный способ.'}>Только сток</button>
+              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={() => batchGenerate('image')} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Создать только Krea-изображения без видео.'}>Только картинки</button>
+              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={() => batchGenerate('video')} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Создать только LTX-видео из готовых картинок.'}>Только видео</button>
+              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={batchExclude} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg border border-rose-900 bg-rose-950/60 px-3 py-2 text-sm font-medium text-rose-200 hover:bg-rose-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : `Исключить из финального видео ${bulkScopeLabel}. Потребуется подтверждение.`}>Исключить из финала</button>
+            </div>
+          </div>
+        </div>
+
+        {stockProgress && (
+          <div role="status" aria-live="polite" className="mt-4 rounded-xl border border-teal-800/60 bg-teal-950/40 px-3 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="flex min-w-0 items-center gap-2 font-semibold text-teal-200">
+                <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-teal-400 motion-safe:animate-pulse" />
+                <span className="truncate">{stockProgress.label}: {stockProgress.done} из {stockProgress.total}</span>
+              </span>
+              <span className="font-mono text-xs text-slate-400">{batchProgressPercent}%</span>
+              {cancelRequested && <span className="w-full text-xs text-rose-300">Остановка после текущей карточки…</span>}
+            </div>
+            <div role="progressbar" aria-label={stockProgress.label} aria-valuemin={0} aria-valuemax={stockProgress.total} aria-valuenow={stockProgress.done} aria-valuetext={`${stockProgress.done} из ${stockProgress.total}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-teal-500 transition-[width]" style={{ width: `${batchProgressPercent}%` }} />
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section aria-label="Поиск и фильтры" className="rounded-xl border border-slate-800 bg-slate-900 p-3">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_220px_220px_auto_auto] xl:items-end">
+          <label className="block min-w-0">
+            <span className="mb-1 block text-[11px] font-medium text-slate-500">Поиск по описанию и промптам</span>
+            <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Введите текст…" className="h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-white outline-none placeholder:text-slate-700 focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30" />
+          </label>
+          <label className="block min-w-0">
+            <span className="mb-1 block text-[11px] font-medium text-slate-500">Статус</span>
+            <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-white outline-none focus:border-indigo-500">
+              {STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status] || status}</option>)}
+            </select>
+          </label>
+          <label className="block min-w-0">
+            <span className="mb-1 block text-[11px] font-medium text-slate-500">Способ показа</span>
+            <select value={filterRoute} onChange={(e) => setFilterRoute(e.target.value)} className="h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-white outline-none focus:border-indigo-500">
+              {ROUTES.map((route) => <option key={route} value={route}>{ROUTE_FILTER_LABELS[route] || route}</option>)}
+            </select>
+          </label>
+          <button type="button" aria-pressed={compactMode} onClick={() => setCompactMode((value) => !value)} className={`h-10 rounded-lg border px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${compactMode ? 'border-indigo-700 bg-indigo-950/60 text-indigo-300' : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'}`} title="Переключить плотность списка материалов">
+            {compactMode ? 'Обычный вид' : 'Компактный вид'}
+          </button>
+          <div className="flex h-10 gap-2">
+            {hasActiveFilters && <button type="button" onClick={() => { setQuery(''); setFilterStatus('all'); setFilterRoute('all') }} className="rounded-lg border border-slate-700 px-3 text-sm text-slate-400 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">Сбросить</button>}
+            <button type="button" onClick={toggleVisible} className="whitespace-nowrap rounded-lg border border-slate-700 bg-slate-800 px-3 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+              {allVisibleSelected ? 'Снять видимые' : 'Выбрать видимые'}
+            </button>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-2 text-xs text-slate-500">
+          <span>Показано: <strong className="font-semibold text-slate-300">{visibleIndexes.length}</strong> из {cards.length}</span>
+          <span>Выбрано: <strong className="font-semibold text-indigo-300">{checkedIndexes.length}</strong></span>
+        </div>
+      </section>
+
+      {boardError && hasLoadedBoardRef.current && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+          <span>Не удалось обновить материалы. Показана последняя успешно загруженная версия. <span className="font-mono text-xs">{boardError}</span></span>
+          <button type="button" onClick={() => { setBoardLoading(true); setBoardError(null); void load() }} className="rounded-lg border border-amber-700 px-3 py-1.5 font-semibold hover:bg-amber-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400">Повторить</button>
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        {[
-          ['Всего', counts.total],
-          ['С медиа', counts.media],
-          ['В финале', counts.included],
-          ['Исключено', counts.excluded],
-          ['Проверить', counts.review],
-        ].map(([label, value]) => (
-          <div key={label} className="rounded-lg bg-slate-900 border border-slate-800 p-3">
-            <div className="text-2xl font-semibold text-white">{value}</div>
-            <div className="text-xs text-slate-500">{label}</div>
+      <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(380px,420px)]">
+        <section ref={materialsListRef} aria-labelledby="materials-list-title" aria-busy={boardLoading} className="order-2 min-w-0 scroll-mt-4 rounded-xl border border-slate-800 bg-slate-900 xl:order-1">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+            <div>
+              <h2 id="materials-list-title" className="text-sm font-semibold text-white">Список материалов</h2>
+              <p className="mt-0.5 text-xs text-slate-500">Предпросмотр загружается только для выбранной карточки.</p>
+            </div>
+            <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-400">{boardLoading && hasLoadedBoardRef.current ? 'Обновляю…' : visibleIndexes.length}</span>
           </div>
-        ))}
-      </div>
 
-      <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-900 border border-slate-800 p-3">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Поиск"
-          className="w-64 max-w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white outline-none focus:border-indigo-500"
-        />
-        <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white">
-          {STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
-        </select>
-        <select value={filterRoute} onChange={(e) => setFilterRoute(e.target.value)} className="px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white">
-          {ROUTES.map((route) => <option key={route} value={route}>{route}</option>)}
-        </select>
-        <button onClick={toggleVisible} className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200">
-          {visibleIndexes.every((index) => checked.has(index)) && visibleIndexes.length ? 'Снять выбор' : 'Выбрать видимые'}
-        </button>
-        <div className="ml-auto text-xs text-slate-500">{checkedIndexes.length} выбрано</div>
-      </div>
+          <div className="p-3 xl:max-h-[calc(100vh-8rem)] xl:overflow-y-auto">
+            {boardLoading && !hasLoadedBoardRef.current && (
+              <div role="status" aria-live="polite" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <span className="sr-only">Загружаю материалы…</span>
+                {Array.from({ length: 6 }, (_, index) => (
+                  <div key={index} aria-hidden="true" className="h-36 rounded-xl border border-slate-800 bg-slate-950/50 p-3 motion-safe:animate-pulse">
+                    <div className="h-4 w-24 rounded bg-slate-800" />
+                    <div className="mt-4 h-3 w-full rounded bg-slate-800" />
+                    <div className="mt-2 h-3 w-2/3 rounded bg-slate-800" />
+                  </div>
+                ))}
+              </div>
+            )}
 
-      <div className="grid grid-cols-1 2xl:grid-cols-[minmax(700px,1fr)_520px] gap-5">
-        <section className="overflow-x-auto rounded-lg bg-slate-900 border border-slate-800">
-          <div className="grid min-w-[800px] grid-cols-[42px_74px_82px_minmax(180px,1fr)_116px_116px_150px] gap-2 px-3 py-2 border-b border-slate-800 text-xs text-slate-500">
-            <div />
-            <div>Shot</div>
-            <div>Status</div>
-            <div>Prompt</div>
-            <div>Route</div>
-            <div>Media</div>
-            <div className="text-right">Actions</div>
-          </div>
-          <div className="max-h-[68vh] min-w-[800px] overflow-y-auto">
-            {visibleIndexes.map((index) => {
-              const card = cards[index]
-              const media = bestMedia(card)
-              const color = STATUS_COLORS[card.status] || '#64748b'
-              return (
-                <div
-                  role="group"
-                  aria-label={`Shot ${card.shot_index}`}
-                  tabIndex={0}
-                  key={`${card.scene_index}-${card.shot_index}-${index}`}
-                  onClick={() => setSelectedIndex(index)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      setSelectedIndex(index)
-                    }
-                  }}
-                  className={`grid w-full grid-cols-[42px_74px_82px_minmax(180px,1fr)_116px_116px_150px] gap-2 px-3 py-3 text-left border-b border-slate-800/70 hover:bg-slate-800/50 ${
-                    selectedIndex === index ? 'bg-indigo-950/30' : ''
-                  }`}
-                >
-                  <div onClick={(e) => e.stopPropagation()} className="flex items-center">
-                    <input
-                      type="checkbox"
-                      checked={checked.has(index)}
-                      onChange={(e) => {
-                        setChecked((prev) => {
-                          const next = new Set(prev)
-                          if (e.target.checked) next.add(index)
-                          else next.delete(index)
-                          return next
-                        })
-                      }}
-                      className="h-4 w-4 accent-indigo-500"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-sm font-mono text-white">#{card.shot_index}</div>
-                    <div className="text-xs text-slate-600">Сц. {card.scene_index}</div>
-                  </div>
-                  <div>
-                    <span className="inline-flex rounded px-2 py-1 text-[11px] font-medium" style={{ backgroundColor: `${color}22`, color }}>{card.status || 'planned'}</span>
-                    {isExcluded(card) ? <div className="text-[11px] text-rose-400 mt-1">исключён</div> : isIncluded(card) && <div className="text-[11px] text-emerald-400 mt-1">в финале</div>}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm text-slate-200 truncate">{card.description || card.screen_text || card.scene_title || 'Без описания'}</div>
-                    <div className="text-xs text-slate-500 truncate mt-0.5">{card.image_prompt || card.video_prompt || card.asset_query}</div>
-                  </div>
-                  <div className="text-xs text-slate-400 self-center">{card.route || '-'}</div>
-                  <div className="text-xs text-slate-400 self-center">
-                    {media ? media.type : 'none'}
-                    {card.ltx_draft ? <span className="ml-1 text-amber-400" title="Отрендерено черновиком">· черновик</span> : null}
-                    {card.visual_type === 'web_reference_card' || card.route === 'reference' ? <span className="ml-1 text-sky-300" title={card.reference_url || card.reference_query || 'Инсерт-источник'}>· источник</span> : null}
-                    {card.text_overlay_enabled ? <span className="ml-1 text-cyan-300" title={card.text_overlay_text || card.screen_text || 'Overlay'}>· text</span> : null}
-                  </div>
-                  <div onClick={(e) => e.stopPropagation()} className="flex justify-end gap-1">
-                    <button onClick={() => generate(index, 'route')} disabled={Boolean(busy)} className="px-2 py-1 rounded bg-indigo-600 text-white text-xs disabled:opacity-45">AI</button>
-                    {card.ltx_draft ? (
-                      <button onClick={() => finalize(index)} disabled={Boolean(busy)} title="Перерендерить в финальном качестве (полный LTX)" className="px-2 py-1 rounded bg-amber-600 text-white text-xs disabled:opacity-45">Финал</button>
-                    ) : (
-                      <button onClick={() => pickStock(index)} disabled={Boolean(busy)} title="Подобрать сток-видео" className="px-2 py-1 rounded bg-teal-700 text-white text-xs disabled:opacity-45">Сток</button>
-                    )}
-                    <button onClick={() => toggleExclude(index)} disabled={Boolean(busy)} title={isExcluded(card) ? 'Вернуть в финал' : 'Исключить из финала'} className={`px-2 py-1 rounded text-white text-xs disabled:opacity-45 ${isExcluded(card) ? 'bg-slate-700' : 'bg-rose-800'}`}>{isExcluded(card) ? 'Верн.' : 'Искл.'}</button>
-                  </div>
-                </div>
-              )
-            })}
-            {!visibleIndexes.length && <div className="p-10 text-center text-sm text-slate-600">Нет карточек под выбранные фильтры.</div>}
+            {!boardLoading && boardError && !hasLoadedBoardRef.current && (
+              <div role="alert" className="flex min-h-64 flex-col items-center justify-center rounded-xl border border-dashed border-rose-900 bg-rose-950/20 px-6 text-center">
+                <div aria-hidden="true" className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-rose-950 text-rose-300">!</div>
+                <h3 className="font-semibold text-white">Материалы не загрузились</h3>
+                <p className="mt-1 max-w-md text-sm leading-6 text-slate-400">{boardError}</p>
+                <button type="button" onClick={() => { setBoardLoading(true); setBoardError(null); void load() }} className="mt-4 min-h-10 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">Повторить загрузку</button>
+              </div>
+            )}
+
+            {!boardLoading && hasLoadedBoardRef.current && !boardError && !cards.length && (
+              <div className="flex min-h-64 flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-950/30 px-6 text-center">
+                <div aria-hidden="true" className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-800 text-slate-500">0</div>
+                <h3 className="font-semibold text-white">Материалов пока нет</h3>
+                <p className="mt-1 max-w-md text-sm leading-6 text-slate-500">Сначала создайте список кадров — после этого здесь появятся карточки для генерации и подбора медиа.</p>
+              </div>
+            )}
+
+            {hasLoadedBoardRef.current && cards.length > 0 && !visibleIndexes.length && (
+              <div className="flex min-h-52 flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-950/30 px-6 text-center">
+                <h3 className="font-semibold text-white">Ничего не найдено</h3>
+                <p className="mt-1 text-sm text-slate-500">Измените запрос или сбросьте фильтры.</p>
+                <button type="button" onClick={() => { setQuery(''); setFilterStatus('all'); setFilterRoute('all') }} className="mt-4 min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">Сбросить фильтры</button>
+              </div>
+            )}
+
+            {hasLoadedBoardRef.current && visibleIndexes.length > 0 && (
+              <div className={`grid min-w-0 gap-2 ${compactMode ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3' : 'grid-cols-1 sm:grid-cols-2'}`}>
+                {visibleIndexes.map((index) => {
+                  const card = cards[index]
+                  const media = bestMedia(card)
+                  const rawStatus = card.status || 'planned'
+                  const color = STATUS_COLORS[rawStatus] || '#64748b'
+                  const routeCode = card.route || '—'
+                  const routeLabel = ROUTE_FILTER_LABELS[routeCode] || ROUTE_LABELS[routeCode] || 'Не задан'
+                  const mediaLabel = media?.type === 'video' ? 'Видео готово' : media?.type === 'image' ? 'Картинка готова' : 'Медиа не создано'
+                  const isSelected = selectedIndex === index
+                  const isDirty = dirtyCardIds.has(card.card_id)
+                  const isConflict = conflictedCardIds.has(card.card_id)
+                  return (
+                    <article
+                      role="group"
+                      aria-label={`Кадр ${card.shot_index}. ${STATUS_LABELS[rawStatus] || rawStatus}`}
+                      aria-current={isSelected ? 'true' : undefined}
+                      key={`${card.scene_index}-${card.shot_index}-${index}`}
+                      onClick={() => selectCard(index)}
+                      className={`min-w-0 cursor-pointer rounded-xl border text-left transition-colors ${compactMode ? 'p-2.5' : 'p-3.5'} ${
+                        isSelected ? 'border-indigo-500/80 bg-indigo-950/30' : 'border-slate-800 bg-slate-950/45 hover:border-slate-700 hover:bg-slate-800/50'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <label onClick={(event) => event.stopPropagation()} className="flex min-h-9 shrink-0 cursor-pointer items-start pt-0.5" title={`Выбрать кадр ${card.shot_index} для пакетной операции`}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Выбрать кадр ${card.shot_index}`}
+                            checked={checked.has(card.card_id)}
+                            onChange={(event) => {
+                              setChecked((prev) => {
+                                const next = new Set(prev)
+                                if (event.target.checked) next.add(card.card_id)
+                                else next.delete(card.card_id)
+                                return next
+                              })
+                            }}
+                            className="mt-0.5 h-4 w-4 accent-indigo-500"
+                          />
+                        </label>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <button type="button" onClick={(event) => { event.stopPropagation(); selectCard(index) }} className="rounded-sm font-mono text-sm font-semibold text-white underline-offset-4 hover:text-indigo-300 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" aria-label={`Открыть редактор кадра ${card.shot_index}`}>Кадр #{card.shot_index}</button>
+                              <span className="ml-2 text-[11px] text-slate-600">Сцена {card.scene_index}</span>
+                            </div>
+                            <span className="shrink-0 rounded-md px-2 py-0.5 text-[10px] font-semibold" style={{ backgroundColor: `${color}22`, color }} title={`Технический статус: ${rawStatus}`}>
+                              {STATUS_LABELS[rawStatus] || rawStatus}
+                            </span>
+                          </div>
+                          <p className={`mt-2 text-sm leading-5 text-slate-200 ${compactMode ? 'truncate' : 'line-clamp-2'}`} title={card.description || card.screen_text || card.scene_title || 'Без описания'}>
+                            {card.description || card.screen_text || card.scene_title || 'Без описания'}
+                          </p>
+                          {!compactMode && <p className="mt-1 truncate text-xs text-slate-600" title={card.image_prompt || card.video_prompt || card.asset_query}>{card.image_prompt || card.video_prompt || card.asset_query || 'Промпт не задан'}</p>}
+                        </div>
+                      </div>
+
+                      <div className={`mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-slate-800/80 pt-2 text-[10px] ${compactMode ? '' : 'sm:text-[11px]'}`}>
+                        <span className="truncate text-slate-400" title={`Способ: ${routeCode}`}>{routeLabel}</span>
+                        <span aria-hidden="true" className="text-slate-800">•</span>
+                        <span className={media ? 'text-emerald-400' : 'text-slate-600'}>{mediaLabel}</span>
+                        {card.ltx_draft && <span className="text-amber-400" title="Отрендерено черновым workflow LTX">Черновик</span>}
+                        {(card.visual_type === 'web_reference_card' || card.route === 'reference') && <span className="text-sky-300" title={card.reference_url || card.reference_query || 'Карточка источника'}>Источник</span>}
+                        {card.text_overlay_enabled && <span className="text-cyan-300" title={card.text_overlay_text || card.screen_text || 'Текст поверх видео'}>Есть текст</span>}
+                        {isExcluded(card) ? <span className="font-medium text-rose-400">Исключён</span> : isIncluded(card) && <span className="font-medium text-emerald-400">В финале</span>}
+                        {isConflict ? <span className="font-medium text-rose-300">Конфликт правок</span> : isDirty && <span className="font-medium text-amber-300">Не сохранено</span>}
+                      </div>
+
+                      <div onClick={(event) => event.stopPropagation()} className="mt-2 flex flex-wrap justify-end gap-1.5 border-t border-slate-800/80 pt-2">
+                        <button type="button" onClick={() => generate(index, 'route')} disabled={Boolean(busy)} className="min-h-9 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45" title="Создать материал по назначенному способу">Создать</button>
+                        {card.ltx_draft ? (
+                          <button type="button" onClick={() => finalize(index)} disabled={Boolean(busy)} title="Перерендерить в финальном качестве (полный LTX)" className="min-h-9 rounded-lg bg-amber-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45">Финал</button>
+                        ) : (
+                          <button type="button" onClick={() => pickStock(index)} disabled={Boolean(busy)} title="Подобрать сток-видео" className="min-h-9 rounded-lg bg-teal-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400 disabled:cursor-not-allowed disabled:opacity-45">Сток</button>
+                        )}
+                        <button type="button" onClick={() => toggleExclude(index)} disabled={Boolean(busy) || isDirty} title={isDirty ? 'Сначала сохраните правки карточки' : isExcluded(card) ? 'Вернуть материал в финал' : 'Исключить материал из финала'} className={`min-h-9 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 disabled:cursor-not-allowed disabled:opacity-45 ${isExcluded(card) ? 'bg-slate-700 hover:bg-slate-600' : 'bg-rose-900 hover:bg-rose-800'}`}>{isExcluded(card) ? 'Вернуть' : 'Исключить'}</button>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
           </div>
         </section>
 
-        <aside className="rounded-lg bg-slate-900 border border-slate-800 p-4 space-y-4 h-fit 2xl:sticky 2xl:top-6">
+        <aside ref={editorRef} aria-label="Редактор выбранного материала" className="order-1 h-fit min-w-0 scroll-mt-4 rounded-xl border border-slate-800 bg-slate-900 xl:order-2 xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto">
           {selected ? (
-            <>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold text-white">Shot {selected.shot_index}</h2>
-                  <p className="text-xs text-slate-500">Scene {selected.scene_index} / {selected.start} - {selected.end}</p>
+            <div className="min-w-0 space-y-4 p-4">
+              <header className="flex min-w-0 items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-lg font-semibold text-white">Кадр #{selected.shot_index}</h2>
+                    {selectedConflict
+                      ? <span role="alert" className="rounded-md bg-rose-950 px-2 py-0.5 text-[10px] font-semibold text-rose-300">Конфликт правок</span>
+                      : selectedDirty && <span role="status" className="rounded-md bg-amber-950 px-2 py-0.5 text-[10px] font-semibold text-amber-300">Есть несохранённые правки</span>}
+                  </div>
+                  <p className="mt-0.5 text-xs text-slate-500">Сцена {selected.scene_index} · {selected.start}–{selected.end}</p>
+                  <code className="mt-1 block truncate text-[10px] text-slate-700" title={selected.card_id}>ID: {selected.card_id}</code>
                 </div>
-                <span className="rounded px-2 py-1 text-xs" style={{ backgroundColor: `${STATUS_COLORS[selected.status] || '#64748b'}22`, color: STATUS_COLORS[selected.status] || '#94a3b8' }}>{selected.status}</span>
-              </div>
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <span className="rounded-md px-2 py-1 text-xs font-semibold" style={{ backgroundColor: `${STATUS_COLORS[selected.status] || '#64748b'}22`, color: STATUS_COLORS[selected.status] || '#94a3b8' }} title={`Технический статус: ${selected.status}`}>
+                    {STATUS_LABELS[selected.status] || selected.status}
+                  </span>
+                  <button type="button" onClick={() => scrollToSection(materialsListRef.current)} className="rounded-md text-xs font-medium text-indigo-300 underline-offset-4 hover:text-indigo-200 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 xl:hidden">
+                    К списку
+                  </button>
+                </div>
+              </header>
 
-              <div className="aspect-video rounded-lg bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center">
-                {bestMedia(selected)?.type === 'video' && (
-                  <video key={`${bestMedia(selected)!.path}-${mediaVersion}`} src={mediaUrl(bestMedia(selected)!.path, mediaVersion)} poster={selected.image_output ? mediaUrl(selected.image_output, mediaVersion) : undefined} controls className="h-full w-full object-contain" />
-                )}
-                {bestMedia(selected)?.type === 'image' && (
-                  <img key={`${bestMedia(selected)!.path}-${mediaVersion}`} src={mediaUrl(bestMedia(selected)!.path, mediaVersion)} alt="" className="h-full w-full object-contain" />
-                )}
-                {!bestMedia(selected) && <div className="text-sm text-slate-700">Файл еще не создан</div>}
-              </div>
+              {selectedConflict && (
+                <div role="alert" className="rounded-xl border border-rose-800/70 bg-rose-950/35 p-3 text-sm text-rose-100">
+                  <p className="font-semibold">Эти же поля изменились на сервере</p>
+                  <p className="mt-1 text-xs leading-5 text-rose-200/75">Выберите, оставить локальные правки или заменить их последней серверной версией. Медиа и остальные поля не будут затронуты.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void saveSelected(true)} disabled={Boolean(busy)} className="min-h-9 rounded-lg bg-rose-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 disabled:cursor-not-allowed disabled:opacity-45">Сохранить мои правки</button>
+                    <button type="button" onClick={discardSelectedChanges} disabled={Boolean(busy)} className="min-h-9 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-45">Принять серверную версию</button>
+                  </div>
+                </div>
+              )}
 
-              <div className="grid grid-cols-3 gap-2">
-                <button onClick={() => selectedIndex !== null && generate(selectedIndex, 'route')} disabled={Boolean(busy)} className="py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">AI</button>
-                <button onClick={() => selectedIndex !== null && generate(selectedIndex, 'image')} disabled={Boolean(busy)} className="py-2 rounded-lg bg-slate-800 text-slate-100 text-sm font-semibold border border-slate-700 disabled:opacity-45">Image</button>
-                <button onClick={() => selectedIndex !== null && generate(selectedIndex, 'video')} disabled={Boolean(busy)} className="py-2 rounded-lg bg-slate-800 text-slate-100 text-sm font-semibold border border-slate-700 disabled:opacity-45">Video</button>
-              </div>
-              <button onClick={() => selectedIndex !== null && pickStock(selectedIndex)} disabled={Boolean(busy)} className="w-full py-2 rounded-lg bg-teal-700 text-white text-sm font-semibold disabled:opacity-45">Подобрать сток</button>
-              {(selected.source_url || selected.source_license || selected.source_author) ? (
-                <div className="-mt-2 space-y-0.5 text-[11px] text-slate-500">
+              <section aria-label="Предпросмотр выбранного материала" className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+                <div className="flex aspect-video items-center justify-center overflow-hidden">
+                  {selectedMedia?.type === 'video' && (
+                    <video
+                      key={`${selectedMedia.path}-${mediaVersion}`}
+                      src={mediaUrl(selectedMedia.path, mediaVersion)}
+                      poster={selected.image_output ? mediaUrl(selected.image_output, mediaVersion) : undefined}
+                      controls
+                      playsInline
+                      aria-label={`Предпросмотр видео для кадра ${selected.shot_index}`}
+                      className="h-full w-full object-contain"
+                    />
+                  )}
+                  {selectedMedia?.type === 'image' && (
+                    <img key={`${selectedMedia.path}-${mediaVersion}`} src={mediaUrl(selectedMedia.path, mediaVersion)} alt={`Предпросмотр изображения для кадра ${selected.shot_index}`} className="h-full w-full object-contain" />
+                  )}
+                  {!selectedMedia && (
+                    <div className="px-6 text-center">
+                      <div aria-hidden="true" className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-slate-600">+</div>
+                      <p className="text-sm font-medium text-slate-400">Медиа ещё не создано</p>
+                      <p className="mt-1 text-xs text-slate-700">Запустите создание или подберите сток.</p>
+                    </div>
+                  )}
+                </div>
+                {selectedMedia && <p className="truncate border-t border-slate-800 px-3 py-2 font-mono text-[10px] text-slate-600" title={selectedMedia.path}>{variantFileName(selectedMedia.path)}</p>}
+              </section>
+
+              <section aria-label="Создание медиа" className="space-y-2">
+                <div className="grid grid-cols-3 gap-2">
+                  <button type="button" onClick={() => selectedIndex !== null && generate(selectedIndex, 'route')} disabled={Boolean(busy)} className="min-h-10 rounded-lg bg-indigo-600 px-2 py-2 text-xs font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45" title="Создать материал по выбранному способу показа">Создать</button>
+                  <button type="button" onClick={() => selectedIndex !== null && generate(selectedIndex, 'image')} disabled={Boolean(busy)} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">Картинка</button>
+                  <button type="button" onClick={() => selectedIndex !== null && generate(selectedIndex, 'video')} disabled={Boolean(busy)} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">Видео</button>
+                </div>
+                <button type="button" onClick={() => selectedIndex !== null && pickStock(selectedIndex)} disabled={Boolean(busy)} className="min-h-10 w-full rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400 disabled:cursor-not-allowed disabled:opacity-45">Подобрать сток-видео</button>
+              </section>
+
+              {(selected.source_url || selected.source_license || selected.source_author) && (
+                <section aria-label="Источник стокового материала" className="rounded-lg border border-teal-900/60 bg-teal-950/20 px-3 py-2.5 text-[11px] text-slate-400">
                   <p>
-                    Сток{selected.stock_score ? ` · score ${selected.stock_score.toFixed(2)}` : ''}
-                    {safeExternalUrl(selected.source_url) ? <> · <a href={safeExternalUrl(selected.source_url)} target="_blank" rel="noopener noreferrer" className="text-teal-400 underline">источник</a></> : null}
+                    Сток{selected.stock_score !== undefined ? ` · оценка ${selected.stock_score.toFixed(2)}` : ''}
+                    {safeExternalUrl(selected.source_url) ? <> · <a href={safeExternalUrl(selected.source_url)} target="_blank" rel="noopener noreferrer" className="font-medium text-teal-400 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400">Открыть источник</a></> : null}
                   </p>
-                  <p className="break-words">
-                    {selected.source_license || 'Лицензия не зафиксирована'}
-                    {selected.source_author ? ` · ${selected.source_author}` : ''}
-                  </p>
-                </div>
-              ) : null}
+                  <p className="mt-1 break-words">{selected.source_license || 'Лицензия не зафиксирована'}{selected.source_author ? ` · Автор: ${selected.source_author}` : ''}</p>
+                </section>
+              )}
 
               <details open className="rounded-lg border border-slate-800 bg-slate-950/40">
-                <summary className="cursor-pointer select-none px-3 py-2.5 text-sm font-semibold text-white">
-                  История версий
-                  <span className="ml-2 text-xs font-normal text-slate-500">
-                    {variantsLoading ? 'загрузка…' : variantHistory?.variants.length || 0}
-                  </span>
+                <summary className="cursor-pointer select-none rounded-lg px-3 py-2.5 text-sm font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+                  История вариантов
+                  <span className="ml-2 text-xs font-normal text-slate-500">{variantsLoading ? 'загрузка…' : variantHistory?.variants.length || 0}</span>
                 </summary>
-                <div className="max-h-64 space-y-2 overflow-y-auto border-t border-slate-800 p-2">
-                  {[...(variantHistory?.variants || [])].reverse().map((variant) => (
+                <div aria-busy={variantsLoading} className="max-h-64 space-y-2 overflow-y-auto border-t border-slate-800 p-2">
+                  {variantsLoading && (
+                    <div role="status" aria-live="polite" className="space-y-2 p-1">
+                      <span className="sr-only">Загружаю историю вариантов…</span>
+                      {[0, 1].map((item) => <div key={item} aria-hidden="true" className="h-16 rounded-lg bg-slate-900 motion-safe:animate-pulse" />)}
+                    </div>
+                  )}
+                  {!variantsLoading && variantsError && (
+                    <div role="alert" className="rounded-lg border border-rose-900/70 bg-rose-950/20 p-3 text-xs text-rose-200">
+                      <p>Не удалось загрузить историю: {variantsError}</p>
+                      <button type="button" onClick={() => selectedIndex !== null && selected && void loadVariants(selectedIndex, selected.card_id)} className="mt-2 rounded-md border border-rose-800 px-2 py-1 font-semibold hover:bg-rose-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400">Повторить</button>
+                    </div>
+                  )}
+                  {!variantsLoading && !variantsError && [...(variantHistory?.variants || [])].reverse().map((variant) => (
                     <div key={variant.id} className={`rounded-lg border p-2.5 ${variant.selected ? 'border-emerald-700/70 bg-emerald-950/20' : 'border-slate-800 bg-slate-950/70'}`}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-slate-200">
-                              {VARIANT_FIELD_LABELS[variant.output_field] || variant.output_field}
-                            </span>
-                            <span className="text-[11px] text-slate-400">{variant.source} · {variant.mode}</span>
+                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-slate-200">{VARIANT_FIELD_LABELS[variant.output_field] || variant.output_field}</span>
+                            <code className="text-[10px] text-slate-500" title="Технические источник и режим">{variant.source} · {variant.mode}</code>
                           </div>
                           <div className="mt-1 truncate text-xs text-slate-300" title={variant.file_path}>{variantFileName(variant.file_path)}</div>
-                          <div className="mt-1 text-[10px] text-slate-600">
-                            {new Date(variant.created_at).toLocaleString('ru-RU')} · {variantSize(variant.file_size)} · {variant.file_hash.slice(0, 10)}
-                            {variant.model ? ` · ${variant.model}` : ''}
+                          <div className="mt-1 break-words text-[10px] text-slate-600">
+                            {new Date(variant.created_at).toLocaleString('ru-RU')} · {variantSize(variant.file_size)} · {variant.file_hash.slice(0, 10)}{variant.model ? ` · ${variant.model}` : ''}
                           </div>
                         </div>
                         {variant.selected ? (
-                          <span className="shrink-0 text-[11px] font-semibold text-emerald-400">Активна</span>
+                          <span className="shrink-0 text-[11px] font-semibold text-emerald-400">Активен</span>
                         ) : (
-                          <button
-                            type="button"
-                            onClick={() => void activateVariant(variant)}
-                            disabled={Boolean(busy) || selectingVariant !== null}
-                            className="shrink-0 rounded bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 disabled:opacity-45"
-                          >
-                            {selectingVariant === variant.id ? '…' : 'Выбрать'}
+                          <button type="button" onClick={() => void activateVariant(variant)} disabled={Boolean(busy) || selectingVariant !== null || selectedDirty} title={selectedDirty ? 'Сначала сохраните правки карточки' : 'Сделать этот вариант активным'} className="min-h-8 shrink-0 rounded-md bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">
+                            {selectingVariant === variant.id ? 'Выбираю…' : 'Выбрать'}
                           </button>
                         )}
                       </div>
                     </div>
                   ))}
-                  {!variantsLoading && !variantHistory?.variants.length && (
-                    <p className="px-2 py-4 text-center text-xs leading-5 text-slate-600">
-                      Версии появятся после следующей генерации или назначения медиа.
-                    </p>
-                  )}
+                  {!variantsLoading && !variantsError && !variantHistory?.variants.length && <p className="px-2 py-4 text-center text-xs leading-5 text-slate-600">Варианты появятся после генерации или назначения медиа.</p>}
                 </div>
               </details>
 
-              <div className="space-y-3">
-                <label className="block">
-                  <span className="text-xs text-slate-500">Description</span>
-                  <textarea value={selected.description} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, description: e.target.value })} className="mt-1 h-16 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
-                </label>
+              <fieldset disabled={Boolean(busy)} className="min-w-0 space-y-4 transition-opacity disabled:opacity-60">
+                <legend className="sr-only">Параметры выбранной карточки</legend>
 
+                <section aria-labelledby="card-settings-title" className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/25 p-3">
+                <div>
+                  <h3 id="card-settings-title" className="text-sm font-semibold text-white">Параметры карточки</h3>
+                  <p className="mt-0.5 text-[11px] text-slate-600">Правки сохраняются кнопкой внизу панели.</p>
+                </div>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-400">Описание</span>
+                  <textarea value={selected.description} onChange={(event) => editCardAt(selectedIndex!, { description: event.target.value })} className="mt-1 h-20 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30" />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-400">Способ показа</span>
+                  <select value={CARD_ROUTES.includes(selected.route) ? selected.route : 'image+video'} onChange={(event) => editCardAt(selectedIndex!, routePatch(event.target.value))} className="mt-1 min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-indigo-500">
+                    {CARD_ROUTES.map((route) => <option key={route} value={route}>{ROUTE_LABELS[route]}</option>)}
+                  </select>
+                  <span className="mt-1 block text-[11px] leading-4 text-slate-600">Определяет процесс создания: изображение, анимация, сток или карточка источника.</span>
+                </label>
+                </section>
+
+                <section aria-labelledby="overlay-settings-title" className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/25 p-3">
+                <label className="flex min-h-10 cursor-pointer items-center justify-between gap-3">
+                  <span id="overlay-settings-title" className="block text-sm font-semibold text-white">Текст поверх видео</span>
+                  <input type="checkbox" checked={Boolean(selected.text_overlay_enabled)} onChange={(event) => editCardAt(selectedIndex!, { text_overlay_enabled: event.target.checked, text_overlay_text: selected.text_overlay_text || selected.screen_text })} className="h-4 w-4 accent-indigo-500" />
+                </label>
+                {selected.text_overlay_enabled && (
+                  <>
+                    <label className="block">
+                      <span className="text-xs font-medium text-slate-400">Текст</span>
+                      <textarea value={selected.text_overlay_text || selected.screen_text || ''} onChange={(event) => editCardAt(selectedIndex!, { text_overlay_text: event.target.value })} className="mt-1 h-16 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30" />
+                    </label>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                      <label className="block min-w-0">
+                        <span className="text-xs text-slate-500">Стиль</span>
+                        <select value={selected.text_overlay_style || 'subtitle'} onChange={(event) => editCardAt(selectedIndex!, { text_overlay_style: event.target.value })} className="mt-1 min-h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-indigo-500">
+                          {TEXT_STYLES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                        </select>
+                      </label>
+                      <label className="block min-w-0">
+                        <span className="text-xs text-slate-500">Позиция</span>
+                        <select value={selected.text_overlay_position || 'bottom'} onChange={(event) => editCardAt(selectedIndex!, { text_overlay_position: event.target.value })} className="mt-1 min-h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-indigo-500">
+                          {TEXT_POSITIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  </>
+                )}
+                </section>
+
+                <section aria-labelledby="prompts-title" className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/25 p-3">
+                <h3 id="prompts-title" className="text-sm font-semibold text-white">Промпты генерации</h3>
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-3 text-xs font-medium text-slate-400">
+                    <label htmlFor="asset-image-prompt">Для изображения</label>
+                    <button type="button" onClick={() => selectedIndex !== null && regeneratePrompt(selectedIndex, 'image_prompt')} disabled={Boolean(busy) || selectedDirty} title={selectedDirty ? 'Сначала сохраните правки карточки' : 'Перегенерировать промпт изображения'} className="min-h-8 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">Улучшить</button>
+                  </div>
+                  <textarea id="asset-image-prompt" value={selected.image_prompt} onChange={(event) => editCardAt(selectedIndex!, { image_prompt: event.target.value })} className="h-28 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30" />
+                </div>
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-3 text-xs font-medium text-slate-400">
+                    <label htmlFor="asset-video-prompt">Для видео</label>
+                    <button type="button" onClick={() => selectedIndex !== null && regeneratePrompt(selectedIndex, 'video_prompt')} disabled={Boolean(busy) || selectedDirty} title={selectedDirty ? 'Сначала сохраните правки карточки' : 'Перегенерировать промпт видео'} className="min-h-8 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">Улучшить</button>
+                  </div>
+                  <textarea id="asset-video-prompt" value={selected.video_prompt} onChange={(event) => editCardAt(selectedIndex!, { video_prompt: event.target.value })} className="h-28 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30" />
+                </div>
+                </section>
+
+                <section aria-labelledby="timing-title" className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/25 p-3">
+                <h3 id="timing-title" className="text-sm font-semibold text-white">Тайминг и заметки</h3>
                 <div className="grid grid-cols-2 gap-3">
-                  <label className="block">
-                    <span className="text-xs text-slate-500">Route (как показать)</span>
-                    <select
-                      value={CARD_ROUTES.includes(selected.route) ? selected.route : 'image+video'}
-                      onChange={(e) => updateCardAt(selectedIndex!, { ...selected, ...routePatch(e.target.value) })}
-                      className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-2 text-sm text-white outline-none focus:border-indigo-500"
-                    >
-                      {CARD_ROUTES.map((r) => <option key={r} value={r}>{ROUTE_LABELS[r]}</option>)}
-                    </select>
+                  <label className="block min-w-0">
+                    <span className="text-xs text-slate-500">Начало</span>
+                    <input value={selected.start} onChange={(event) => editCardAt(selectedIndex!, { start: event.target.value })} className="mt-1 min-h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-white outline-none focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30" />
+                  </label>
+                  <label className="block min-w-0">
+                    <span className="text-xs text-slate-500">Конец</span>
+                    <input value={selected.end} onChange={(event) => editCardAt(selectedIndex!, { end: event.target.value })} className="mt-1 min-h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-white outline-none focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30" />
                   </label>
                 </div>
-                <p className="text-[11px] text-slate-600 -mt-1">
-                  Роут определяет простой AI-процесс: картинка или картинка с последующей анимацией в видео.
-                </p>
+                <label className="block">
+                  <span className="text-xs text-slate-500">Заметки</span>
+                  <textarea value={selected.notes} onChange={(event) => editCardAt(selectedIndex!, { notes: event.target.value })} className="mt-1 h-20 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30" />
+                </label>
+                </section>
+              </fieldset>
 
-                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 space-y-3">
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-semibold text-white">Текст поверх видео</span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(selected.text_overlay_enabled)}
-                      onChange={(e) => updateCardAt(selectedIndex!, {
-                        ...selected,
-                        text_overlay_enabled: e.target.checked,
-                        text_overlay_text: selected.text_overlay_text || selected.screen_text,
-                      })}
-                      className="h-4 w-4 accent-indigo-500"
-                    />
-                  </label>
-                  {selected.text_overlay_enabled && (
-                    <>
-                      <textarea
-                        value={selected.text_overlay_text || selected.screen_text || ''}
-                        onChange={(e) => updateCardAt(selectedIndex!, { ...selected, text_overlay_text: e.target.value })}
-                        className="h-14 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500"
-                      />
-                      <div className="grid grid-cols-2 gap-2">
-                        <label className="block">
-                          <span className="text-xs text-slate-500">Стиль</span>
-                          <select
-                            value={selected.text_overlay_style || 'subtitle'}
-                            onChange={(e) => updateCardAt(selectedIndex!, { ...selected, text_overlay_style: e.target.value })}
-                            className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-2 text-sm text-white outline-none focus:border-indigo-500"
-                          >
-                            {TEXT_STYLES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                          </select>
-                        </label>
-                        <label className="block">
-                          <span className="text-xs text-slate-500">Позиция</span>
-                          <select
-                            value={selected.text_overlay_position || 'bottom'}
-                            onChange={(e) => updateCardAt(selectedIndex!, { ...selected, text_overlay_position: e.target.value })}
-                            className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-2 text-sm text-white outline-none focus:border-indigo-500"
-                          >
-                            {TEXT_POSITIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                          </select>
-                        </label>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <label className="block">
-                  <span className="mb-1 flex items-center justify-between gap-3 text-xs text-slate-500">
-                    <span>Image prompt</span>
-                    <button type="button" onClick={() => selectedIndex !== null && regeneratePrompt(selectedIndex, 'image_prompt')} disabled={Boolean(busy)} className="rounded bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 border border-slate-700 disabled:opacity-45">Improve</button>
-                  </span>
-                  <textarea value={selected.image_prompt} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, image_prompt: e.target.value })} className="h-24 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
-                </label>
-                <label className="block">
-                  <span className="mb-1 flex items-center justify-between gap-3 text-xs text-slate-500">
-                    <span>Video prompt</span>
-                    <button type="button" onClick={() => selectedIndex !== null && regeneratePrompt(selectedIndex, 'video_prompt')} disabled={Boolean(busy)} className="rounded bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 border border-slate-700 disabled:opacity-45">Improve</button>
-                  </span>
-                  <textarea value={selected.video_prompt} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, video_prompt: e.target.value })} className="h-24 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="block">
-                    <span className="text-xs text-slate-500">Start</span>
-                    <input value={selected.start} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, start: e.target.value })} className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white font-mono outline-none focus:border-indigo-500" />
-                  </label>
-                  <label className="block">
-                    <span className="text-xs text-slate-500">End</span>
-                    <input value={selected.end} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, end: e.target.value })} className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white font-mono outline-none focus:border-indigo-500" />
-                  </label>
-                </div>
-                <label className="block">
-                  <span className="text-xs text-slate-500">Notes</span>
-                  <textarea value={selected.notes} onChange={(e) => updateCardAt(selectedIndex!, { ...selected, notes: e.target.value })} className="mt-1 h-16 w-full resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white outline-none focus:border-indigo-500" />
-                </label>
+              <div className="sticky -bottom-4 -mx-4 -mb-4 flex flex-wrap gap-2 border-t border-slate-800 bg-slate-900/95 p-4 backdrop-blur">
+                <button type="button" onClick={() => void saveSelected()} disabled={Boolean(busy) || !selectedDirty || selectedConflict} title={selectedConflict ? 'Сначала разрешите конфликт правок' : selectedDirty ? 'Сохранить изменения карточки' : 'Нет несохранённых изменений'} className="min-h-10 min-w-32 flex-1 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">{busy === 'save' ? 'Сохраняю…' : selectedConflict ? 'Разрешите конфликт' : selectedDirty ? 'Сохранить правки' : 'Сохранено'}</button>
+                <button type="button" onClick={() => selectedIndex !== null && toggleExclude(selectedIndex)} disabled={Boolean(busy) || selectedDirty} title={selectedDirty ? 'Сначала сохраните правки' : isExcluded(selected) ? 'Вернуть материал в финальное видео' : 'Исключить материал из финального видео'} className={`min-h-10 rounded-lg px-4 py-2 text-sm font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 disabled:cursor-not-allowed disabled:opacity-45 ${isExcluded(selected) ? 'bg-slate-700 hover:bg-slate-600' : 'bg-rose-900 hover:bg-rose-800'}`}>{isExcluded(selected) ? 'Вернуть в финал' : 'Исключить'}</button>
               </div>
-
-              <div className="flex gap-2">
-                <button onClick={saveSelected} disabled={Boolean(busy)} className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">Сохранить</button>
-                <button onClick={() => selectedIndex !== null && toggleExclude(selectedIndex)} disabled={Boolean(busy)} className={`px-4 py-2 rounded-lg text-white text-sm font-semibold disabled:opacity-45 ${selected && isExcluded(selected) ? 'bg-slate-700' : 'bg-rose-800'}`}>{selected && isExcluded(selected) ? 'Вернуть в финал' : 'Исключить'}</button>
-              </div>
-            </>
+            </div>
           ) : (
-            <div className="py-20 text-center text-sm text-slate-600">Выберите карточку.</div>
+            <div className="flex min-h-64 flex-col items-center justify-center px-6 py-16 text-center">
+              <div aria-hidden="true" className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-800 text-slate-500">↖</div>
+              <h2 className="font-semibold text-white">Материал не выбран</h2>
+              <p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">Выберите карточку в списке, чтобы открыть предпросмотр, параметры и историю вариантов.</p>
+            </div>
           )}
         </aside>
       </div>

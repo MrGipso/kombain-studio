@@ -2,6 +2,29 @@ import type { ProjectInfo, ProjectDetail, ProjectState, ProjectJobs, ProjectRunL
 
 const BASE = '/api'
 
+export class ApiError extends Error {
+  readonly status: number
+  readonly detail: unknown
+
+  constructor(status: number, message: string, detail?: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.detail = detail
+  }
+}
+
+export function isApiError(error: unknown, status?: number): error is ApiError {
+  return error instanceof ApiError && (status === undefined || error.status === status)
+}
+
+export function isBoardRevisionConflict(error: unknown): boolean {
+  if (!isApiError(error, 409) || !error.detail || typeof error.detail !== 'object' || Array.isArray(error.detail)) {
+    return false
+  }
+  return 'expected' in error.detail && 'current' in error.detail
+}
+
 async function r<T>(url: string, opts?: RequestInit, onResponse?: (response: Response) => void): Promise<T> {
   const res = await fetch(`${BASE}${url}`, {
     headers: { 'Content-Type': 'application/json', ...opts?.headers },
@@ -10,9 +33,11 @@ async function r<T>(url: string, opts?: RequestInit, onResponse?: (response: Res
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     let message = text || res.statusText || `HTTP ${res.status}`
+    let errorDetail: unknown
     try {
       const payload = JSON.parse(text) as { detail?: unknown; message?: unknown }
       const detail = payload.detail ?? payload.message
+      errorDetail = detail
       if (typeof detail === 'string') message = detail
       else if (Array.isArray(detail)) {
         message = detail.map((item) => {
@@ -25,7 +50,7 @@ async function r<T>(url: string, opts?: RequestInit, onResponse?: (response: Res
     } catch {
       // The response was plain text; keep it as-is.
     }
-    throw new Error(message)
+    throw new ApiError(res.status, message, errorDetail)
   }
   onResponse?.(res)
   return res.json()
@@ -80,13 +105,30 @@ export const exportScenes = (id: string) =>
 export const getShots = (id: string) => r(`/projects/${encodeURIComponent(id)}/shots`)
 
 // Asset Board.
-// Optimistic concurrency: getAssetBoard remembers the board's ETag per project,
-// and saveAssetBoard sends it back as If-Match. If a background render changed
-// the board meanwhile, the server returns 409 instead of letting a stale
-// full-board save clobber the fresh image_output/video_output (P0-4).
+// Optimistic concurrency: board mutations send the latest accepted ETag as
+// If-Match. Read responses are sequenced and cannot roll the revision back
+// after a newer read or a completed mutation.
 const boardRev: Record<string, string> = {}
+const boardReadSequence: Record<string, number> = {}
+const boardAppliedReadSequence: Record<string, number> = {}
+const boardWriteVersion: Record<string, number> = {}
 
-function rememberBoardRevision(id: string, response: Response) {
+function trackBoardReadRevision(id: string) {
+  const sequence = (boardReadSequence[id] || 0) + 1
+  const writeVersionAtStart = boardWriteVersion[id] || 0
+  boardReadSequence[id] = sequence
+  return (response: Response) => {
+    const etag = response.headers.get('ETag')
+    if (!etag) return
+    if (writeVersionAtStart !== (boardWriteVersion[id] || 0)) return
+    if (sequence < (boardAppliedReadSequence[id] || 0)) return
+    boardAppliedReadSequence[id] = sequence
+    boardRev[id] = etag
+  }
+}
+
+function rememberBoardWriteRevision(id: string, response: Response) {
+  boardWriteVersion[id] = (boardWriteVersion[id] || 0) + 1
   const etag = response.headers.get('ETag')
   if (etag) boardRev[id] = etag
 }
@@ -101,20 +143,20 @@ function cardOperationHeaders(id: string, cardId: string): Record<string, string
   return { ...boardHeaders(id), 'X-Card-ID': cardId }
 }
 
-export const getAssetBoard = async (id: string): Promise<AssetCard[]> => {
-  const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/asset-board`, {
-    headers: { 'Content-Type': 'application/json' },
-  })
-  if (!res.ok) throw new Error((await res.text().catch(() => '')) || `HTTP ${res.status}`)
-  rememberBoardRevision(id, res)
-  return res.json() as Promise<AssetCard[]>
+export const getAssetBoard = (id: string) => {
+  const rememberRevision = trackBoardReadRevision(id)
+  return r<AssetCard[]>(
+    `/projects/${encodeURIComponent(id)}/asset-board`,
+    undefined,
+    rememberRevision,
+  )
 }
 
 export const saveAssetBoard = async (id: string, cards: AssetCard[]) => {
   const result = await r<{ ok: boolean; count: number; rev?: string }>(
     `/projects/${encodeURIComponent(id)}/asset-board/save`,
     { method: 'POST', headers: boardHeaders(id), body: JSON.stringify(cards) },
-    (response) => rememberBoardRevision(id, response),
+    (response) => rememberBoardWriteRevision(id, response),
   )
   if (result.rev) boardRev[id] = result.rev
   return result
@@ -122,40 +164,40 @@ export const saveAssetBoard = async (id: string, cards: AssetCard[]) => {
 export const rebuildAssetBoard = (id: string) =>
   r<{ ok: boolean; count: number; cards: AssetCard[] }>(
     `/projects/${encodeURIComponent(id)}/asset-board/rebuild`, { method: 'POST' },
-    (response) => rememberBoardRevision(id, response),
+    (response) => rememberBoardWriteRevision(id, response),
   )
 export const updateCard = (id: string, cardIndex: number, data: Partial<AssetCard>) =>
   r<AssetCard>(`/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}`, {
     method: 'PUT',
     headers: boardHeaders(id),
     body: JSON.stringify(data),
-  }, (response) => rememberBoardRevision(id, response))
+  }, (response) => rememberBoardWriteRevision(id, response))
 export const generateCard = (id: string, cardIndex: number, cardId: string, mode: string = 'route', skipStock = false, forceFull = false) =>
   r<{ ok: boolean; card?: AssetCard }>(
     `/projects/${encodeURIComponent(id)}/generate/${cardIndex}?mode=${mode}${skipStock ? '&skip_stock=true' : ''}${forceFull ? '&force_full=true' : ''}`, {
     method: 'POST',
     headers: cardOperationHeaders(id, cardId),
-  }, (response) => rememberBoardRevision(id, response))
+  }, (response) => rememberBoardWriteRevision(id, response))
 export const resolveStock = (id: string, cardIndex: number, cardId: string) =>
   r<{ ok: boolean; card?: AssetCard; message?: string; source?: string; score?: number }>(
     `/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}/stock`, {
       method: 'POST',
       headers: cardOperationHeaders(id, cardId),
-  }, (response) => rememberBoardRevision(id, response))
+  }, (response) => rememberBoardWriteRevision(id, response))
 export const regeneratePrompt = (id: string, cardIndex: number, cardId: string, target: 'image_prompt' | 'video_prompt') =>
   r<{ ok: boolean; target: string; prompt: string; card: AssetCard }>(
     `/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}/regenerate-prompt`, {
     method: 'POST',
     headers: cardOperationHeaders(id, cardId),
     body: JSON.stringify({ target }),
-  }, (response) => rememberBoardRevision(id, response))
+  }, (response) => rememberBoardWriteRevision(id, response))
 export const getAssetVariants = (id: string, cardIndex: number) =>
   r<AssetVariantHistory>(`/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}/variants`)
 export const selectAssetVariant = (id: string, cardIndex: number, variantId: string) =>
   r<AssetVariantSelection>(
     `/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}/variants/${encodeURIComponent(variantId)}/select`,
     { method: 'POST', headers: boardHeaders(id) },
-    (response) => rememberBoardRevision(id, response),
+    (response) => rememberBoardWriteRevision(id, response),
   )
 
 // Project settings (video style + optional custom notes)

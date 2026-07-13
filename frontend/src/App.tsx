@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { createBrowserRouter, createRoutesFromElements, Navigate, Route, RouterProvider } from 'react-router-dom'
 import { ToastProvider } from './components/Toast'
-import AppErrorBoundary from './components/AppErrorBoundary'
+import AppErrorBoundary, { AppErrorFallback } from './components/AppErrorBoundary'
 
 const StartScreen = lazy(() => import('./pages/StartScreen'))
 const ProjectLayout = lazy(() => import('./pages/ProjectLayout'))
@@ -38,31 +38,33 @@ function PageLoader() {
   )
 }
 
+const router = createBrowserRouter(createRoutesFromElements(
+  <Route errorElement={<AppErrorFallback />}>
+    <Route path="/" element={<StartScreen />} />
+    <Route path="/project/:projectId" element={<ProjectLayout />}>
+      <Route index element={<Dashboard />} />
+      <Route path="script" element={<Script />} />
+      <Route path="transcription" element={<Transcription />} />
+      <Route path="scenes" element={<Scenes />} />
+      <Route path="shots" element={<Shots />} />
+      <Route path="board" element={<AssetBoard />} />
+      <Route path="timeline" element={<Timeline />} />
+      <Route path="music" element={<Music />} />
+      <Route path="sounds" element={<Sounds />} />
+      <Route path="preview" element={<Preview />} />
+    </Route>
+    <Route path="/settings" element={<Settings />} />
+    <Route path="*" element={<Navigate to="/" replace />} />
+  </Route>,
+))
+
 export default function App() {
   return (
     <AppErrorBoundary>
       <ToastProvider>
-        <BrowserRouter>
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
-              <Route path="/" element={<StartScreen />} />
-              <Route path="/project/:projectId" element={<ProjectLayout />}>
-                <Route index element={<Dashboard />} />
-                <Route path="script" element={<Script />} />
-                <Route path="transcription" element={<Transcription />} />
-                <Route path="scenes" element={<Scenes />} />
-                <Route path="shots" element={<Shots />} />
-                <Route path="board" element={<AssetBoard />} />
-                <Route path="timeline" element={<Timeline />} />
-                <Route path="music" element={<Music />} />
-                <Route path="sounds" element={<Sounds />} />
-                <Route path="preview" element={<Preview />} />
-              </Route>
-              <Route path="/settings" element={<Settings />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
-        </BrowserRouter>
+        <Suspense fallback={<PageLoader />}>
+          <RouterProvider router={router} />
+        </Suspense>
       </ToastProvider>
     </AppErrorBoundary>
   )
