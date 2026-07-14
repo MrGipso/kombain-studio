@@ -1,0 +1,516 @@
+{
+  "schema_version": 1,
+  "suite": "pipeline-studio-local-agent-vlm",
+  "suite_version": "2.0.0",
+  "description": "Versioned text, native-tool and still-image cases captured from real Pipeline Studio projects. Labels are withheld from model-visible identifiers and inputs; image QA includes a matched/swapped fixture pair.",
+  "schemas": {
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "route", "rationale"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 3},
+        "route": {
+          "type": "string",
+          "enum": ["stock", "reference", "kenburns", "image", "image+video"]
+        },
+        "rationale": {"type": "string", "minLength": 20, "maxLength": 500}
+      }
+    },
+    "prompt_rewrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "asset_query", "image_prompt", "video_prompt"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 3},
+        "asset_query": {"type": "string", "minLength": 3, "maxLength": 100},
+        "image_prompt": {"type": "string", "minLength": 80, "maxLength": 1800},
+        "video_prompt": {"type": "string", "minLength": 40, "maxLength": 900}
+      }
+    },
+    "qa_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "verdict", "overall_score", "issues", "rationale"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 3},
+        "verdict": {
+          "type": "string",
+          "enum": ["accept", "needs_review", "retry_image", "retry_video"]
+        },
+        "overall_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "issues": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "semantic_mismatch",
+              "garbled_text",
+              "watermark_or_logo",
+              "bad_anatomy",
+              "broken_geometry",
+              "style_mismatch",
+              "authenticity_risk",
+              "composition_problem",
+              "none"
+            ]
+          }
+        },
+        "rationale": {"type": "string", "minLength": 20, "maxLength": 700}
+      }
+    },
+    "generation_plan_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "route", "priority", "asset_query", "rationale"],
+      "properties": {
+        "case_id": {"type": "string"},
+        "route": {
+          "type": "string",
+          "enum": ["stock", "reference", "kenburns", "image", "image+video"]
+        },
+        "priority": {"type": "string", "enum": ["low", "medium", "high"]},
+        "asset_query": {"type": "string", "minLength": 3, "maxLength": 100},
+        "rationale": {"type": "string", "minLength": 20, "maxLength": 500}
+      }
+    }
+  },
+  "tool_sets": {
+    "generation_plan": [
+      {
+        "type": "function",
+        "function": {
+          "name": "submit_generation_plan",
+          "description": "Submit one validated generation route for the given immutable benchmark case.",
+          "parameters_ref": "generation_plan_tool"
+        }
+      }
+    ],
+    "asset_review": [
+      {
+        "type": "function",
+        "function": {
+          "name": "submit_asset_review",
+          "description": "Record a still-image QA verdict and the observed issue categories.",
+          "parameters_ref": "qa_review"
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "route-001",
+      "track": "route",
+      "mode": "text",
+      "temperature": 0.25,
+      "system": "You are the cost-aware visual director for a documentary pipeline. Apply this route policy: use stock for ordinary real-world footage that is readily searchable; reference only for a broadly recognized named entity with a reliably resolvable Wikipedia or arXiv page; kenburns for a bespoke static visual that needs only a slow camera move; image for a bespoke still without meaningful motion; image+video only when bespoke motion or a locked visual style is essential. Return only valid JSON.",
+      "instruction": "Choose exactly one route using the route policy and the supplied shot facts. Prefer the cheapest adequate option. Preserve case_id.",
+      "input": {
+        "case_id": "route-001",
+        "source_project": "test",
+        "source_shot": 1,
+        "language": "ru",
+        "video_style": "documentary",
+        "description": "Вид из иллюминатора самолета на густые серые облака. Камера слегка вибрирует, передавая ощущение полета.",
+        "asset_query": "airplane window view clouds"
+      },
+      "structured_output": true,
+      "response_schema_ref": "route",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "route-001", "weight": 1, "hard": true},
+        {"name": "preferred-route", "kind": "equals", "path": "route", "value": "stock", "weight": 4, "hard": true}
+      ]
+    },
+    {
+      "id": "route-002",
+      "track": "route",
+      "mode": "text",
+      "temperature": 0.25,
+      "system": "You are the cost-aware visual director for a documentary pipeline. Apply this route policy: use stock for ordinary real-world footage that is readily searchable; reference only for a broadly recognized named entity with a reliably resolvable Wikipedia or arXiv page; kenburns for a bespoke static visual that needs only a slow camera move; image for a bespoke still without meaningful motion; image+video only when bespoke motion or a locked visual style is essential. Return only valid JSON.",
+      "instruction": "Choose exactly one route using the route policy and the supplied shot facts. Prefer the cheapest adequate option. Preserve case_id.",
+      "input": {
+        "case_id": "route-002",
+        "source_project": "kran",
+        "source_shot": 13,
+        "language": "ru",
+        "video_style": "documentary",
+        "description": "Коллаж из чертежей и деталей крана: фундамент, кабина, стрела.",
+        "image_prompt": "A detailed technical blueprint of a crane structure spread out on a wooden table in a bright engineering office, architectural tools nearby, natural window light.",
+        "motion_requirement": "Only a restrained slow camera move over a static technical drawing."
+      },
+      "structured_output": true,
+      "response_schema_ref": "route",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "route-002", "weight": 1, "hard": true},
+        {"name": "preferred-route", "kind": "equals", "path": "route", "value": "kenburns", "weight": 4, "hard": true}
+      ]
+    },
+    {
+      "id": "route-003",
+      "track": "route",
+      "mode": "text",
+      "temperature": 0.25,
+      "system": "You are the cost-aware visual director for a documentary pipeline. Apply this route policy: use stock for ordinary real-world footage that is readily searchable; reference only for a broadly recognized named entity with a reliably resolvable Wikipedia or arXiv page; kenburns for a bespoke static visual that needs only a slow camera move; image for a bespoke still without meaningful motion; image+video only when bespoke motion or a locked visual style is essential. Return only valid JSON.",
+      "instruction": "Choose exactly one route using the route policy and the supplied shot facts. Prefer the cheapest adequate option. Preserve case_id.",
+      "input": {
+        "case_id": "route-003",
+        "source_project": "zemletrus",
+        "source_shot": 2,
+        "language": "ru",
+        "video_style": "knitted",
+        "description": "Разлом на дне океана. Толстая синяя и коричневая пряжа расходится, образуя трещину.",
+        "motion_requirement": "The gap between yarn tectonic plates widens slightly while yarn bubbles rise.",
+        "style_requirement": "Locked handmade crochet and amigurumi appearance."
+      },
+      "structured_output": true,
+      "response_schema_ref": "route",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "route-003", "weight": 1, "hard": true},
+        {"name": "preferred-route", "kind": "equals", "path": "route", "value": "image+video", "weight": 4, "hard": true}
+      ]
+    },
+    {
+      "id": "route-004",
+      "track": "route",
+      "mode": "text",
+      "temperature": 0.25,
+      "system": "You are the cost-aware visual director for a documentary pipeline. Apply this route policy: use stock for ordinary real-world footage that is readily searchable; reference only for a broadly recognized named entity with a reliably resolvable Wikipedia or arXiv page; kenburns for a bespoke static visual that needs only a slow camera move; image for a bespoke still without meaningful motion; image+video only when bespoke motion or a locked visual style is essential. Return only valid JSON.",
+      "instruction": "Choose exactly one route using the route policy and the supplied shot facts. Prefer the cheapest adequate option. Preserve case_id.",
+      "input": {
+        "case_id": "route-004",
+        "source_project": "llama_v2",
+        "source_shot": 37,
+        "language": "ru",
+        "video_style": "ai_world",
+        "description": "Информационная карточка с названием технологии llama.cpp на фоне размытого терминала.",
+        "asset_query": "llama.cpp software interface terminal",
+        "entity_context": "A specialized CLI/runtime repository rather than a broadly recognized public entity."
+      },
+      "structured_output": true,
+      "response_schema_ref": "route",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "route-004", "weight": 1, "hard": true},
+        {"name": "forbid-reference", "kind": "not_in", "path": "route", "values": ["reference"], "weight": 4, "hard": true}
+      ]
+    },
+    {
+      "id": "prompt-001",
+      "track": "prompt",
+      "mode": "text",
+      "temperature": 0.35,
+      "system": "You rewrite prompts for Krea image generation and LTX image-to-video. Return only valid JSON. Image prompts are English, concrete and visual; video prompts describe only subtle motion, never sound.",
+      "instruction": "Rewrite the prompts into a coherent single domestic composition. Keep both a made bed and visible food storage without pretending a normal refrigerator stands inside a bedroom. Image prompt: 3-6 descriptive English sentences, beginning with the visible subject rather than a genre label. Video prompt: 2-4 English sentences with one camera move, one small subject or environmental movement, and no sound, ambience, logos, subtitles or readable text. Supply a literal 2-6 word stock query. Preserve case_id.",
+      "input": {
+        "case_id": "prompt-001",
+        "source_project": "123",
+        "source_shot": 1,
+        "description": "Cena mostrando conforto moderno: uma cama arrumada e uma geladeira cheia de comida organizada.",
+        "current_asset_query": "neat bed and open refrigerator with food",
+        "current_image_prompt": "A cozy, sunlit bedroom with a neatly made bed featuring white linen sheets and soft pillows. In the background, an open modern refrigerator stands in a clean kitchen area, revealing organized glass containers filled with fresh vegetables and fruits under bright, cool LED light. The scene is captured from a wide angle showing both the sleeping area and the kitchen corner in a single domestic space, natural morning light through a window.",
+        "current_video_prompt": "The camera slowly pans from the soft texture of the bed towards the glowing interior of the refrigerator. Dust motes dance in the sunlight streaming through the window. Soft room tone."
+      },
+      "structured_output": true,
+      "response_schema_ref": "prompt_rewrite",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "prompt-001", "weight": 1, "hard": true},
+        {"name": "literal-query", "kind": "word_count", "path": "asset_query", "min": 2, "max": 6, "weight": 1},
+        {"name": "query-semantic", "kind": "regex", "path": "asset_query", "pattern": "\\b(bed|bedroom|kitchen|pantry|refrigerator|fridge|food)\\b", "weight": 2, "hard": true},
+        {"name": "image-bed", "kind": "regex", "path": "image_prompt", "pattern": "\\bbed\\b", "weight": 2, "hard": true},
+        {"name": "image-food-storage", "kind": "regex", "path": "image_prompt", "pattern": "\\b(refrigerator|fridge|pantry|food storage|kitchen)\\b", "weight": 2, "hard": true},
+        {"name": "image-english", "kind": "english_ratio", "path": "image_prompt", "min": 0.95, "weight": 1},
+        {"name": "image-sentences", "kind": "sentence_count", "path": "image_prompt", "min": 3, "max": 6, "weight": 1},
+        {"name": "concrete-opening", "kind": "not_regex", "path": "image_prompt", "pattern": "^(documentary|cinematic|photorealistic|editorial|observational)", "weight": 1},
+        {"name": "video-camera", "kind": "regex", "path": "video_prompt", "pattern": "\\b(camera|dolly|pan|track|push(?:es)? in)\\b", "weight": 1},
+        {"name": "no-audio", "kind": "not_regex", "path": "video_prompt", "pattern": "\\b(sound|audio|ambience|room tone|hum)\\b", "weight": 2, "hard": true}
+      ]
+    },
+    {
+      "id": "prompt-002",
+      "track": "prompt",
+      "mode": "text",
+      "temperature": 0.35,
+      "system": "You rewrite prompts for Krea image generation and LTX image-to-video. Return only valid JSON. Image prompts are English, concrete and visual; video prompts describe only subtle motion, never sound.",
+      "instruction": "Repair the incomplete card. Supply a literal 2-5 word English stock query. Keep the strong image concept. Rewrite video_prompt to 2-4 sentences with subtle tracking, drifting mist and no audio language. Preserve case_id.",
+      "input": {
+        "case_id": "prompt-002",
+        "source_project": "kran",
+        "source_shot": 3,
+        "description": "Крупный план стальной стрелы крана на большой высоте.",
+        "current_asset_query": "",
+        "current_image_prompt": "A close-up shot of a long, heavy steel crane jib reaching into the misty sky. The texture of the grey painted metal is visible with slight rust and grime. High altitude perspective looking along the length of the arm. Soft, diffused daylight through thick fog.",
+        "current_video_prompt": "The camera slowly tracks along the side of the steel jib. Light mist drifts across the frame. Low hum of distant city wind."
+      },
+      "structured_output": true,
+      "response_schema_ref": "prompt_rewrite",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "prompt-002", "weight": 1, "hard": true},
+        {"name": "literal-query", "kind": "word_count", "path": "asset_query", "min": 2, "max": 5, "weight": 2},
+        {"name": "query-semantic", "kind": "regex", "path": "asset_query", "pattern": "\\b(crane|jib|boom)\\b", "weight": 2, "hard": true},
+        {"name": "image-subject", "kind": "regex", "path": "image_prompt", "pattern": "\\b(crane|jib|boom)\\b", "weight": 2, "hard": true},
+        {"name": "image-english", "kind": "english_ratio", "path": "image_prompt", "min": 0.95, "weight": 1},
+        {"name": "video-subject", "kind": "regex", "path": "video_prompt", "pattern": "\\b(crane|jib|boom)\\b", "weight": 2, "hard": true},
+        {"name": "video-mist", "kind": "regex", "path": "video_prompt", "pattern": "\\b(mist|fog)\\b", "weight": 1, "hard": true},
+        {"name": "video-camera", "kind": "regex", "path": "video_prompt", "pattern": "\\b(camera|dolly|pan|track|push(?:es)? in)\\b", "weight": 1},
+        {"name": "no-audio", "kind": "not_regex", "path": "video_prompt", "pattern": "\\b(sound|audio|ambience|room tone|hum)\\b", "weight": 3, "hard": true}
+      ]
+    },
+    {
+      "id": "prompt-003",
+      "track": "prompt",
+      "mode": "text",
+      "temperature": 0.35,
+      "system": "You rewrite prompts for Krea image generation and LTX image-to-video. Return only valid JSON. Image prompts are English, concrete and visual; video prompts describe only subtle motion, never sound.",
+      "instruction": "The current image prompt is Russian and too short. Produce a concrete 3-6 sentence English image prompt suitable for a realistic airplane-window shot. Produce a 2-4 sentence English motion prompt with subtle aircraft vibration, moving cloud texture and a restrained camera move. No sound. Keep a literal stock query. Preserve case_id.",
+      "input": {
+        "case_id": "prompt-003",
+        "source_project": "test",
+        "source_shot": 1,
+        "description": "Вид из иллюминатора самолета на густые серые облака. Камера слегка вибрирует, передавая ощущение полета.",
+        "current_asset_query": "airplane window view clouds",
+        "current_image_prompt": "Вид из иллюминатора самолета на густые серые облака. Камера слегка вибрирует, передавая ощущение полета.",
+        "current_video_prompt": "subtle aircraft vibration, moving clouds through the window, slow camera shake"
+      },
+      "structured_output": true,
+      "response_schema_ref": "prompt_rewrite",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "prompt-003", "weight": 1, "hard": true},
+        {"name": "query-semantic", "kind": "regex", "path": "asset_query", "pattern": "\\b(airplane|aircraft|window|clouds?)\\b", "weight": 2, "hard": true},
+        {"name": "image-subject", "kind": "regex", "path": "image_prompt", "pattern": "\\b(airplane|aircraft|window|porthole)\\b", "weight": 2, "hard": true},
+        {"name": "image-clouds", "kind": "regex", "path": "image_prompt", "pattern": "\\bclouds?\\b", "weight": 2, "hard": true},
+        {"name": "image-english", "kind": "english_ratio", "path": "image_prompt", "min": 0.98, "weight": 3, "hard": true},
+        {"name": "image-sentences", "kind": "sentence_count", "path": "image_prompt", "min": 3, "max": 6, "weight": 1},
+        {"name": "video-english", "kind": "english_ratio", "path": "video_prompt", "min": 0.98, "weight": 1},
+        {"name": "video-vibration", "kind": "regex", "path": "video_prompt", "pattern": "\\b(vibrat(?:e|es|ion|ing)|tremor|shake|shaking)\\b", "weight": 2, "hard": true},
+        {"name": "video-clouds", "kind": "regex", "path": "video_prompt", "pattern": "\\bclouds?\\b", "weight": 1, "hard": true},
+        {"name": "no-audio", "kind": "not_regex", "path": "video_prompt", "pattern": "\\b(sound|audio|ambience|room tone|hum)\\b", "weight": 2, "hard": true}
+      ]
+    },
+    {
+      "id": "prompt-004",
+      "track": "prompt",
+      "mode": "text",
+      "temperature": 0.35,
+      "manual_review": true,
+      "system": "You rewrite prompts for Krea image generation and LTX image-to-video. Return only valid JSON. Keep the handmade crochet style stable and reduce image-to-video morphing risk.",
+      "instruction": "Preserve the intended earthquake aftermath but rewrite motion to be feasible for image-to-video: one restrained structural movement, one environmental movement, and one slow camera movement. Avoid violent whole-city transformation, rapid domino collapse or mass geometry changes. Image prompt stays 3-6 English sentences; video prompt is 2-4 English sentences and contains no sound. Preserve case_id.",
+      "input": {
+        "case_id": "prompt-004",
+        "source_project": "zemletrus",
+        "source_shot": 4,
+        "video_style": "knitted",
+        "description": "Город из вязаных домов рушится, превращаясь в груды спутанной пряжи и нитей.",
+        "current_asset_query": "collapsed buildings rubble",
+        "current_image_prompt": "A wide shot of a miniature city made entirely of knitted yarn and crochet textures. Several low-rise houses are tilting and collapsing like dominoes, with thick strands of colorful wool spilling out onto the street like debris. The ground is a grey crocheted surface covered in loose, tangled yarn fibers. Soft, diffused daylight illuminates the heavy textured stitches.",
+        "current_video_prompt": "The knitted buildings tilt and fall over slowly, unraveling into piles of tangled colorful yarn. A subtle movement of loose wool fibers drifting through the air like dust. Slow dolly in towards the rubble."
+      },
+      "structured_output": true,
+      "response_schema_ref": "prompt_rewrite",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "prompt-004", "weight": 1, "hard": true},
+        {"name": "query-semantic", "kind": "regex", "path": "asset_query", "pattern": "\\b(knit(?:ted)?|crochet|yarn|wool|building|city|rubble)\\b", "weight": 2, "hard": true},
+        {"name": "image-style", "kind": "regex", "path": "image_prompt", "pattern": "\\b(knit(?:ted)?|crochet|yarn|wool)\\b", "weight": 2, "hard": true},
+        {"name": "image-subject", "kind": "regex", "path": "image_prompt", "pattern": "\\b(city|building|house|structure|rubble)\\b", "weight": 2, "hard": true},
+        {"name": "video-style", "kind": "regex", "path": "video_prompt", "pattern": "\\b(knit(?:ted)?|crochet|yarn|wool|thread|fiber)\\b", "weight": 2, "hard": true},
+        {"name": "video-structure", "kind": "regex", "path": "video_prompt", "pattern": "\\b(building|house|structure|wall|roof|rubble)\\b", "weight": 2, "hard": true},
+        {"name": "avoid-violent-motion", "kind": "not_regex", "path": "video_prompt", "pattern": "\\b(rapid|violent|explode|shatter|domino|entire city)\\b", "weight": 2},
+        {"name": "video-camera", "kind": "regex", "path": "video_prompt", "pattern": "\\b(camera|dolly|pan|track|push(?:es)? in)\\b", "weight": 1},
+        {"name": "no-audio", "kind": "not_regex", "path": "video_prompt", "pattern": "\\b(sound|audio|ambience|room tone|hum)\\b", "weight": 2, "hard": true}
+      ]
+    },
+    {
+      "id": "vision-001",
+      "track": "still_qa",
+      "mode": "image",
+      "temperature": 0.1,
+      "system": "You are a strict but calibrated video-editor QA reviewer. Inspect the supplied generated still against the source intent. Return only valid JSON. Base every issue and verdict on visible evidence in the image.",
+      "instruction": "Compare the supplied image with the source description and image prompt. Evaluate semantic match, composition, anatomy, geometry, visible text and production usability. Do not invent defects and do not excuse prominent ones. Preserve case_id.",
+      "input": {
+        "case_id": "vision-001",
+        "source_project": "llama_v2",
+        "source_shot": 4,
+        "description": "Крупный план монитора с бегущими строками кода и быстро меняющимися токенами.",
+        "image_prompt": "A close-up of a computer monitor displaying scrolling lines of code and rapidly changing tokens."
+      },
+      "image": "projects/llama_v2/assets/images/shot_004_krea2_turbo.png",
+      "image_sha256": "1f5ac7b20d5da2dd04096e31030921f8c154d75be9f3d95828fd82e9b28b2ba9",
+      "structured_output": true,
+      "response_schema_ref": "qa_review",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "vision-001", "weight": 1, "hard": true},
+        {"name": "qa-consistency", "kind": "qa_consistency", "weight": 2, "hard": true},
+        {"name": "reject-obvious-defect", "kind": "in", "path": "verdict", "values": ["retry_image", "needs_review"], "weight": 4, "hard": true},
+        {"name": "identify-garbled-text", "kind": "array_contains_any", "path": "issues", "values": ["garbled_text"], "weight": 4, "hard": true}
+      ]
+    },
+    {
+      "id": "vision-002",
+      "track": "still_qa",
+      "mode": "image",
+      "temperature": 0.1,
+      "system": "You are a strict but calibrated video-editor QA reviewer. Inspect the supplied generated still against the source intent. Return only valid JSON. Base every issue and verdict on visible evidence in the image.",
+      "instruction": "Compare the supplied image with the source description and image prompt. Evaluate semantic match, composition, anatomy, geometry, visible text and production usability. Do not invent defects and do not excuse prominent ones. Preserve case_id.",
+      "input": {
+        "case_id": "vision-002",
+        "source_project": "kran",
+        "source_shot": 13,
+        "description": "Коллаж из чертежей и деталей крана: фундамент, кабина, стрела.",
+        "image_prompt": "A detailed technical blueprint of a crane structure spread out on a wooden table in a bright engineering office, architectural tools nearby, natural window light."
+      },
+      "image": "projects/kran/assets/images/shot_013_krea2_turbo.png",
+      "image_sha256": "00c7c2376ed705dcfaa5eb9be7fde7deb3b71dbe3e3ab0a32ffc7dc0aea0f705",
+      "structured_output": true,
+      "response_schema_ref": "qa_review",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "vision-002", "weight": 1, "hard": true},
+        {"name": "qa-consistency", "kind": "qa_consistency", "weight": 2, "hard": true},
+        {"name": "calibrated-accept", "kind": "equals", "path": "verdict", "value": "accept", "weight": 4, "hard": true}
+      ]
+    },
+    {
+      "id": "vision-003",
+      "track": "still_qa",
+      "mode": "image",
+      "temperature": 0.1,
+      "manual_review": true,
+      "system": "You are a strict but calibrated video-editor QA reviewer. Inspect the supplied generated still against the source intent. Return only valid JSON. Base every issue and verdict on visible evidence in the image.",
+      "instruction": "Compare the supplied image with the source description and image prompt. Evaluate semantic match, composition, anatomy, geometry, visible text and production usability. Separate technical defects from uncertainty about cultural representation. Preserve case_id.",
+      "input": {
+        "case_id": "vision-003",
+        "source_project": "123",
+        "source_shot": 15,
+        "description": "A group of Hadza people walking through the tall grass.",
+        "image_prompt": "A group of Hadza men and women walking through tall golden grass in the Tanzanian bush, carrying wooden spears and digging sticks, warm afternoon sunlight, documentary realism."
+      },
+      "image": "projects/123/assets/images/shot_015_krea2_turbo.png",
+      "image_sha256": "947d610ee9dea448c01b2ce2bfdf38056db04049d7cef370067a45a1a24dd492",
+      "structured_output": true,
+      "response_schema_ref": "qa_review",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "vision-003", "weight": 1, "hard": true},
+        {"name": "qa-consistency", "kind": "qa_consistency", "weight": 2, "hard": true}
+      ]
+    },
+    {
+      "id": "vision-004",
+      "track": "still_qa",
+      "mode": "image",
+      "temperature": 0.1,
+      "system": "You are a strict but calibrated video-editor QA reviewer. Inspect the supplied generated still against the source intent. Return only valid JSON. Base every issue and verdict on visible evidence in the image.",
+      "instruction": "Compare the supplied image with the source description and image prompt. Evaluate semantic match, composition, anatomy, geometry, visible text and production usability. Do not invent defects and do not excuse prominent ones. Preserve case_id.",
+      "input": {
+        "case_id": "vision-004",
+        "source_project": "123",
+        "source_shot": 101,
+        "description": "Одинокий мужчина сидит неподвижно на скамейке, пока вокруг него проходит поток людей.",
+        "image_prompt": "One isolated man sits still on a bench in a busy modern city plaza while a stream of commuters passes around him, late-afternoon light, documentary realism."
+      },
+      "image": "projects/123/assets/images/shot_101_krea2_turbo.png",
+      "image_sha256": "9c10c186d7b3d5498f22e67c9c1f6ce7ae72a114aa7a3915023707b7c56d18d8",
+      "structured_output": true,
+      "response_schema_ref": "qa_review",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "vision-004", "weight": 1, "hard": true},
+        {"name": "qa-consistency", "kind": "qa_consistency", "weight": 2, "hard": true},
+        {"name": "semantic-match", "kind": "equals", "path": "verdict", "value": "accept", "weight": 5, "hard": true}
+      ]
+    },
+    {
+      "id": "vision-005",
+      "track": "still_qa",
+      "mode": "image",
+      "temperature": 0.1,
+      "system": "You are a strict but calibrated video-editor QA reviewer. Inspect the supplied generated still against the source intent. Return only valid JSON. Base every issue and verdict on visible evidence in the image.",
+      "instruction": "Compare the supplied image with the source description and image prompt. Evaluate semantic match, composition, anatomy, geometry, visible text and production usability. Do not invent defects and do not excuse prominent ones. Preserve case_id.",
+      "input": {
+        "case_id": "vision-005",
+        "source_project": "123",
+        "source_shot": 101,
+        "description": "Одинокий мужчина сидит неподвижно на скамейке, пока вокруг него проходит поток людей.",
+        "image_prompt": "One isolated man sits still on a bench in a busy modern city plaza while a stream of commuters passes around him, late-afternoon light, documentary realism."
+      },
+      "image": "projects/kran/assets/images/shot_013_krea2_turbo.png",
+      "image_sha256": "00c7c2376ed705dcfaa5eb9be7fde7deb3b71dbe3e3ab0a32ffc7dc0aea0f705",
+      "structured_output": true,
+      "response_schema_ref": "qa_review",
+      "checks": [
+        {"name": "case-id", "kind": "equals", "path": "case_id", "value": "vision-005", "weight": 1, "hard": true},
+        {"name": "qa-consistency", "kind": "qa_consistency", "weight": 2, "hard": true},
+        {"name": "reject-semantic-swap", "kind": "in", "path": "verdict", "values": ["retry_image", "needs_review"], "weight": 5, "hard": true},
+        {"name": "identify-semantic-mismatch", "kind": "array_contains_any", "path": "issues", "values": ["semantic_mismatch"], "weight": 5, "hard": true}
+      ]
+    },
+    {
+      "id": "tool-001",
+      "track": "tool_call",
+      "mode": "text",
+      "temperature": 0,
+      "system": "You are an execution agent. Call exactly one appropriate tool when asked to submit a decision. Apply this route policy: use stock for ordinary real-world footage that is readily searchable; reference only for a broadly recognized named entity with a reliably resolvable Wikipedia or arXiv page; kenburns for a bespoke static visual that needs only a slow camera move; image for a bespoke still without meaningful motion; image+video only when bespoke motion or a locked visual style is essential. Do not answer with a prose substitute.",
+      "instruction": "Submit the generation plan for the supplied shot using the route policy. Prefer the cheapest adequate route and preserve case_id.",
+      "input": {
+        "case_id": "tool-001",
+        "description": "Вид из иллюминатора самолета на густые серые облака; лёгкая вибрация полёта.",
+        "video_style": "documentary",
+        "asset_query_hint": "airplane window clouds"
+      },
+      "tools_ref": ["generation_plan", "asset_review"],
+      "tool_choice": "auto",
+      "expected_tool": "submit_generation_plan",
+      "schema_target": "tool_arguments",
+      "response_schema_ref": "generation_plan_tool",
+      "checks": [
+        {"name": "one-tool", "kind": "tool_count", "value": 1, "weight": 2, "hard": true},
+        {"name": "correct-tool", "kind": "tool_name", "value": "submit_generation_plan", "weight": 2, "hard": true},
+        {"name": "case-id", "kind": "tool_arg_equals", "tool": "submit_generation_plan", "path": "case_id", "value": "tool-001", "weight": 1, "hard": true},
+        {"name": "route", "kind": "tool_arg_equals", "tool": "submit_generation_plan", "path": "route", "value": "stock", "weight": 4, "hard": true}
+      ]
+    },
+    {
+      "id": "tool-002",
+      "track": "tool_call",
+      "mode": "image",
+      "temperature": 0,
+      "system": "You are an execution agent and a strict but calibrated visual QA reviewer. Inspect the supplied image against the source intent, then call exactly one appropriate tool with schema-valid arguments. Base every issue and verdict on visible evidence. Do not answer with a prose substitute.",
+      "instruction": "Inspect the supplied generated still and submit its asset review. Evaluate semantic match, composition, anatomy, geometry, visible text and production usability. Preserve case_id.",
+      "input": {
+        "case_id": "tool-002",
+        "description": "Крупный план монитора с бегущими строками кода и быстро меняющимися токенами.",
+        "image_prompt": "A close-up of a computer monitor displaying scrolling lines of code and rapidly changing tokens."
+      },
+      "image": "projects/llama_v2/assets/images/shot_004_krea2_turbo.png",
+      "image_sha256": "1f5ac7b20d5da2dd04096e31030921f8c154d75be9f3d95828fd82e9b28b2ba9",
+      "tools_ref": ["generation_plan", "asset_review"],
+      "tool_choice": "auto",
+      "expected_tool": "submit_asset_review",
+      "schema_target": "tool_arguments",
+      "response_schema_ref": "qa_review",
+      "checks": [
+        {"name": "one-tool", "kind": "tool_count", "value": 1, "weight": 2, "hard": true},
+        {"name": "correct-tool", "kind": "tool_name", "value": "submit_asset_review", "weight": 2, "hard": true},
+        {"name": "case-id", "kind": "tool_arg_equals", "tool": "submit_asset_review", "path": "case_id", "value": "tool-002", "weight": 1, "hard": true},
+        {"name": "qa-consistency", "kind": "tool_arg_qa_consistency", "tool": "submit_asset_review", "weight": 2, "hard": true},
+        {"name": "reject", "kind": "tool_arg_in", "tool": "submit_asset_review", "path": "verdict", "values": ["retry_image", "needs_review"], "weight": 4, "hard": true},
+        {"name": "issue", "kind": "tool_arg_array_contains_any", "tool": "submit_asset_review", "path": "issues", "values": ["garbled_text"], "weight": 4, "hard": true}
+      ]
+    },
+    {
+      "id": "tool-003",
+      "track": "tool_call",
+      "mode": "text",
+      "temperature": 0,
+      "system": "Follow the user's requested action boundary exactly. Available tools mutate production plans, so never call one when the user asks only for an explanation.",
+      "instruction": "Explain in one short paragraph why a specialized CLI/runtime repository may fail the application's reference-card eligibility policy. Do not submit or change any plan and do not call a tool.",
+      "input": {
+        "case_id": "tool-003",
+        "eligibility_policy": "Reference cards require a broadly recognized entity with reliable Wikipedia or arXiv resolution."
+      },
+      "tools_ref": ["generation_plan", "asset_review"],
+      "tool_choice": "auto",
+      "checks": [
+        {"name": "no-mutation-tool", "kind": "tool_count", "value": 0, "weight": 1, "hard": true}
+      ],
+      "pass_threshold": 1
+    }
+  ]
+}
