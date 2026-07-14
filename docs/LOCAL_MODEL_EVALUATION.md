@@ -88,31 +88,33 @@ eight-second typing clip was mostly frozen. Gemma correctly requested a retry;
 Qwen falsely accepted it. Gemma was safer but over-conservative on a separate
 moving Hadza clip. This is why a VLM cannot be the sole gate.
 
-## Required production changes
+## Implementation status
 
-1. Replace prompt-only JSON in `core/lm.py` with the
-   [LM Studio Python SDK](https://lmstudio.ai/docs/python): Pydantic/JSON Schema
-   responses, native image input, typed tools and explicit prediction config.
+The first safe production slice is implemented; see
+[`docs/ASSET_QA.md`](ASSET_QA.md) for its contracts and rollout procedure.
+
+1. `core/lm.py` now provides Pydantic/JSON Schema structured responses, a
+   scoped optional [LM Studio Python SDK](https://lmstudio.ai/docs/python)
+   transport, explicit prediction config and an OpenAI-compatible fallback.
+   Vision input remains on the validated HTTP transport for this slice.
 2. Keep Gemma as the synchronous production model. Optionally route difficult
    planning/research cases to Qwen only through an adapter proven to disable
    thinking. The native `/api/v1/chat` supports `reasoning: "off"`, but custom
    tools require the SDK or a compatible endpoint.
-3. Make vision output observational: booleans or typed fields such as
-   `semantic_match`, `garbled_text`, `bad_anatomy`, `broken_geometry`,
-   `motion_present` and confidence. Map those fields to actions in code.
-4. Reject schema-invalid, out-of-range or contradictory responses; retry once
-   with a repair prompt, then fall back to `needs_review`.
-5. Run deterministic video checks first: `freezedetect`, black/blur detection,
-   duration, decode integrity and sampled-frame change. Send selected frames to
-   the VLM only after those checks.
-6. Use one global GPU lease. Never run a 26/27B VLM and an LTX/Comfy render at
-   the same time on the 32 GB card. Use `nvidia-smi` as the source of truth.
-7. Change the local endpoint from the stale LAN address to
+3. Vision output is now observational and the versioned engine maps it to
+   actions. Schema/range failures get one repair attempt and then fail safe.
+4. Pillow, FFprobe, full decode, `freezedetect`, `blackdetect` and duration
+   checks now run deterministically. Sampled temporal VLM checks remain future
+   calibration work.
+5. Web `llm`, `comfy`, `stock` and `gpu` jobs now share one VRAM lease. Never
+   run a 26/27B VLM and LTX/Comfy simultaneously on the 32 GB card; use
+   `nvidia-smi` as the operational source of truth.
+6. Change the local endpoint from the stale LAN address to
    `http://127.0.0.1:1234/v1`. Bind LM Studio and ComfyUI to loopback or enable
    firewall/API-token protection; both currently listen on `0.0.0.0`.
-8. Keep `ai_frame_qa` disabled until validation and deterministic action mapping
-   are implemented. The existing scalar scorer clamps a model's accidental
-   0–10 score into 0–1, which can turn an invalid high value into a false accept.
+7. Roll out `ai_frame_qa` in `shadow` mode first. Reports are append-only and
+   hash-bound; `review` may flag `needs_review`, but neither mode regenerates.
+   The legacy stock scalar now rejects out-of-range scores instead of clamping.
 
 ## Reproduction
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
-import type { AssetCard, ExportGateReport, ExportMode, ExportProfile, ExportProfileName, MasterManifestInfo, TechnicalMediaQc, TimelineMedia } from '../api/types'
+import type { AssetCard, AssetQASummary, ExportGateReport, ExportMode, ExportProfile, ExportProfileName, MasterManifestInfo, TechnicalMediaQc, TimelineMedia } from '../api/types'
 import { useSSE } from '../hooks/useSSE'
 import { useToast } from '../components/toast-context'
 import { isExcluded } from '../lib/cards'
@@ -44,7 +44,7 @@ const formatManifestTime = (value: string) => {
 
 // The professional pre-ship ritual, automated: surface the shots most likely
 // to hurt the video so a human can review/replace the worst 5-10%.
-function findWeakSpots(cards: AssetCard[]): WeakSpot[] {
+function findWeakSpots(cards: AssetCard[], qa: AssetQASummary | null): WeakSpot[] {
   const out: WeakSpot[] = []
   cards.forEach((c, i) => {
     if (isExcluded(c)) return
@@ -52,8 +52,20 @@ function findWeakSpots(cards: AssetCard[]): WeakSpot[] {
     if (c.status === 'needs_review') {
       out.push({ cardIndex: i, shotIndex: c.shot_index, reason: c.notes?.split('\n').pop() || 'Требует проверки', severity: 'warn' })
     }
-    if (typeof c.qa_score === 'number' && c.qa_score >= 0 && c.qa_score < 0.45) {
-      out.push({ cardIndex: i, shotIndex: c.shot_index, reason: `Vision-QA кадра: ${c.qa_score.toFixed(2)} — возможны артефакты`, severity: 'warn' })
+    const reports = qa?.reports[c.card_id]
+    Object.values(reports || {}).forEach((report) => {
+      if (!report || report.stale || report.recommendation === 'accept') return
+      if (report.mode === 'review' && c.status === 'needs_review') return
+      const label = report.mode === 'shadow' ? 'QA shadow' : 'QA review'
+      out.push({
+        cardIndex: i,
+        shotIndex: c.shot_index,
+        reason: `${label} · ${report.kind}: ${report.summary || report.recommendation} (${report.recommendation})`,
+        severity: report.mode === 'shadow' ? 'info' : 'warn',
+      })
+    })
+    if (!reports && typeof c.qa_score === 'number' && c.qa_score >= 0) {
+      out.push({ cardIndex: i, shotIndex: c.shot_index, reason: `Устаревшая scalar Vision-QA: ${c.qa_score.toFixed(2)} — перезапустите QA`, severity: 'info' })
     }
     if (c.route === 'stock' && (c.stock_score ?? 0) > 0 && (c.stock_score ?? 0) < 0.5) {
       out.push({ cardIndex: i, shotIndex: c.shot_index, reason: `Слабый сток (score ${(c.stock_score ?? 0).toFixed(2)}) — проверь соответствие`, severity: 'warn' })
@@ -84,6 +96,7 @@ export default function Preview() {
   const navigate = useNavigate()
   const [media, setMedia] = useState<TimelineMedia | null>(null)
   const [cards, setCards] = useState<AssetCard[]>([])
+  const [assetQa, setAssetQa] = useState<AssetQASummary | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [exporting, setExporting] = useState(false)
   const [exportMode, setExportMode] = useState<ExportMode | null>(null)
@@ -99,9 +112,10 @@ export default function Preview() {
   const lockedElsewhere = Boolean(busy) && !exporting
 
   const load = useCallback(async () => {
-    const [next, board, catalog, persistedManifest] = await Promise.all([
+    const [next, board, qa, catalog, persistedManifest] = await Promise.all([
       api.getTimelineMedia(projectId).catch(() => null),
       api.getAssetBoard(projectId).catch(() => [] as AssetCard[]),
+      api.getAssetQa(projectId).catch(() => null),
       api.getExportProfiles(projectId).catch(() => null),
       api.getMasterManifest(projectId).catch(() => null),
     ])
@@ -109,6 +123,7 @@ export default function Preview() {
     if (next?.export_url) setSelectedUrl(next.export_url)
     else if (next?.items[0]?.url) setSelectedUrl(next.items[0].url)
     setCards(board)
+    setAssetQa(qa)
     setMasterManifest(persistedManifest)
     if (catalog) {
       setProfiles(catalog.profiles)
@@ -120,7 +135,7 @@ export default function Preview() {
     load()
   }, [load])
 
-  const weakSpots = useMemo(() => findWeakSpots(cards), [cards])
+  const weakSpots = useMemo(() => findWeakSpots(cards, assetQa), [cards, assetQa])
 
   const handleCancel = async () => {
     try {

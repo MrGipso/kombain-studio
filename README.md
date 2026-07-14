@@ -22,6 +22,10 @@ interfaces over the same core services.
 External services are not installed or started automatically. Configure their
 URLs and executable paths on the Settings page after the first launch.
 
+Generated-media QA is documented in [`docs/ASSET_QA.md`](docs/ASSET_QA.md).
+Its default `shadow` mode records hash-bound observations without changing
+render status or triggering automatic retries.
+
 > Licensing: the optional Woosh model weights are non-commercial. See
 > `docs/THIRD_PARTY.md` before distributing or monetizing generated work.
 
@@ -34,11 +38,15 @@ on first launch; it is not deleted automatically.
 ## Install
 
 ```powershell
-uv sync --locked --extra dev
+uv sync --locked --extra dev --extra local-ai
 cd frontend
 npm ci
 cd ..
 ```
+
+`local-ai` installs the scoped LM Studio Python SDK used for native structured
+text calls. It may be omitted on a minimal headless install; the validated
+OpenAI-compatible HTTP fallback remains available.
 
 ## Run the web application
 

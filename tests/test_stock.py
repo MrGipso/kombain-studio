@@ -126,10 +126,34 @@ def test_score_candidate_sets_ttl(monkeypatch):
     score = stock.score_candidate(b"img", "a fridge", "http://x/v1", "vl", ttl=45)
     body = _json.loads(captured["data"])
     assert body.get("ttl") == 45           # JIT auto-unload set on the vision call
+    assert body["response_format"]["type"] == "json_schema"
     assert score == 0.7
     # No ttl -> the field is omitted (model stays as configured)
     stock.score_candidate(b"img", "x", "http://x/v1", "vl", ttl=None)
     assert "ttl" not in _json.loads(captured["data"])
+
+
+def test_score_candidate_rejects_accidental_zero_to_ten_scale(monkeypatch):
+    calls = 0
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"{\\"score\\":5,\\"watermark\\":false}"}}]}'
+
+    def fake_urlopen(request, timeout=40):
+        nonlocal calls
+        calls += 1
+        return FakeResp()
+
+    monkeypatch.setattr(stock.urllib.request, "urlopen", fake_urlopen)
+    assert stock.score_candidate(b"img", "a fridge", "http://x/v1", "vl") == 0.0
+    assert calls == 2  # one bounded schema-repair attempt, then fail closed
 
 
 # ---- trim: cut vs loop ----

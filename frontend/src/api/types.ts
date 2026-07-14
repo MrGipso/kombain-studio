@@ -232,6 +232,36 @@ export interface AssetCard {
   reference_credit?: string
 }
 
+export type AssetQARecommendation = 'accept' | 'needs_review' | 'retry_image' | 'retry_video'
+
+export interface AssetQAReport {
+  report_id?: string
+  created_at?: string
+  card_id: string
+  shot_index: number
+  kind: 'image' | 'video'
+  mode: 'shadow' | 'review'
+  recommendation: AssetQARecommendation
+  score: number
+  reason_codes: string[]
+  summary: string
+  model?: string
+  transport?: string
+  attempts?: number
+  error?: string
+  stale?: boolean
+  media: { output_field: string; filename: string; sha256: string; size_bytes: number }
+  technical?: Record<string, unknown>
+  vision?: Record<string, unknown> | null
+}
+
+export interface AssetQASummary {
+  schema_version: number
+  revision: number
+  history_count: number
+  reports: Record<string, Partial<Record<'image' | 'video', AssetQAReport>>>
+}
+
 export type AssetVariantOutputField =
   | 'image_output'
   | 'video_output'
@@ -325,6 +355,7 @@ export interface Settings {
   comfy_ltx_draft_workflow: string
   ltx_resolution: string
   ai_frame_qa: boolean
+  ai_qa_mode: 'shadow' | 'review'
   ai_qa_threshold: number
 }
 

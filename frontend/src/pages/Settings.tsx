@@ -295,10 +295,22 @@ export default function Settings() {
                   onChange={(e) => setSettings({ ...settings, ai_frame_qa: e.target.checked })}
                   className="w-4 h-4"
                 />
-                <span className="text-sm text-slate-300">Vision-QA сгенерированных кадров (нужна Vision Model; ниже порога → needs_review)</span>
+                <span className="text-sm text-slate-300">QA кадров и видео (Vision Model + FFmpeg, без автоперегенерации)</span>
               </label>
             </div>
             <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Режим QA</label>
+                <select
+                  value={settings.ai_qa_mode || 'shadow'}
+                  onChange={(e) => setSettings({ ...settings, ai_qa_mode: e.target.value as 'shadow' | 'review' })}
+                  disabled={!settings.ai_frame_qa}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm disabled:opacity-40"
+                >
+                  <option value="shadow">shadow — только отчёт</option>
+                  <option value="review">review — отметить needs_review</option>
+                </select>
+              </div>
               <div>
                 <label className="block text-xs text-slate-500 mb-1">Зерно (0 = выкл, 4-10 норм)</label>
                 <input
@@ -308,7 +320,7 @@ export default function Settings() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">QA-порог (0..1, 0.45 норм)</label>
+                <label className="block text-xs text-slate-500 mb-1">Порог policy score (0..1)</label>
                 <input
                   value={String(settings.ai_qa_threshold ?? '')}
                   onChange={(e) => setSettings({ ...settings, ai_qa_threshold: e.target.value as unknown as number })}

@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Native LM Studio structured-output transport. The core client keeps an
+# OpenAI-compatible HTTP fallback, so headless installs do not require it.
+local-ai = ["lmstudio>=1.5,<2"]
 # Desktop UI (ui/, main.py, content_pipeline_qt.py). Not needed for the web server.
 desktop = ["PySide6>=6.6"]
 # Reference-insert route (Wikipedia / arXiv screenshots). Optional: without it

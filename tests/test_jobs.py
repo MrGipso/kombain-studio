@@ -60,6 +60,71 @@ def test_project_and_global_resource_locks_fail_fast(jobs):
     assert {row["name"] for row in jobs.job_history()} == {"GPU task", "Encode"}
 
 
+@pytest.mark.parametrize("active_resource", ["gpu", "llm", "comfy", "stock"])
+@pytest.mark.parametrize("waiting_resource", ["gpu", "llm", "comfy", "stock"])
+def test_gpu_backed_resource_subtypes_share_one_lease(
+    jobs,
+    active_resource,
+    waiting_resource,
+):
+    with jobs.project_job(
+        "project-a",
+        f"Active {active_resource}",
+        resource=active_resource,
+    ):
+        with pytest.raises(jobs.ProjectBusy) as caught:
+            with jobs.project_job(
+                "project-b",
+                f"Waiting {waiting_resource}",
+                resource=waiting_resource,
+            ):
+                pass
+
+        message = str(caught.value)
+        assert "Ресурс «gpu»" in message
+        assert "GPU/VRAM" in message
+        assert f"Active {active_resource}" in message
+
+        # GPU-heavy work must not unnecessarily block an unrelated encoder.
+        with jobs.project_job("project-b", "Encode", resource="ffmpeg"):
+            pass
+
+    records = {row["name"]: row for row in jobs.job_history()}
+    assert records[f"Active {active_resource}"]["resource"] == active_resource
+    assert records["Encode"]["resource"] == "ffmpeg"
+    assert f"Waiting {waiting_resource}" not in records
+
+
+def test_gpu_lease_is_released_after_failure(jobs):
+    with pytest.raises(RuntimeError, match="inference failed"):
+        with jobs.project_job("project-a", "Vision QA", resource="llm"):
+            raise RuntimeError("inference failed")
+
+    with jobs.project_job("project-b", "Render after failure", resource="comfy"):
+        pass
+
+    records = {row["name"]: row for row in jobs.job_history()}
+    assert records["Vision QA"]["status"] == "failed"
+    assert records["Vision QA"]["resource"] == "llm"
+    assert records["Render after failure"]["status"] == "succeeded"
+    assert records["Render after failure"]["resource"] == "comfy"
+
+
+def test_gpu_lease_is_released_after_cancellation(jobs):
+    with pytest.raises(jobs.JobCancelled, match="отменена пользователем"):
+        with jobs.project_job("project-a", "Stock vision", resource="stock") as event:
+            assert jobs.request_cancel("project-a") == "Stock vision"
+            jobs.check(event)
+
+    with jobs.project_job("project-b", "GPU retry", resource="gpu"):
+        pass
+
+    records = {row["name"]: row for row in jobs.job_history()}
+    assert records["Stock vision"]["status"] == "cancelled"
+    assert records["Stock vision"]["resource"] == "stock"
+    assert records["GPU retry"]["status"] == "succeeded"
+
+
 def test_short_mutation_uses_project_lock_without_polluting_job_history(jobs):
     with jobs.project_mutation("project-a", "Save Asset Board"):
         assert jobs.running_job("project-a") == "Save Asset Board"

@@ -147,8 +147,8 @@ async def update_settings(data: dict[str, Any]):
                     "pexels_api_key", "pixabay_api_key", "stock_score_threshold",
                     "stock_floor", "stock_retry_queries", "stock_max_seconds",
                     "stock_candidates", "stock_uniquify", "stock_mirror",
-                    "stock_free_sources", "lm_vision_model", "ai_frame_qa",
-                    "ai_qa_threshold", "kenburns_variety", "ltx_draft_mode",
+                    "stock_free_sources", "lm_vision_model",
+                    "kenburns_variety", "ltx_draft_mode",
                     "ltx_resolution",
                 }
                 timeline_inputs = {

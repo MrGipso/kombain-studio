@@ -1,4 +1,4 @@
-import type { ProjectInfo, ProjectDetail, ProjectState, ProjectJobs, ProjectRunLogs, AssetCard, AssetVariantHistory, AssetVariantSelection, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle, MusicState, SfxState, SfxItem, ScriptState, ExportMode, ExportProfileCatalog, ExportProfileName, MasterManifestInfo } from './types'
+import type { ProjectInfo, ProjectDetail, ProjectState, ProjectJobs, ProjectRunLogs, AssetCard, AssetQASummary, AssetVariantHistory, AssetVariantSelection, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle, MusicState, SfxState, SfxItem, ScriptState, ExportMode, ExportProfileCatalog, ExportProfileName, MasterManifestInfo } from './types'
 
 const BASE = '/api'
 
@@ -151,6 +151,8 @@ export const getAssetBoard = (id: string) => {
     rememberRevision,
   )
 }
+export const getAssetQa = (id: string) =>
+  r<AssetQASummary>(`/projects/${encodeURIComponent(id)}/asset-board/qa`)
 
 export const saveAssetBoard = async (id: string, cards: AssetCard[]) => {
   const result = await r<{ ok: boolean; count: number; rev?: string }>(
@@ -178,6 +180,13 @@ export const generateCard = (id: string, cardIndex: number, cardId: string, mode
     method: 'POST',
     headers: cardOperationHeaders(id, cardId),
   }, (response) => rememberBoardWriteRevision(id, response))
+export const runCardQa = (id: string, cardIndex: number, cardId: string) =>
+  r<{ ok: boolean; card: AssetCard; qa: unknown[] }>(
+    `/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}/qa`, {
+      method: 'POST',
+      headers: cardOperationHeaders(id, cardId),
+    }, (response) => rememberBoardWriteRevision(id, response),
+  )
 export const resolveStock = (id: string, cardIndex: number, cardId: string) =>
   r<{ ok: boolean; card?: AssetCard; message?: string; source?: string; score?: number }>(
     `/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}/stock`, {

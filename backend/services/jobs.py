@@ -8,7 +8,9 @@ module from worker threads:
 
 Only one job may mutate a project at a time.  Supplying ``resource`` also
 serializes jobs that use a process-wide scarce resource (for example ``gpu``
-or ``ffmpeg``), even when they belong to different projects.
+or ``ffmpeg``), even when they belong to different projects.  Resource
+subtypes that share the GPU (``llm``, ``comfy`` and ``stock``) retain their
+own durable name while contending for one common ``gpu`` lease.
 
 Job metadata is written to SQLite so completed/failed jobs survive a server
 restart.  A row left in ``running`` state when this module initializes is
@@ -49,9 +51,12 @@ _resource_locks: dict[str, threading.Lock] = {}
 _settings_lock = threading.Lock()
 _events: dict[str, threading.Event] = {}
 _running: dict[str, str] = {}  # project_id -> human-readable job name
-_resource_running: dict[str, tuple[str, str]] = {}  # resource -> (project_id, name)
+_resource_running: dict[str, tuple[str, str, str]] = {}
+# lease group -> (project_id, name, durable resource subtype)
 _event_jobs: dict[threading.Event, str] = {}  # active cancel event -> durable job id
 _initialized_db_path: Path | None = None
+
+_GPU_LEASE_RESOURCES = frozenset({"gpu", "llm", "comfy", "stock"})
 
 
 def _utc_now() -> str:
@@ -173,6 +178,13 @@ def _resource_lock_for(resource: str) -> threading.Lock:
         return _resource_locks.setdefault(resource, threading.Lock())
 
 
+def _lease_group_for(resource: str | None) -> str | None:
+    """Return the process-wide lock group without changing durable metadata."""
+    if resource in _GPU_LEASE_RESOURCES:
+        return "gpu"
+    return resource
+
+
 def _event_for(project_id: str) -> threading.Event:
     with _meta:
         return _events.setdefault(project_id, threading.Event())
@@ -227,16 +239,20 @@ class project_job:
     """Guard one long job per project and, optionally, per resource.
 
     ``resource`` is deliberately optional so all existing call sites retain
-    their behaviour.  Resource names are normalized to lower case.
+    their behaviour.  Resource names are normalized to lower case and stored
+    unchanged in job history.  GPU-backed subtypes share the ``gpu`` lease.
     """
 
     def __init__(self, project_id: str, name: str, resource: str | None = None):
         self.project_id = str(project_id)
         self.name = str(name)
         self.resource = resource.strip().lower() if resource and resource.strip() else None
+        self.lease_group = _lease_group_for(self.resource)
         self.job_id = ""
         self._lock = _lock_for(self.project_id)
-        self._resource_lock = _resource_lock_for(self.resource) if self.resource else None
+        self._resource_lock = (
+            _resource_lock_for(self.lease_group) if self.lease_group else None
+        )
         self._event: threading.Event | None = None
 
     def __enter__(self) -> threading.Event:
@@ -253,10 +269,20 @@ class project_job:
                 resource_acquired = self._resource_lock.acquire(blocking=False)
                 if not resource_acquired:
                     with _meta:
-                        owner = _resource_running.get(self.resource or "")
+                        owner = _resource_running.get(self.lease_group or "")
                     running = owner[1] if owner else "другая задача"
+                    owner_resource = owner[2] if owner else ""
+                    if self.lease_group == "gpu":
+                        resource_label = "Ресурс «gpu» (общая GPU/VRAM-память)"
+                    else:
+                        resource_label = f"Ресурс «{self.lease_group}»"
+                    owner_label = (
+                        f"; подтип активной задачи — «{owner_resource}»"
+                        if owner_resource and owner_resource != self.lease_group
+                        else ""
+                    )
                     raise ProjectBusy(
-                        f"Ресурс «{self.resource}» занят: выполняется «{running}». "
+                        f"{resource_label} занят: выполняется «{running}»{owner_label}. "
                         "Дождитесь завершения или отмените её."
                     )
 
@@ -267,8 +293,12 @@ class project_job:
             with _meta:
                 _running[self.project_id] = self.name
                 _event_jobs[event] = self.job_id
-                if self.resource:
-                    _resource_running[self.resource] = (self.project_id, self.name)
+                if self.lease_group and self.resource:
+                    _resource_running[self.lease_group] = (
+                        self.project_id,
+                        self.name,
+                        self.resource,
+                    )
             return event
         except BaseException:
             if resource_acquired and self._resource_lock is not None:
@@ -299,8 +329,8 @@ class project_job:
                 _running.pop(self.project_id, None)
                 if self._event is not None:
                     _event_jobs.pop(self._event, None)
-                if self.resource:
-                    _resource_running.pop(self.resource, None)
+                if self.lease_group:
+                    _resource_running.pop(self.lease_group, None)
             if self._resource_lock is not None:
                 self._resource_lock.release()
             self._lock.release()

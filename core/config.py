@@ -3,7 +3,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH_ENV = "PIPELINE_SETTINGS_PATH"
@@ -84,12 +86,13 @@ class Settings:
     # priority=high hero shots. Draft is ~2-3x faster, slightly softer picture.
     ltx_draft_mode: str = "off"
     comfy_ltx_draft_workflow: str = ""
-    # Vision-QA of generated Krea frames: after each image the stock vision
-    # model rates how well it matches the shot; below the threshold the card is
-    # flagged needs_review (never regenerated automatically — just flagged for
-    # the Preview QC list). Requires lm_vision_model.
+    # Hash-bound QA of generated media.  The model reports typed visual
+    # observations; a deterministic policy chooses a recommendation.  Shadow
+    # records evidence only, review additionally flags the card needs_review.
+    # Neither mode ever triggers generation automatically.
     ai_frame_qa: bool = False
-    ai_qa_threshold: float = 0.45
+    ai_qa_mode: Literal["shadow", "review"] = "shadow"
+    ai_qa_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.45
     # LTX render resolution: "1920x1088" (Full HD) or "1280x704" (~720p, faster).
     # Dimensions must be multiples of 32 (LTX latent grid); the export always
     # scales/crops every clip to the chosen export profile (1920x1080 by default),

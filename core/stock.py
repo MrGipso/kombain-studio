@@ -11,7 +11,6 @@ Pure logic, no UI and no dependency on the desktop monolith. Pillow is optional
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import random
@@ -20,8 +19,12 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from core import lm
 from core.config import ROOT
 from core.project import atomic_write_text
 
@@ -186,7 +189,14 @@ def search_nasa(query: str, per_page: int = 5, timeout: int = 20) -> list[dict]:
         meta = (item.get("data") or [{}])[0]
         nasa_id = str(meta.get("nasa_id", ""))
         links = item.get("links") or []
-        preview = next((l.get("href", "") for l in links if "image" in str(l.get("render", ""))), "")
+        preview = next(
+            (
+                link.get("href", "")
+                for link in links
+                if "image" in str(link.get("render", ""))
+            ),
+            "",
+        )
         try:
             files = _get_json(item.get("href", ""), timeout=timeout)
         except Exception:
@@ -369,41 +379,42 @@ _SCORE_PROMPT = (
 )
 
 
+class _StockVisionScore(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    score: float = Field(ge=0.0, le=1.0)
+    watermark: bool
+
+
 def score_candidate(preview_bytes: bytes, description: str, lm_url: str,
                     vision_model: str, timeout: int = 40, ttl: int | None = None) -> float:
     """Ask a local vision model to rate 0..1. Returns 0.0 on any failure so a
     broken probe can never win selection. `ttl` sets LM Studio's idle auto-unload
     (JIT) so the vision model leaves VRAM shortly after the batch, same mechanism
     the scene/shot LLM calls use."""
-    b64 = base64.b64encode(preview_bytes).decode("ascii")
-    payload = {
-        "model": vision_model,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": _SCORE_PROMPT + (description or "")},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            ],
-        }],
-        "temperature": 0.1,
-    }
-    if ttl is not None and ttl > 0:
-        payload["ttl"] = ttl
     try:
-        req = urllib.request.Request(
-            lm_url.rstrip("/") + "/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST",
+        settings = SimpleNamespace(
+            lm_url=lm_url,
+            lm_model=vision_model,
+            lm_auto_unload=False,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        content = data["choices"][0]["message"]["content"]
-        start, end = content.find("{"), content.rfind("}")
-        obj = json.loads(content[start:end + 1]) if start >= 0 and end > start else {}
-        score = float(obj.get("score", 0) or 0)
-        if bool(obj.get("watermark", False)):
+        reply = lm.chat_structured(
+            settings,
+            [{"role": "user", "content": _SCORE_PROMPT + (description or "")}],
+            _StockVisionScore,
+            model=vision_model,
+            image_bytes=preview_bytes,
+            transport="openai",
+            temperature=0.1,
+            max_tokens=160,
+            timeout=timeout,
+            ttl=ttl,
+            schema_name="stock_vision_score",
+        )
+        score = reply.value.score
+        if reply.value.watermark:
             score *= 0.3
-        return max(0.0, min(score, 1.0))
+        return score
     except Exception:
         return 0.0
 
