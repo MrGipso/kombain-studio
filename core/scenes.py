@@ -47,12 +47,17 @@ class SceneEnrichmentLabel(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
 
+    # Bounds are deliberately looser than the values actually stored: an
+    # over-long field is a formatting slip, not a reason to discard the whole
+    # batch and fall back to a different segmentation strategy.  The strict
+    # editorial limits are applied in _apply_scene_enrichment_batch, which
+    # clamps or blanks the field exactly like the plain-JSON path does.
     index: int = Field(ge=1)
-    title: str = Field(min_length=1, max_length=120)
-    visual_direction: str = Field(min_length=1, max_length=2_000)
-    screen_text: str = Field(max_length=100)
-    music_note: str = Field(max_length=500)
-    retention_note: str = Field(max_length=500)
+    title: str = Field(min_length=1, max_length=400)
+    visual_direction: str = Field(min_length=1, max_length=4_000)
+    screen_text: str = Field(max_length=400)
+    music_note: str = Field(max_length=1_000)
+    retention_note: str = Field(max_length=1_000)
 
 
 class SceneEnrichmentEnvelope(BaseModel):
@@ -809,6 +814,25 @@ def parse_lm_json_array(content: str, label: str = "LM Studio") -> list:
     )
 
 
+_FILM_MAP_SCENE_CHARS = 110
+
+
+def _film_scene_map(scenes: list[Scene]) -> str:
+    """One compact line per scene so a bounded batch still sees the whole film.
+
+    Costs a few hundred tokens instead of the full transcript, which is what
+    makes global awareness affordable inside a per-batch request.
+    """
+
+    lines = []
+    for scene in scenes:
+        gist = re.sub(r"\s+", " ", scene.voice_text or "").strip()
+        if len(gist) > _FILM_MAP_SCENE_CHARS:
+            gist = gist[:_FILM_MAP_SCENE_CHARS].rstrip() + "…"
+        lines.append(f"  · {scene.index}. {scene.start}–{scene.end} | {gist}")
+    return "\n".join(lines)
+
+
 def _iter_scene_enrichment_batches(scenes: list[Scene]):
     """Yield requestable batches without splitting a scene's narration.
 
@@ -898,6 +922,35 @@ def _language_script_matches(source: str, candidate: str) -> bool:
     return candidate_script is None or candidate_script == source_script
 
 
+def _clamp_label_text(
+    value: str,
+    max_chars: int,
+    *,
+    max_words: int | None = None,
+    reject_overflow: bool = False,
+) -> str:
+    """Apply the editorial length limits to one model-authored field.
+
+    Shared by the structured and plain-JSON paths so a model that overshoots a
+    limit degrades identically in both: the field is trimmed, or blanked when
+    a truncated value would be meaningless (a half screen caption).
+    """
+
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if max_words is not None:
+        if reject_overflow and len(text.split()) > max_words:
+            return ""
+        text = " ".join(text.split()[:max_words])
+    if len(text) > max_chars:
+        if reject_overflow:
+            return ""
+        shortened = text[:max_chars].rstrip()
+        if " " in shortened:
+            shortened = shortened.rsplit(" ", 1)[0]
+        text = shortened.rstrip(" ,.;:–—-")
+    return text
+
+
 def _apply_scene_enrichment_batch(
     batch: list[Scene], labels: list[SceneEnrichmentLabel]
 ) -> bool:
@@ -916,24 +969,28 @@ def _apply_scene_enrichment_batch(
     prepared: list[tuple[Scene, tuple[str, str, str, str, str]]] = []
     for scene in batch:
         label = by_index[scene.index]
-        title = (
-            label.title
-            if _language_script_matches(scene.voice_text, label.title)
-            else scene.title
-        )
+        title = _clamp_label_text(label.title, 120) or scene.title
+        if not _language_script_matches(scene.voice_text, title):
+            title = scene.title
         screen_text = normalize_numeric_screen_text(
             scene.voice_text,
-            label.screen_text,
+            _clamp_label_text(
+                label.screen_text,
+                100,
+                max_words=7,
+                reject_overflow=True,
+            ),
         )
         prepared.append(
             (
                 scene,
                 (
                     title,
-                    label.visual_direction,
+                    _clamp_label_text(label.visual_direction, 2_000)
+                    or scene.visual_direction,
                     screen_text,
-                    label.music_note,
-                    label.retention_note,
+                    _clamp_label_text(label.music_note, 500),
+                    _clamp_label_text(label.retention_note, 500),
                 ),
             )
         )
@@ -1112,13 +1169,26 @@ def enrich_scenes_with_lm(
         # project index before strict field validation.
         return SceneEnrichmentLabel.model_validate(normalized)
 
+    # Requests stay bounded, but every batch is told what the rest of the film
+    # is about.  Without this each batch invents its own visual world and the
+    # scene labels of a long video contradict each other, which is what forced
+    # a second whole-film planning pass downstream.
+    film_map = _film_scene_map(scenes)
+
     for batch in _iter_scene_enrichment_batches(scenes):
         compact = "\n".join(
             f"{scene.index}|{scene.start}-{scene.end}|{(scene.voice_text or '').strip()}"
             for scene in batch
         )
+        film_block = (
+            "КАРТА ВСЕГО РОЛИКА (для связности; озаглавливаешь только сцены ниже):\n"
+            f"{film_map}\n\n"
+            if film_map
+            else ""
+        )
         prompt = (
             f"Ты режиссёр монтажа YouTube-контента в стиле \"{style.name}\".\n\n"
+            f"{film_block}"
             "Границы сцен УЖЕ заданы. НЕ объединяй и НЕ разбивай их, "
             "НЕ меняй index/тайминги/текст.\n"
             "Для КАЖДОЙ сцены по её тексту придумай поля:\n"

@@ -108,10 +108,53 @@ def test_strict_envelope_rejects_coercion_extra_fields_and_oversized_batch() -> 
         scenes.SceneEnrichmentEnvelope.model_validate(
             {"scenes": [{"index": 1, **{**valid, "title": "   "}}]}
         )
+    # The transport schema keeps a sanity ceiling, but a merely over-long
+    # caption is no longer fatal: editorial limits are enforced when the batch
+    # is applied, so one wordy field cannot discard seven good scenes.
+    scenes.SceneEnrichmentEnvelope.model_validate(
+        {"scenes": [{"index": 1, **{**valid, "screen_text": "x" * 101}}]}
+    )
     with pytest.raises(ValidationError):
         scenes.SceneEnrichmentEnvelope.model_validate(
-            {"scenes": [{"index": 1, **{**valid, "screen_text": "x" * 101}}]}
+            {"scenes": [{"index": 1, **{**valid, "screen_text": "x" * 401}}]}
         )
+
+
+def test_oversized_fields_are_clamped_instead_of_dropping_the_batch() -> None:
+    """An over-long caption blanks one field, it does not lose the batch.
+
+    This is the failure seen on a real 45-scene run: a 100+ character
+    screen_text raised, the whole eight-scene batch was discarded, and scene
+    analysis fell through to a worse segmentation strategy.
+    """
+
+    batch = [
+        Scene(
+            index=1,
+            start="00:00:00",
+            end="00:00:10",
+            title="Исходный заголовок",
+            voice_text="Здесь звучит цифра 42 процента в тексте диктора.",
+            visual_direction="",
+            screen_text="",
+            music_note="",
+            retention_note="",
+        )
+    ]
+    label = scenes.SceneEnrichmentLabel(
+        index=1,
+        title="Новый заголовок",
+        visual_direction="Конкретная физическая сцена",
+        screen_text="слишком длинная надпись " * 12,
+        music_note="Музыка",
+        retention_note="Удержание",
+    )
+
+    assert scenes._apply_scene_enrichment_batch(batch, [label]) is True
+    assert batch[0].title == "Новый заголовок"
+    assert batch[0].screen_text == ""
+    assert batch[0].start == "00:00:00"
+    assert batch[0].end == "00:00:10"
 
 
 def test_structured_enrichment_preserves_boundaries_and_voice(

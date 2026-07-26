@@ -465,19 +465,55 @@ def test_global_visual_plan_audit_rejects_generic_repeated_narrative_role():
             for index in range(1, 7)
         ]
     )
-    plan = [
+    authored = [
+        planning.GlobalVisualPlanItem(
+            **{**item.as_dict(), "narrative_role": "Объясняет механизм"}
+        )
+        for item in plan
+    ]
+
+    violations = planning.audit_global_visual_plan(authored)
+
+    assert any("narrative_role" in item for item in violations)
+
+
+def test_global_visual_plan_audit_ignores_parser_supplied_narrative_role():
+    """The parser's own placeholder is not evidence of a monotonous plan.
+
+    ``parse_global_visual_plan`` substitutes a fixed narrative_role whenever the
+    model omits the field.  Counting those substitutions as repetition made the
+    audit reject plans because of our own default, burning all three attempts.
+    """
+
+    plan = _global_plan(
+        [
+            Scene(
+                index=index,
+                start=f"00:00:{(index - 1) * 5:02d}",
+                end=f"00:00:{index * 5:02d}",
+                title=f"Scene {index}",
+                voice_text=f"Narration {index}",
+                visual_direction="",
+                screen_text="",
+                music_note="",
+                retention_note="",
+            )
+            for index in range(1, 7)
+        ]
+    )
+    defaulted = [
         planning.GlobalVisualPlanItem(
             **{
                 **item.as_dict(),
-                "narrative_role": "Развитие аргумента и продвижение истории",
+                "narrative_role": planning._DEFAULT_NARRATIVE_ROLE,
             }
         )
         for item in plan
     ]
 
-    violations = planning.audit_global_visual_plan(plan)
+    violations = planning.audit_global_visual_plan(defaulted)
 
-    assert any("narrative_role" in item for item in violations)
+    assert not any("narrative_role" in item for item in violations)
 
 
 def test_final_shot_audit_rejects_cliche_returning_across_the_film():

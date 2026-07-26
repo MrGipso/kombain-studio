@@ -122,7 +122,9 @@ def run_scene_analysis(
                 character_description=character_description,
                 video_style=video_style,
                 log_callback=log,
-                require_all=True,
+                # See the embedding path below: labelling failures must not
+                # discard already-aligned scene boundaries.
+                require_all=False,
                 allow_plain_json_fallback=True,
             )
         finally:
@@ -158,7 +160,12 @@ def run_scene_analysis(
             character_description=character_description,
             video_style=video_style,
             log_callback=log,
-            require_all=True,
+            # Labels are cosmetic; scene BOUNDARIES are the valuable output and
+            # they are already fixed at this point. Raising here used to throw
+            # away a good embedding segmentation over one over-long caption and
+            # fall through to an entirely different (worse) grouping strategy.
+            # Unlabelled scenes keep their deterministic heuristic titles.
+            require_all=False,
             allow_plain_json_fallback=True,
         )
     except Exception as exc:

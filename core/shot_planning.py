@@ -43,6 +43,9 @@ from core.style_presets import (
 
 SHOT_TARGET_SECONDS = 4
 SHOT_MAX_SECONDS = 15
+# Upper bound on shots the LM is asked to write for one scene.  Kept low on
+# purpose: each shot costs one image plus one video generation downstream.
+SHOT_MAX_PER_SCENE = 6
 GLOBAL_VISUAL_FAMILIES = (
     "observational_broll",
     "human_activity",
@@ -177,6 +180,8 @@ def parse_lm_json_array(content: str, label: str = "LM Studio") -> list:
     )
 
 
+_DEFAULT_NARRATIVE_ROLE = "Развитие аргумента и продвижение истории"
+_DEFAULT_NARRATIVE_ROLE_KEY = " ".join(_DEFAULT_NARRATIVE_ROLE.lower().split())
 _GLOBAL_PLAN_FIELDS = (
     "narrative_role",
     "visual_family",
@@ -255,7 +260,7 @@ def parse_global_visual_plan(
 
     def plan_text(value: object, field: str) -> str:
         optional_defaults = {
-            "narrative_role": "Развитие аргумента и продвижение истории",
+            "narrative_role": _DEFAULT_NARRATIVE_ROLE,
             "shot_progression": "Общий план → действие → предметная деталь",
             "palette": "Натуральный документальный свет и цвет локации",
             "transition": "Смысловой монтажный стык со следующей сценой",
@@ -349,6 +354,12 @@ def audit_global_visual_plan(plan: list[GlobalVisualPlanItem]) -> list[str]:
     role_counts: dict[str, int] = {}
     for item in plan:
         role_key = " ".join(item.narrative_role.lower().split())
+        # A role the parser substituted because the model omitted the field is
+        # our own placeholder. Counting it as repetition made the audit punish
+        # the model for the parser's default and guaranteed a rejection on any
+        # film where narrative_role was left out more than a few times.
+        if role_key == _DEFAULT_NARRATIVE_ROLE_KEY:
+            continue
         role_counts[role_key] = role_counts.get(role_key, 0) + 1
     role_cap = max(2, math.ceil(len(plan) * 0.20))
     for role, count in sorted(role_counts.items()):
@@ -550,6 +561,8 @@ def create_global_visual_plan(
         return []
     feedback = ""
     last_error = ""
+    best_plan: list[GlobalVisualPlanItem] | None = None
+    best_violations = 0
     for attempt in range(1, 4):
         if log_callback:
             log_callback(
@@ -579,6 +592,11 @@ def create_global_visual_plan(
                     )
                 return plan
             last_error = "; ".join(violations)
+            # Keep the least-bad plan seen so far. Diversity is a matter of
+            # taste and the model may never fully satisfy it, but a complete
+            # plan with recorded debt is worth far more than no film at all.
+            if best_plan is None or len(violations) < best_violations:
+                best_plan, best_violations = plan, len(violations)
         except Exception as exc:
             last_error = str(exc)
         feedback = last_error[:4_000]
@@ -586,8 +604,19 @@ def create_global_visual_plan(
             log_callback(
                 f"Глобальный визуальный план отклонён: {last_error}"
             )
+    if best_plan is not None:
+        # Creative critique must never be fatal: a rejected plan used to fail
+        # the whole shots stage and leave the project unfinishable without
+        # manual intervention.
+        if log_callback:
+            log_callback(
+                "Глобальный визуальный план принят с замечаниями после 3 попыток "
+                f"({best_violations} нарушений): {last_error}. Шот-лист будет "
+                "построен; замечания можно исправить точечно."
+            )
+        return best_plan
     raise ValueError(
-        "LM Studio не создала профессиональный глобальный визуальный план после "
+        "LM Studio не вернула разбираемый глобальный визуальный план после "
         f"3 попыток. Старый шот-лист сохранён. Причина: {last_error}"
     )
 
@@ -1310,8 +1339,8 @@ def build_shot_instructions(
         "- Каждая абстрактная мысль из текста должна стать видимым предметом или конкретным действием внутри выбранного стиля — без символов и метафор.\n"
         "- Показывай УЗНАВАЕМОЕ реальное место/объект; не полагайся на читаемый текст или логотипы в кадре (модель их коверкает) — передавай узнаваемость формами, цветами и ориентирами.\n"
         "- Чередуй планы между соседними кадрами. Предпочитай ОБЩИЙ и СРЕДНИЙ план, на котором видно место; крупные планы и макро — изредка, не по умолчанию. Не ставь два одинаковых плана подряд.\n"
-        "- Konкретные материалы и текстуры выбирай из выбранного стиля. Для вязаного стиля: yarn, wool fibers, visible stitches, crocheted props, handmade textile surfaces.\n"
-        "- Konкретное освещение: 'golden hour backlight', 'cold fluorescent overhead', "
+        "- Конкретные материалы и текстуры выбирай из выбранного стиля. Для вязаного стиля: yarn, wool fibers, visible stitches, crocheted props, handmade textile surfaces.\n"
+        "- Конкретное освещение: 'golden hour backlight', 'cold fluorescent overhead', "
         "'warm tungsten desk lamp', 'harsh noon sun casting hard shadows'.\n"
         "- ЗАПРЕЩЕНО начинать промпт с абстрактного жанра: 'Documentary...', 'Cinematic...', "
         "'Photorealistic...', 'Editorial...', 'Observational...' — это абстракция, а не промпт.\n"
@@ -1451,12 +1480,21 @@ def enforce_numeric_screen_text(
 
 
 def _shot_creative_text(shot: Shot) -> str:
+    """Every field that can carry a visual motif into the finished frame.
+
+    video_prompt and fallback were previously excluded, so a motif could pass
+    the critics through those fields: on a 45-scene film the audit saw screens
+    in 14 scenes while they were actually present in 36.
+    """
+
     return " ".join(
         str(value or "").lower()
         for value in (
             shot.description,
             shot.asset_query,
             shot.image_prompt,
+            shot.video_prompt,
+            shot.fallback,
         )
     )
 
@@ -1705,7 +1743,7 @@ def call_lm_studio_for_shots(
             for scene in scenes
         )
         first_scene_index = scenes[0].index if scenes else None
-        for scene in scenes:
+        for scene_position, scene in enumerate(scenes, start=1):
             scene_start = timecode_to_seconds(scene.start)
             scene_end = timecode_to_seconds(scene.end)
             scene_segments = [
@@ -1763,20 +1801,32 @@ def call_lm_studio_for_shots(
                     "- Поставь priority=high первым 2-3 кадрам.\n\n"
                 )
             scene_length = max(1, scene_end - scene_start)
-            recommended = max(
-                1,
-                min(24, math.ceil(scene_length / SHOT_TARGET_SECONDS)),
-            )
+            # Density drives the whole cost of a run: every shot needs its own
+            # image AND its own video, and roughly a third of LTX renders come
+            # back frozen.  Dividing by SHOT_TARGET_SECONDS with a cap of 24
+            # produced 468 shots for a 35-minute film, which no unattended run
+            # can finish.  The pre-refactor rule (~1-6 shots per scene) keeps a
+            # documentary cutting rhythm at a third of the generation cost;
+            # split_long_shot() still breaks up anything genuinely too long.
+            recommended = max(1, min(SHOT_MAX_PER_SCENE, round(scene_length / 5)))
             consistency_line = (
                 " - Сохраняй консистентность: персонаж/объект/стиль одинаковы во всех кадрах\n"
                 if style_anchor or character_description
                 else ""
             )
             strategy = visual_plan_by_scene[scene.index]
+            # Spend the motif budget evenly across the film instead of
+            # first-come-first-served. Previously the opening scenes could burn
+            # the entire allowance, after which late scenes were rejected for a
+            # single cutaway they legitimately needed.
+            allowed_so_far = max(
+                1,
+                math.ceil(motif_scene_cap * scene_position / max(1, len(scenes))),
+            )
             forbidden_motifs = {
                 label
                 for label, count in motif_scene_counts.items()
-                if count >= motif_scene_cap
+                if count >= min(motif_scene_cap, allowed_so_far)
             }
             motif_budget_block = ""
             if forbidden_motifs:
