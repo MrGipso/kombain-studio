@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
-import { cardMediaPath, hasMedia, isExcluded, isIncluded } from '../lib/cards'
+import { FinalToggle } from '../components/FinalToggle'
+import { cardMediaPath, excludeImpact, hasMedia, isExcluded, isIncluded, LONG_SLOT_WARNING_SECONDS } from '../lib/cards'
 import type { AssetCard, TimelineMedia, TimelineMediaItem } from '../api/types'
 
 interface Context {
@@ -125,14 +126,32 @@ function overlayPositionStyle(card: AssetCard): React.CSSProperties {
   return { left: '50%', bottom: '10%', transform: 'translate(-50%, 0)' }
 }
 
-function buildSequence(cards: AssetCard[]): SequenceEntry[] {
-  let cursor = 0
-  return cards.flatMap((card, index) => {
-    if (isExcluded(card)) return []
-    const duration = sourceDuration(card)
-    const entry = { card, index, start: cursor, end: cursor + duration, duration }
-    cursor += duration
-    return [entry]
+function buildSequence(cards: AssetCard[], totalEnd = 0): SequenceEntry[] {
+  // Mirror core/export.py tiled_intervals(): every surviving clip runs until
+  // the NEXT surviving clip's start, and the last one runs to the end of the
+  // narration. Excluding a card therefore stretches its previous neighbour.
+  // The old implementation compacted the tail leftwards instead, so this
+  // preview lied about the montage exactly when a card was excluded.
+  // Deliberate deviation from the exporter: cards without media are kept as
+  // placeholder slots — during production that is the useful view.
+  const included = cards
+    .map((card, index) => ({ card, index, plannedStart: tcToSec(card.timeline_start || card.start) }))
+    .filter(({ card }) => !isExcluded(card))
+    .sort((a, b) => a.plannedStart - b.plannedStart)
+  if (!included.length) return []
+  const starts: number[] = []
+  for (const entry of included) {
+    // The first interval is pinned to 0; later starts stay monotonic with a
+    // 1-second minimum slot, exactly like the exporter.
+    if (!starts.length) starts.push(0)
+    else starts.push(Math.max(entry.plannedStart, starts[starts.length - 1] + 1))
+  }
+  const plannedEnd = Math.max(...included.map(({ card }) => tcToSec(card.timeline_end || card.end)))
+  const end = Math.max(totalEnd > 0 ? totalEnd : plannedEnd, starts[starts.length - 1] + 1)
+  return included.map(({ card, index }, i) => {
+    const start = starts[i]
+    const stop = i + 1 < starts.length ? starts[i + 1] : end
+    return { card, index, start, end: stop, duration: stop - start }
   })
 }
 
@@ -178,8 +197,22 @@ export default function Timeline() {
     void load()
   }, [load])
 
-  const sequence = useMemo(() => buildSequence(cards), [cards])
+  // Tile to the narration end when the audio duration is known — the exported
+  // video always matches the voice length, so the preview should too.
+  const sequence = useMemo(
+    () => buildSequence(cards, voiceDuration > 0 ? voiceStart + voiceDuration : 0),
+    [cards, voiceDuration, voiceStart],
+  )
   const sequenceByIndex = useMemo(() => new Map(sequence.map((entry) => [entry.index, entry])), [sequence])
+  // Excluded cards stay visible on the track as ghost bars at their planned
+  // position, so a clip never silently "disappears" — one click selects it and
+  // the editor offers the return toggle.
+  const ghostClips = useMemo(
+    () => cards
+      .map((card, index) => ({ card, index, start: tcToSec(card.timeline_start || card.start), duration: sourceDuration(card) }))
+      .filter(({ card }) => isExcluded(card)),
+    [cards],
+  )
   const videoEnd = sequence.length ? sequence[sequence.length - 1].end : 0
   const totalDuration = Math.max(60, videoEnd + 8, voiceStart + Math.max(voiceDuration, 0) + 8)
   const trackWidth = Math.max(960, totalDuration * zoom)
@@ -362,12 +395,24 @@ export default function Timeline() {
     }
     setBusy('Изменение Timeline')
     try {
-      const patch = isExcluded(selectedCard)
+      const returning = isExcluded(selectedCard)
+      // Consequence is computed against the pre-mutation board state.
+      const impact = returning ? null : excludeImpact(cards, selectedIndex)
+      const patch = returning
         ? { status: hasMedia(selectedCard) ? 'generated' : 'planned' }
         : { status: 'skipped' }
       const updated = await api.updateCard(projectId, selectedIndex, patch)
       updateCard(selectedIndex, updated)
-      toast.success(isExcluded(selectedCard) ? 'Кадр возвращён в финал' : 'Кадр исключён из финала')
+      if (returning) {
+        toast.success(`Кадр #${selectedCard.shot_index} возвращён в финал.`)
+      } else if (impact) {
+        toast.success(`Кадр #${selectedCard.shot_index} исключён — ${impact.gainedSeconds} с уйдут кадру #${impact.recipientShot} (станет ${impact.recipientSeconds} с).`)
+        if (impact.recipientSeconds > LONG_SLOT_WARNING_SECONDS) {
+          toast.info(`Внимание: кадр #${impact.recipientShot} растянется до ${impact.recipientSeconds} с — долгий статичный план может выглядеть застывшим.`)
+        }
+      } else {
+        toast.success(`Кадр #${selectedCard.shot_index} исключён из финала.`)
+      }
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -594,8 +639,21 @@ export default function Timeline() {
                     <input value={secToTc(voiceStart)} onChange={(event) => setVoiceStart(tcToSec(event.target.value))} className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white font-mono outline-none focus:border-indigo-500" />
                   </label>
 
-                  <div className="flex gap-2">
-                    <button onClick={toggleExcludeSelected} disabled={Boolean(busy)} className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-45 ${selectedCard && isExcluded(selectedCard) ? 'bg-slate-700' : 'bg-rose-800'}`}>{selectedCard && isExcluded(selectedCard) ? 'Вернуть в финал' : 'Исключить'}</button>
+                  <div className="flex items-center justify-between gap-2">
+                    <FinalToggle
+                      size="md"
+                      on={!isExcluded(selectedCard)}
+                      disabled={Boolean(busy)}
+                      title={isExcluded(selectedCard)
+                        ? 'Вернуть кадр в финальное видео'
+                        : (() => {
+                            const impact = excludeImpact(cards, selectedIndex)
+                            return impact
+                              ? `Убрать из финала: ${impact.gainedSeconds} с перейдут кадру #${impact.recipientShot} (станет ${impact.recipientSeconds} с)`
+                              : 'Убрать кадр из финала: файлы сохранятся, действие обратимо'
+                          })()}
+                      onToggle={() => void toggleExcludeSelected()}
+                    />
                     <button onClick={() => updateCard(selectedIndex, { assigned_media: '', timeline_start: '', timeline_end: '' })} className="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm">Reset</button>
                   </div>
                 </>
@@ -627,8 +685,11 @@ export default function Timeline() {
                 className="w-full text-left rounded-lg border border-slate-800 bg-slate-950/70 overflow-hidden hover:border-indigo-500"
               >
                 <div className="aspect-video bg-black flex items-center justify-center">
-                  {item.media_type === 'image' && <img src={item.url} alt="" className="h-full w-full object-cover" />}
-                  {item.media_type === 'video' && item.poster_url && <img src={item.poster_url} alt="" className="h-full w-full object-cover" />}
+                  {/* The generated-clip library and the track below render one
+                      thumbnail per shot; on a few hundred shots that is a few
+                      hundred simultaneous requests. Defer offscreen ones. */}
+                  {item.media_type === 'image' && <img loading="lazy" decoding="async" src={item.url} alt="" className="h-full w-full object-cover" />}
+                  {item.media_type === 'video' && item.poster_url && <img loading="lazy" decoding="async" src={item.poster_url} alt="" className="h-full w-full object-cover" />}
                   {item.media_type === 'video' && !item.poster_url && <div className="text-xs text-slate-500">Video file</div>}
                 </div>
                 <div className="p-3">
@@ -708,8 +769,8 @@ export default function Timeline() {
                       style={{ left: start * zoom, width, borderColor: color, backgroundColor: `${color}22` }}
                     >
                       <div onMouseDown={(event) => beginClipTrim(event, index)} className="absolute right-0 top-0 bottom-0 z-20 w-2 cursor-col-resize bg-white/10" />
-                      {path && isImage(path) && <img src={mediaUrl(path)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />}
-                      {path && isVideo(path) && card.image_output && <img src={mediaUrl(card.image_output)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />}
+                      {path && isImage(path) && <img loading="lazy" decoding="async" src={mediaUrl(path)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />}
+                      {path && isVideo(path) && card.image_output && <img loading="lazy" decoding="async" src={mediaUrl(card.image_output)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />}
                       <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/25 to-transparent" />
                       <div className="absolute left-3 right-3 top-2 min-w-0">
                         <div className="truncate text-xs font-semibold text-white">Shot {card.shot_index}</div>
@@ -719,6 +780,21 @@ export default function Timeline() {
                     </div>
                   )
                 })}
+                {ghostClips.map(({ card, index, start, duration }) => (
+                  <div
+                    key={`ghost-${card.scene_index}-${card.shot_index}-${index}`}
+                    onClick={() => setSelectedIndex(index)}
+                    title={`Shot ${card.shot_index} вне финала — его время отдано соседнему плану. Нажмите, чтобы выбрать и вернуть.`}
+                    className={`absolute top-[78px] h-4 cursor-pointer overflow-hidden rounded-sm border border-dashed ${selectedIndex === index ? 'border-indigo-400' : 'border-slate-600'} bg-slate-800/50`}
+                    style={{
+                      left: start * zoom,
+                      width: Math.max(30, duration * zoom),
+                      backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(100,116,139,0.35) 4px, rgba(100,116,139,0.35) 8px)',
+                    }}
+                  >
+                    <div className="truncate px-1.5 text-[9px] font-semibold leading-4 text-slate-400">S{card.shot_index} · вне финала</div>
+                  </div>
+                ))}
                 <div className="absolute top-0 bottom-0 z-30 w-px bg-red-400" style={{ left: playhead * zoom }} />
               </div>
 

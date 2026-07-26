@@ -619,11 +619,14 @@ def _audio_mix_filtergraph(
     music_index: int | None = None,
     sfx_index: int | None = None,
     loudnorm: bool = False,
+    duck_sfx: bool = True,
 ) -> str:
     """filter_complex mixing input 1 (voice) with optional looped music and an
     optional pre-leveled SFX bed. Music is gentle-faded and, with duck, side-
     chained to the voice so it dips while the narrator speaks. The SFX bed comes
-    in already delayed/leveled (see core.sfx.build_sfx_bed), so it is mixed as-is.
+    in already delayed/leveled (see core.sfx.build_sfx_bed); with `duck_sfx` it
+    is additionally side-chained to the voice with a much gentler ratio (2:1,
+    ~2-3 dB dip) so ambience never competes with narration.
     With `loudnorm`, the final mix is normalized to the YouTube target (-14 LUFS)."""
     # Pin every branch to one format up front: sidechaincompress/amix refuse to
     # negotiate when parallel branches disagree (e.g. mono voice + stereo bed).
@@ -636,28 +639,42 @@ def _audio_mix_filtergraph(
     parts.append(voice_pre)
     mix_labels: list[str] = []
 
+    # The voice is split once into a main branch plus one sidechain key per
+    # ducked consumer (music and/or SFX bed).
+    need_music_key = music_index is not None and duck
+    need_sfx_key = sfx_index is not None and duck_sfx
+    key_count = int(need_music_key) + int(need_sfx_key)
+    voice_main = "[voc]"
+    if key_count:
+        keys = ("[vkey]" if need_music_key else "") + ("[vskey]" if need_sfx_key else "")
+        parts.append(f"[voc]asplit={1 + key_count}[vocm]{keys}")
+        voice_main = "[vocm]"
+    mix_labels.append(voice_main)
+
     if music_index is not None:
         fade_out_at = max(0, int(total_end) - 3)
         music_pre = (
             f"[{music_index}:a]{fmt},volume={vol_db}dB,afade=t=in:st=0:d=2,"
             f"afade=t=out:st={fade_out_at}:d=3[mus0]"
         )
+        parts.append(music_pre)
         if duck:
-            parts.append("[voc]asplit=2[vocm][vkey]")
-            parts.append(music_pre)
             parts.append(
                 "[mus0][vkey]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[mduck]"
             )
-            mix_labels.extend(["[vocm]", "[mduck]"])
+            mix_labels.append("[mduck]")
         else:
-            parts.append(music_pre)
-            mix_labels.extend(["[voc]", "[mus0]"])
-    else:
-        mix_labels.append("[voc]")
+            mix_labels.append("[mus0]")
 
     if sfx_index is not None:
         parts.append(f"[{sfx_index}:a]{fmt}[sfxbed]")
-        mix_labels.append("[sfxbed]")
+        if duck_sfx:
+            parts.append(
+                "[sfxbed][vskey]sidechaincompress=threshold=0.06:ratio=2:attack=120:release=400[sfxduck]"
+            )
+            mix_labels.append("[sfxduck]")
+        else:
+            mix_labels.append("[sfxbed]")
 
     # amix normalize=0 sums the branches without headroom, so on peaks the voice
     # + music (+ sfx) sum can exceed 0 dBFS and clip the AAC encode. A safety
@@ -798,12 +815,20 @@ def export_video(
     sfx_bed: Path | None = None
     if voice_audio and sfx_lib.sfx_enabled(settings):
         try:
-            if (
-                generate_missing_sfx
-                and sfx_lib.ensure_sfx_for_cards(
-                    project_dir, included, settings, log_callback
+            starts = [timecode_to_seconds(c.timeline_start or c.start) for c in included]
+            intervals = tiled_intervals(starts, total_end)
+            pairs = list(zip(included, intervals))
+            # Span-aware generation: clips are sized to their timeline spans
+            # when the provider supports it, so the bed needs no loop seams.
+            sfx_changed = False
+            if generate_missing_sfx:
+                sfx_changed = sfx_lib.ensure_sfx_for_spans(
+                    project_dir, pairs, settings, log_callback
                 )
-            ):
+                sfx_changed = sfx_lib.ensure_sfx_accents(
+                    project_dir, included, settings, log_callback
+                ) or sfx_changed
+            if sfx_changed:
                 try:
                     atomic_write_text(
                         board_path,
@@ -811,12 +836,14 @@ def export_video(
                     )
                 except OSError:
                     pass
-            starts = [timecode_to_seconds(c.timeline_start or c.start) for c in included]
-            intervals = tiled_intervals(starts, total_end)
+            room_tone = sfx_lib.ensure_room_tone(
+                project_dir, settings, log_callback, generate=generate_missing_sfx,
+            )
             sfx_bed = sfx_lib.build_sfx_bed(
-                list(zip(included, intervals)), exports_dir, ffmpeg, total_end,
+                pairs, exports_dir, ffmpeg, total_end,
                 volume_db=float(getattr(settings, "sfx_volume_db", -24.0)),
                 log=log_callback,
+                room_tone=room_tone,
             )
         except Exception as exc:
             if log_callback:
@@ -831,8 +858,13 @@ def export_video(
                 f"Mixing background music: {music_track.name} "
                 f"({music_cfg['music_volume_db']:.0f} dB{', ducked' if music_cfg['music_duck'] else ''})"
             )
+        duck_sfx = bool(getattr(settings, "sfx_duck", True))
         if sfx_bed and log_callback:
-            log_callback(f"Mixing SFX bed: {sfx_bed.name} ({float(getattr(settings, 'sfx_volume_db', -24.0)):.0f} dB)")
+            log_callback(
+                f"Mixing SFX bed: {sfx_bed.name} "
+                f"({float(getattr(settings, 'sfx_volume_db', -24.0)):.0f} dB"
+                f"{', ducked' if duck_sfx else ''})"
+            )
         if loudnorm and log_callback:
             log_callback("Final mix loudness: normalizing to -14 LUFS")
         cmd = [
@@ -855,6 +887,7 @@ def export_video(
             voice_start, total_end,
             music_cfg["music_volume_db"], music_cfg["music_duck"],
             music_index=music_index, sfx_index=sfx_index, loudnorm=loudnorm,
+            duck_sfx=duck_sfx,
         )
         cmd += [
             "-filter_complex", filtergraph,

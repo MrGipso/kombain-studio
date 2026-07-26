@@ -13,10 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from backend.routers import projects, transcription, scenes, shots, assets, export_router, settings, media, diagnostics, music, sfx, script, system
+from backend.routers import projects, transcription, scenes, shots, assets, export_router, settings, media, diagnostics, music, sfx, script, system, voice
 from core.config import DEFAULT_SETTINGS_PATH, load_settings
-from core.instance_lock import InstanceLock
 from core.version import __version__
+from backend.services import runtime_locks
 
 
 @asynccontextmanager
@@ -41,37 +41,25 @@ async def lifespan(app: FastAPI):
             loop.default_exception_handler(context)
 
     loop.set_exception_handler(handler)
-    explicit_lock = os.environ.get("PIPELINE_INSTANCE_LOCK", "").strip()
-    if explicit_lock:
-        lock_paths = [Path(explicit_lock).expanduser().resolve()]
-    else:
-        output_base = Path(load_settings().output_base or "projects").expanduser().resolve()
-        lock_paths = [
-            DEFAULT_SETTINGS_PATH.with_name("pipeline-studio-server.lock").resolve(),
-            output_base / ".pipeline-studio-server.lock",
-        ]
-    unique_lock_paths = {
-        str(path).casefold(): path
-        for path in lock_paths
-    }
-    instance_locks: list[InstanceLock] = []
+    explicit_lock = os.environ.get("PIPELINE_INSTANCE_LOCK", "").strip() or None
+    output_base = Path(load_settings().output_base or "projects").expanduser().resolve()
     try:
-        for lock_path in sorted(unique_lock_paths.values(), key=lambda value: str(value).casefold()):
-            instance_locks.append(InstanceLock(lock_path).acquire())
+        runtime_locks.acquire(
+            DEFAULT_SETTINGS_PATH.with_name("pipeline-studio-server.lock"),
+            output_base,
+            explicit_lock_path=explicit_lock,
+        )
     except Exception:
-        for instance_lock in reversed(instance_locks):
-            instance_lock.release()
         loop.set_exception_handler(previous)
         raise
     try:
         yield
     finally:
-        for instance_lock in reversed(instance_locks):
-            instance_lock.release()
+        runtime_locks.release()
         loop.set_exception_handler(previous)
 
 
-app = FastAPI(title="Pipeline Studio API", version=__version__, lifespan=lifespan)
+app = FastAPI(title="Комбайн Studio API", version=__version__, lifespan=lifespan)
 
 LOCAL_ORIGINS = {
     "http://localhost:5173",
@@ -120,6 +108,7 @@ app.include_router(diagnostics.router, prefix="/api", tags=["Diagnostics"])
 app.include_router(music.router, prefix="/api/projects", tags=["Music"])
 app.include_router(sfx.router, prefix="/api/projects", tags=["Sfx"])
 app.include_router(script.router, prefix="/api/projects", tags=["Script"])
+app.include_router(voice.router, prefix="/api/projects", tags=["Voice"])
 app.include_router(system.router, prefix="/api", tags=["System"])
 
 # Serve frontend: existing files directly, everything else -> index.html (SPA)

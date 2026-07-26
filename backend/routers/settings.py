@@ -9,7 +9,8 @@ from pydantic import TypeAdapter, ValidationError
 
 from core.config import Settings, load_settings, save_settings, list_presets
 from core.project import is_within, list_projects, open_project
-from backend.services import jobs
+from backend.services import jobs, runtime_locks
+from core.instance_lock import InstanceAlreadyRunning
 
 router = APIRouter()
 
@@ -23,6 +24,7 @@ READ_ONLY_RESPONSE_KEYS = {"pexels_api_key_set", "pixabay_api_key_set"}
 BINARY_KEYS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("ffmpeg", "ffmpeg.exe"),
     "whisper_cli": ("whisper-cli", "whisper-cli.exe", "main", "main.exe"),
+    "omnivoice_cli": ("omnivoice-infer", "omnivoice-infer.exe"),
 }
 
 
@@ -131,7 +133,10 @@ async def update_settings(data: dict[str, Any]):
                     for path in project_paths
                     if (project := open_project(path, settings=validated)) is not None
                 ]
-                save_settings(validated)
+                with runtime_locks.output_base_transition(
+                    Path(validated.output_base or "projects")
+                ):
+                    save_settings(validated)
 
                 transcript_inputs = {
                     "whisper_cli", "whisper_model", "whisper_language", "ffmpeg"
@@ -187,6 +192,11 @@ async def update_settings(data: dict[str, Any]):
                             )
     except jobs.ProjectBusy as exc:
         raise HTTPException(409, str(exc)) from exc
+    except InstanceAlreadyRunning as exc:
+        raise HTTPException(
+            409,
+            "Новый каталог проектов уже используется другим экземпляром Комбайн Studio",
+        ) from exc
     return {"ok": True}
 
 

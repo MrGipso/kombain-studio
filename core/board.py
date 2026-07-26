@@ -8,6 +8,7 @@ write ``06_asset_board.json``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -15,7 +16,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 from core import asset_variants
-from core.models import AssetCard, Scene, Shot, legacy_asset_card_id
+from core.models import (
+    AssetCard,
+    Scene,
+    Shot,
+    legacy_asset_card_id,
+    normalize_numeric_screen_text,
+)
 from core.project import atomic_write_text, open_project
 
 
@@ -62,7 +69,59 @@ _LEGACY_FIELD_DEFAULTS: dict[str, object] = {
     "text_overlay_y": 86.0,
     "text_overlay_enter": "fade",
     "text_overlay_exit": "fade",
+    "plan_fingerprint": "",
 }
+
+_MEDIA_PLAN_FIELDS = (
+    "scene_index",
+    "start",
+    "end",
+    "visual_type",
+    "description",
+    "asset_query",
+    "image_model",
+    "video_model",
+    "image_prompt",
+    "video_prompt",
+    "motion",
+    "fallback",
+    "reference_query",
+    "reference_source",
+)
+
+
+def media_plan_fingerprint(item: Shot | AssetCard) -> str:
+    """Return a stable identity for the media a shot is asking us to create.
+
+    ``shot_index`` is intentionally excluded: it is presentation order, not
+    provenance.  Overlay and SFX fields are also excluded because changing
+    either must not force an expensive image/video regeneration.
+    """
+
+    payload = {
+        field: str(getattr(item, field, "") or "").strip()
+        for field in _MEDIA_PLAN_FIELDS
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _card_matches_shot_plan(card: AssetCard, shot: Shot) -> bool:
+    """True only when preserving the card's generated media is safe."""
+
+    current = media_plan_fingerprint(shot)
+    recorded = (card.plan_fingerprint or "").strip()
+    if recorded:
+        return recorded == current
+    # Legacy boards did not store a fingerprint.  Derive it from their full
+    # media plan so an unchanged card survives the migration, while hybrid
+    # rows containing a new description and old prompts are invalidated.
+    return media_plan_fingerprint(card) == current
 
 
 def preferred_realistic_image_model(image_preference: str) -> str:
@@ -200,21 +259,10 @@ def is_concrete_prompt(text: str) -> bool:
 
 def auto_overlay_for_screen_text(text: str) -> bool:
     phrase = (text or "").strip()
-    if not phrase:
+    if not phrase or not any(char.isdigit() for char in phrase):
         return False
     words = phrase.split()
-    if not 1 <= len(words) <= 6 or len(phrase) > 48:
-        return False
-    if any(char.isdigit() for char in phrase):
-        return True
-    letters = [char for char in phrase if char.isalpha()]
-    if letters and sum(char.isupper() for char in letters) / len(letters) >= 0.6:
-        return True
-    if len(words) > 4 or "," in phrase or not phrase[0].isupper():
-        return False
-    if words[0].lower().strip(".,!?…") in _OVERLAY_STOPWORDS:
-        return False
-    return not phrase.endswith(("...", "…", ",", "-", "—"))
+    return 1 <= len(words) <= 7 and len(phrase) <= 100
 
 
 def choose_text_overlay_layout(text: str, shot: Shot) -> tuple[str, str, float, float]:
@@ -405,16 +453,42 @@ def build_asset_board(
     _normalize_shot_routes(shots)
     _repair_shot_prompts(shots)
     scene_titles = {scene.index: scene.title for scene in scenes}
+    scene_voice = {scene.index: scene.voice_text for scene in scenes}
     existing_by_shot = {card.shot_index: card for card in load_asset_board(project_dir)}
     cards: list[AssetCard] = []
 
     for shot in shots:
-        old = existing_by_shot.get(shot.index)
+        candidate = existing_by_shot.get(shot.index)
+        old = (
+            candidate
+            if candidate is not None and _card_matches_shot_plan(candidate, shot)
+            else None
+        )
+        plan_fingerprint = media_plan_fingerprint(shot)
         route = old.route if old and old.route else determine_asset_route(shot)
         image_model = old.image_model if old and old.image_model else shot.image_model
         video_model = old.video_model if old and old.video_model else shot.video_model
-        image_output = old.image_output if old else find_existing_asset(project_dir, "images", shot.index)
-        video_output = old.video_output if old else find_existing_asset(project_dir, "videos", shot.index)
+        # Only discover loose legacy files when no board row existed at all.
+        # If a row existed but its semantic fingerprint changed, matching
+        # shot_XXX files belong to the rejected old plan and must stay orphaned.
+        image_output = (
+            old.image_output
+            if old
+            else (
+                find_existing_asset(project_dir, "images", shot.index)
+                if candidate is None
+                else ""
+            )
+        )
+        video_output = (
+            old.video_output
+            if old
+            else (
+                find_existing_asset(project_dir, "videos", shot.index)
+                if candidate is None
+                else ""
+            )
+        )
         image_prompt = old.image_prompt if old and old.image_prompt else shot.image_prompt
 
         if old and (old.status or "").lower() not in {"planned", "needs_review", ""}:
@@ -425,13 +499,26 @@ def build_asset_board(
         else:
             status, notes = "planned", ""
 
-        screen_text = old.screen_text if old and old.screen_text else shot.screen_text
+        source_text = scene_voice.get(shot.scene_index, "")
+        old_screen_text = normalize_numeric_screen_text(
+            source_text,
+            old.screen_text if old else "",
+        )
+        shot_screen_text = normalize_numeric_screen_text(source_text, shot.screen_text)
+        screen_text = old_screen_text or shot_screen_text
         if old is not None:
             overlay_enabled = old.text_overlay_enabled
-            if overlay_enabled and not (old.text_overlay_text or "").strip():
-                overlay_enabled = auto_overlay_for_screen_text(old.screen_text or shot.screen_text)
+            explicit_overlay = normalize_numeric_screen_text(
+                source_text,
+                old.text_overlay_text,
+            )
+            if overlay_enabled:
+                overlay_enabled = auto_overlay_for_screen_text(
+                    explicit_overlay or screen_text
+                )
+            if overlay_enabled and not explicit_overlay:
                 overlay_style, overlay_position, overlay_x, overlay_y = choose_text_overlay_layout(
-                    old.screen_text or shot.screen_text,
+                    screen_text,
                     shot,
                 )
             else:
@@ -439,7 +526,7 @@ def build_asset_board(
                 overlay_position = old.text_overlay_position
                 overlay_x = old.text_overlay_x
                 overlay_y = old.text_overlay_y
-            overlay_text = old.text_overlay_text
+            overlay_text = explicit_overlay
             overlay_enter = old.text_overlay_enter
             overlay_exit = old.text_overlay_exit
         else:
@@ -495,6 +582,12 @@ def build_asset_board(
             stock_score=old.stock_score if old else 0.0,
             sfx_query=old.sfx_query if old and old.sfx_query else shot.sfx_query,
             sfx_output=old.sfx_output if old else "",
+            sfx_accent_query=(
+                old.sfx_accent_query
+                if old and old.sfx_accent_query
+                else getattr(shot, "sfx_accent_query", "") or ""
+            ),
+            sfx_accent_output=old.sfx_accent_output if old else "",
             priority=shot.priority or "medium",
             qa_score=old.qa_score if old else -1.0,
             ltx_draft=old.ltx_draft if old else False,
@@ -503,6 +596,7 @@ def build_asset_board(
             reference_url=old.reference_url if old else "",
             reference_output=old.reference_output if old else "",
             reference_credit=old.reference_credit if old else "",
+            plan_fingerprint=plan_fingerprint,
         )
         cards.append(sync_asset_card_route(card))
 
@@ -528,6 +622,7 @@ __all__ = [
     "find_existing_asset",
     "is_concrete_prompt",
     "load_asset_board",
+    "media_plan_fingerprint",
     "preferred_realistic_image_model",
     "sync_asset_card_route",
     "write_asset_board",

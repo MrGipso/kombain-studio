@@ -1,7 +1,7 @@
 @echo off
 setlocal
 rem ============================================================
-rem  Pipeline Studio - optional Sony Research Woosh SFX server
+rem  Kombain Studio - optional Sony Research Woosh SFX server
 rem
 rem  Supply-chain policy:
 rem    * this launcher never clones code or downloads model weights;
@@ -18,7 +18,7 @@ if /I not "%~1"=="--accept-noncommercial" (
 
 cd /d "%~dp0Woosh"
 if errorlevel 1 (
-    echo [ERROR] The external Woosh directory was not found next to Pipeline Studio.
+    echo [ERROR] The external Woosh directory was not found next to Kombain Studio.
     echo Install a reviewed, pinned Woosh release manually; this launcher does not download it.
     exit /b 1
 )

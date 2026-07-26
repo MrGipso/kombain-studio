@@ -1,4 +1,2 @@
 @echo off
-cd /d "%~dp0"
-uv run python main.py
-pause
+call "%~dp0start_desktop.bat"

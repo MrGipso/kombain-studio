@@ -43,3 +43,78 @@ export function isExcluded(card: AssetCard): boolean {
 export function isIncluded(card: AssetCard): boolean {
   return hasMedia(card) && !isExcluded(card)
 }
+
+// ---------------------------------------------------------------------------
+// Exclusion impact estimation.
+//
+// The exporter lays clips position-based (core/export.py tiled_intervals):
+// every included clip runs until the NEXT included clip's start, the last one
+// until the end of the narration. Excluding a card therefore does not shorten
+// the video — its time is absorbed by the previous surviving clip. These
+// helpers compute that consequence so the UI can state it at the moment of
+// the decision instead of leaving the button's effect invisible.
+
+export function tcToSec(tc: string): number {
+  const parts = String(tc || '').split(':').map((p) => Number(p))
+  if (parts.some((n) => Number.isNaN(n))) return 0
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  return parts[0] || 0
+}
+
+function slotStart(card: AssetCard): number {
+  return tcToSec(card.timeline_start || card.start)
+}
+
+function slotEnd(card: AssetCard): number {
+  return tcToSec(card.timeline_end || card.end)
+}
+
+export interface ExcludeImpact {
+  // Shot number of the clip that absorbs the excluded card's time.
+  recipientShot: number
+  // The recipient's on-screen duration after the exclusion, in seconds.
+  recipientSeconds: number
+  // How many seconds the recipient gains.
+  gainedSeconds: number
+}
+
+// Replicates the exporter's tiling for one hypothetical exclusion. Returns
+// null when the card does not ship anyway (no media / already excluded) or
+// when no other clip remains to absorb the time.
+export function excludeImpact(cards: AssetCard[], index: number): ExcludeImpact | null {
+  const target = cards[index]
+  if (!target || !isIncluded(target)) return null
+
+  const shipping = cards
+    .map((card, i) => ({ card, i }))
+    .filter(({ card }) => isIncluded(card))
+    .sort((a, b) => slotStart(a.card) - slotStart(b.card))
+  if (shipping.length < 2) return null
+
+  const pos = shipping.findIndex(({ i }) => i === index)
+  if (pos < 0) return null
+  // Time flows to the previous surviving clip; excluding the first clip makes
+  // the next one start earlier instead (the first interval is pinned to 0).
+  const recipient = pos > 0 ? shipping[pos - 1] : shipping[1]
+  const after = shipping.filter(({ i }) => i !== index)
+  const recipientPos = after.findIndex(({ i }) => i === recipient.i)
+
+  const totalEnd = Math.max(...cards.map((card) => slotEnd(card)))
+  const startOf = (entry: { card: AssetCard }, posInList: number) =>
+    posInList === 0 ? 0 : slotStart(entry.card)
+  const endOf = (list: typeof after, posInList: number) =>
+    posInList + 1 < list.length ? slotStart(list[posInList + 1].card) : totalEnd
+
+  const currentPos = shipping.findIndex(({ i }) => i === recipient.i)
+  const currentSeconds = Math.max(1, endOf(shipping, currentPos) - startOf(recipient, currentPos))
+  const recipientSeconds = Math.max(1, endOf(after, recipientPos) - startOf(recipient, recipientPos))
+  return {
+    recipientShot: recipient.card.shot_index,
+    recipientSeconds,
+    gainedSeconds: Math.max(0, recipientSeconds - currentSeconds),
+  }
+}
+
+// Above this the held/stretched plan starts to read as a frozen frame.
+export const LONG_SLOT_WARNING_SECONDS = 12

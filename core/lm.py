@@ -38,6 +38,16 @@ class StructuredReply(Generic[T]):
     transport: Literal["sdk", "openai"]
 
 
+@dataclass(frozen=True)
+class ChatReply:
+    """Plain assistant text plus completion diagnostics from LM Studio."""
+
+    content: str
+    finish_reason: str
+    prompt_tokens: int | None
+    completion_tokens: int | None
+
+
 class StructuredOutputError(ValueError):
     """The model exhausted its single schema-repair attempt."""
 
@@ -158,7 +168,8 @@ def _http_chat(
 
 
 def chat(settings: Any, messages: list[dict], temperature: float = 0.5,
-         timeout: int = 300, ttl: int | None = None) -> str:
+         timeout: int = 300, ttl: int | None = None,
+         max_tokens: int | None = None) -> str:
     """One chat-completions call; returns the raw assistant text."""
     return _http_chat(
         settings,
@@ -166,6 +177,47 @@ def chat(settings: Any, messages: list[dict], temperature: float = 0.5,
         temperature=temperature,
         timeout=timeout,
         ttl=ttl,
+        max_tokens=max_tokens,
+    )
+
+
+def chat_with_metadata(
+    settings: Any,
+    messages: list[dict],
+    temperature: float = 0.5,
+    timeout: int = 300,
+    ttl: int | None = None,
+    max_tokens: int | None = None,
+) -> ChatReply:
+    """One plain completion while retaining finish reason and token usage."""
+    payload: dict[str, Any] = {
+        "model": model_name(settings).strip() or "local-model",
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        if int(max_tokens) <= 0:
+            raise ValueError("max_tokens должен быть положительным")
+        payload["max_tokens"] = int(max_tokens)
+    add_ttl(payload, ttl if ttl is not None else ttl_seconds(settings))
+    request = urllib.request.Request(
+        base_url(settings) + "/chat/completions",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    content = _assistant_content(data)
+    choice = data.get("choices", [{}])[0] if isinstance(data.get("choices"), list) else {}
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    return ChatReply(
+        content=content,
+        finish_reason=str(choice.get("finish_reason") or "unknown"),
+        prompt_tokens=int(usage["prompt_tokens"]) if isinstance(usage.get("prompt_tokens"), int) else None,
+        completion_tokens=(
+            int(usage["completion_tokens"]) if isinstance(usage.get("completion_tokens"), int) else None
+        ),
     )
 
 

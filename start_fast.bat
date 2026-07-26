@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-title Pipeline Studio (fast)
+title Kombain Studio (fast)
 
 if not defined PIPELINE_DATA_DIR set "PIPELINE_DATA_DIR=%LOCALAPPDATA%\PipelineStudio"
 if not exist "%PIPELINE_DATA_DIR%" mkdir "%PIPELINE_DATA_DIR%"

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
+import ThemeToggle from '../components/ThemeToggle'
 import type { ProjectInfo } from '../api/types'
 
 function BrandMark() {
@@ -9,13 +10,12 @@ function BrandMark() {
     <svg viewBox="0 0 32 32" aria-hidden="true" className="h-8 w-8">
       <defs>
         <linearGradient id="brand-gradient" x1="4" y1="4" x2="28" y2="28" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#818cf8" />
-          <stop offset="1" stopColor="#a855f7" />
+          <stop stopColor="var(--brand-start, #818cf8)" />
+          <stop offset="1" stopColor="var(--brand-end, #a855f7)" />
         </linearGradient>
       </defs>
       <rect width="32" height="32" rx="9" fill="url(#brand-gradient)" />
-      <path d="M10 9.5h7.2a5.3 5.3 0 0 1 0 10.6H14V24h-4V9.5Zm4 3.6v3.4h3a1.7 1.7 0 1 0 0-3.4h-3Z" fill="white" />
-      <path d="m21.8 20.5 3.6 2.1-3.6 2.1v-4.2Z" fill="white" fillOpacity=".9" />
+      <path d="M9.5 8h4.2v6.1L19.1 8h5.2l-6.8 7.4 7.2 8.6h-5.3l-5.7-7.1V24H9.5V8Z" fill="white" />
     </svg>
   )
 }
@@ -61,7 +61,7 @@ function projectInitials(name: string) {
     .map((part) => part[0])
     .join('')
     .toLocaleUpperCase()
-  return initials || 'PS'
+  return initials || 'КС'
 }
 
 function languageLabel(language: string) {
@@ -162,24 +162,27 @@ export default function StartScreen() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800/80 bg-slate-950/90">
+      <header className="border-b border-slate-800/80 bg-slate-900/95">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
             <BrandMark />
             <div>
-              <p className="text-base font-semibold leading-tight text-white">Pipeline Studio</p>
+              <p className="text-base font-semibold leading-tight text-white">Комбайн Studio</p>
               <p className="text-xs text-slate-500">Производство AI-видео</p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => navigate('/settings')}
-            className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:border-slate-700 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer"
-          >
-            <SettingsIcon />
-            <span className="hidden sm:inline">Настройки</span>
-            <span className="sr-only sm:hidden">Открыть настройки</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <button
+              type="button"
+              onClick={() => navigate('/settings')}
+              className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:border-slate-700 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer"
+            >
+              <SettingsIcon />
+              <span className="hidden sm:inline">Настройки</span>
+              <span className="sr-only sm:hidden">Открыть настройки</span>
+            </button>
+          </div>
         </div>
       </header>
 

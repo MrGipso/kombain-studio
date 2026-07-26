@@ -1,3 +1,2 @@
 @echo off
-cd /d "%~dp0"
-python content_pipeline_qt.py
+call "%~dp0start_desktop.bat"

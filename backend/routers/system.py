@@ -71,7 +71,7 @@ async def readiness(response: Response) -> ReadinessResponse:
 @router.get("/build-info", response_model=BuildInfoResponse)
 async def build_info() -> BuildInfoResponse:
     return BuildInfoResponse(
-        app="Pipeline Studio",
+        app="Комбайн Studio",
         version=__version__,
         python=platform.python_version(),
         platform=sys.platform,

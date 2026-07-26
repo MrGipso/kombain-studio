@@ -12,7 +12,7 @@ def test_health_and_build_info_are_typed_and_available():
         info = client.get("/api/build-info")
         assert info.status_code == 200
         payload = info.json()
-        assert payload["app"] == "Pipeline Studio"
+        assert payload["app"] == "Комбайн Studio"
         assert payload["project_schema"] >= 1
         assert payload["manifest_schema"] >= 1
 

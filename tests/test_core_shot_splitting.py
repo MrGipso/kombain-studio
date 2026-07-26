@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from core.models import Shot, TranscriptSegment, timecode_to_seconds
-from core.shots import split_shots_for_stock, split_stock_shots_only
+from core.models import Scene, Shot, TranscriptSegment, timecode_to_seconds
+from core.shots import (
+    collapse_redundant_shot_runs,
+    enforce_minimum_shot_durations,
+    split_shots_for_stock,
+    split_stock_shots_only,
+)
 
 
 def _shot(index: int, start: str, end: str, visual_type: str = "ai_image_then_i2v") -> Shot:
@@ -94,3 +99,45 @@ def test_invalid_segment_snap_points_are_ignored():
     )
 
     assert _durations(result) == [4, 3]
+
+
+def test_mechanical_stock_splits_collapse_to_one_source_card():
+    original = _shot(1, "00:00:00", "00:00:14", "stock_video")
+    pieces = split_stock_shots_only([original], 5, variable=False)
+
+    result = collapse_redundant_shot_runs(pieces)
+
+    assert len(result) == 1
+    assert result[0].start == "00:00:00"
+    assert result[0].end == "00:00:14"
+    assert result[0].asset_query == "english stock query"
+
+
+def test_minimum_duration_removes_one_second_ai_slot_and_keeps_coverage():
+    scene = Scene(
+        index=1,
+        start="00:00:00",
+        end="00:00:10",
+        title="Scene",
+        voice_text="Narration",
+        visual_direction="",
+        screen_text="",
+        music_note="",
+        retention_note="",
+    )
+    shots = [
+        _shot(1, "00:00:00", "00:00:04", "stock_video"),
+        _shot(2, "00:00:04", "00:00:05", "ai_image_then_i2v"),
+        _shot(3, "00:00:05", "00:00:10", "still_kenburns"),
+    ]
+    shots[1].screen_text = "2008"
+
+    result = enforce_minimum_shot_durations(shots, [scene])
+
+    assert len(result) == 2
+    assert [(shot.start, shot.end) for shot in result] == [
+        ("00:00:00", "00:00:05"),
+        ("00:00:05", "00:00:10"),
+    ]
+    assert result[0].screen_text == "2008"
+    assert [shot.index for shot in result] == [1, 2]

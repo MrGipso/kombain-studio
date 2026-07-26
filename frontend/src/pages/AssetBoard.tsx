@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type BlockerFunction, useBlocker, useOutletContext, useSearchParams } from 'react-router-dom'
 import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
-import { hasMedia, isExcluded, isIncluded } from '../lib/cards'
+import { FinalToggle } from '../components/FinalToggle'
+import { excludeImpact, hasMedia, isExcluded, isIncluded, LONG_SLOT_WARNING_SECONDS, tcToSec } from '../lib/cards'
 import type { AssetCard, AssetVariant, AssetVariantHistory } from '../api/types'
 
 interface Context {
@@ -11,7 +12,11 @@ interface Context {
   setBusy: (busy: string | null) => void
 }
 
-const STATUSES = ['all', 'planned', 'image_ready', 'generating', 'generated', 'needs_review', 'approved', 'rejected', 'skipped']
+// Filterable statuses. `approved` and `rejected` are legacy vocabulary from the
+// removed approve-gate workflow: nothing sets them anymore, so offering them as
+// filters taught users a workflow that does not exist. Legacy cards carrying
+// those statuses still render via STATUS_LABELS/STATUS_COLORS.
+const STATUSES = ['all', 'planned', 'image_ready', 'generating', 'generated', 'needs_review', 'skipped']
 const ROUTES = ['all', 'image+video', 'image', 'stock', 'kenburns', 'reference']
 
 const STATUS_LABELS: Record<string, string> = {
@@ -43,6 +48,51 @@ const ROUTE_LABELS: Record<string, string> = {
   stock: 'Сток-видео',
   kenburns: 'Картинка + зум',
   reference: 'Источник (Википедия / arXiv)',
+}
+
+// One batch action. The target count is part of the label because the scope
+// line only says how many cards are in range: each operation then filters that
+// range by its own rule, so the user could not tell whether a click meant 180
+// renders or nothing at all. A zero-target button is disabled rather than
+// answering a click with a red error — having nothing left to do is a normal
+// state, not a failure.
+function BatchButton({
+  label, targets, busy, blocked, onClick, hint, primary = false, danger = false,
+}: {
+  label: string
+  targets: number
+  busy: boolean
+  blocked: boolean
+  onClick: () => void
+  hint: string
+  primary?: boolean
+  danger?: boolean
+}) {
+  const empty = targets === 0
+  const disabled = busy || blocked || empty
+  const tone = danger
+    ? 'border border-rose-800 bg-transparent text-rose-300 hover:bg-rose-950/20 focus-visible:ring-rose-500'
+    : primary
+      ? 'bg-indigo-600 text-white hover:bg-indigo-500 focus-visible:ring-indigo-400'
+      : 'border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 focus-visible:ring-indigo-500'
+  const title = blocked
+    ? 'Сначала сохраните изменённые карточки.'
+    : empty
+      ? `${hint}\n\nСейчас подходящих кадров нет.`
+      : `${hint}\n\nБудет обработано: ${targets}.`
+  return (
+    <button
+      type="button"
+      aria-describedby={blocked ? 'bulk-scope bulk-dirty' : 'bulk-scope'}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`min-h-10 rounded-lg px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-45 ${tone}`}
+    >
+      {label}
+      <span className={`ml-2 font-mono text-xs ${danger ? 'text-rose-400/80' : primary ? 'text-indigo-200' : 'text-slate-400'}`}>{targets}</span>
+    </button>
+  )
 }
 
 function routePatch(route: string): Partial<AssetCard> {
@@ -132,6 +182,18 @@ function safeExternalUrl(value?: string) {
   }
 }
 
+// A card whose vision-QA actually ran and came back below the review bar.
+// -1 (and an absent score) means "never inspected", which is not a problem.
+function isWeakQa(card: AssetCard): boolean {
+  const score = card.qa_score
+  return typeof score === 'number' && score >= 0 && score < 0.45
+}
+
+// Planned on-screen length of a shot, from its timeline slot.
+function cardSeconds(card: AssetCard): number {
+  return Math.max(0, tcToSec(card.timeline_end || card.end) - tcToSec(card.timeline_start || card.start))
+}
+
 function bestMedia(card: AssetCard) {
   if (card.video_output) return { type: 'video', path: card.video_output }
   if (card.image_output) return { type: 'image', path: card.image_output }
@@ -189,6 +251,12 @@ export default function AssetBoard() {
   const [filterRoute, setFilterRoute] = useState('all')
   const [query, setQuery] = useState('')
   const [compactMode, setCompactMode] = useState(false)
+  // Two jobs, two views: the card grid is for judging generated imagery, the
+  // list is for production management (what is missing, draft, or awaiting a
+  // decision). At a few hundred shots the grid stops being scannable, and its
+  // thumbnails dominate rendering cost, so the list is also the cheap view.
+  const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards')
+  const [sortMode, setSortMode] = useState<'shot' | 'problems' | 'duration'>('shot')
   const [localBusy, setLocalBusyState] = useState<string | null>(null)
   const [mediaVersion, setMediaVersion] = useState(0)
   const [stockProgress, setStockProgress] = useState<{ label: string; done: number; total: number } | null>(null)
@@ -211,6 +279,16 @@ export default function AssetBoard() {
   const editorRef = useRef<HTMLElement | null>(null)
   const materialsListRef = useRef<HTMLElement | null>(null)
   const navigationDialogRef = useRef<HTMLDivElement | null>(null)
+  // The router re-creates `setSearchParams` on every URL change. Referencing it
+  // directly inside `load` made `load` unstable, and the board-reset effect
+  // below depends on `load`: selecting a card rewrote the URL, rebuilt `load`,
+  // and the reset then wiped the selection, the checkboxes and every unsaved
+  // card patch — as if another project had been opened. Holding it in a ref
+  // keeps `load` stable so the reset only runs when the project really changes.
+  const setSearchParamsRef = useRef(setSearchParams)
+  useEffect(() => {
+    setSearchParamsRef.current = setSearchParams
+  }, [setSearchParams])
   const busy = localBusy || projectBusy
   const setLocalBusy = (value: string | null) => {
     if (value) boardRequestRef.current += 1
@@ -276,7 +354,7 @@ export default function AssetBoard() {
         if (wasLoaded && nextIndex !== previousIndex) {
           const cardParam = String(nextIndex)
           lastHandledCardParamRef.current = cardParam
-          setSearchParams((current) => {
+          setSearchParamsRef.current((current) => {
             const next = new URLSearchParams(current)
             next.set('card', cardParam)
             return next
@@ -295,7 +373,7 @@ export default function AssetBoard() {
     } finally {
       if (requestId === boardRequestRef.current) setBoardLoading(false)
     }
-  }, [projectId, setSearchParams, toast])
+  }, [projectId, toast])
 
   const refreshBoardAfterConflict = useCallback(async (successMessage: string, failureMessage: string) => {
     setBoardLoading(true)
@@ -449,6 +527,28 @@ export default function AssetBoard() {
     return indexes
   }, [])
 
+  // Display order. Shot order is the production order and stays the default;
+  // "problems first" is what you want right after a large batch, when the
+  // question is where generation did not land rather than what comes next.
+  const orderedIndexes = useMemo(() => {
+    if (sortMode === 'shot') return visibleIndexes
+    const weight = (card: AssetCard): number => {
+      if (isExcluded(card)) return 90 // out of the cut: never a problem
+      if (!hasMedia(card)) return 0 // nothing to ship at all
+      if ((card.status || '') === 'needs_review') return 1
+      if (isWeakQa(card)) return 2 // low vision-QA score
+      if (card.ltx_draft) return 3
+      return 50
+    }
+    const sorted = [...visibleIndexes]
+    if (sortMode === 'problems') {
+      sorted.sort((a, b) => weight(cards[a]) - weight(cards[b]) || a - b)
+    } else {
+      sorted.sort((a, b) => cardSeconds(cards[b]) - cardSeconds(cards[a]) || a - b)
+    }
+    return sorted
+  }, [cards, sortMode, visibleIndexes])
+
   const counts = useMemo(() => ({
     total: cards.length,
     media: cards.filter(hasMedia).length,
@@ -457,6 +557,48 @@ export default function AssetBoard() {
     review: cards.filter((c) => c.status === 'needs_review').length,
   }), [cards])
   const isBatchBusy = Boolean(localBusy?.startsWith('batch-'))
+
+  // How many cards each batch button will ACTUALLY touch. The scope label only
+  // states how many cards are in range; every operation then filters that range
+  // by its own rule, so "227 видимых" could mean 180 renders or none at all.
+  // These predicates mirror the filters inside the handlers one-for-one — keep
+  // them in sync when a handler's eligibility changes.
+  const batchTargets = useMemo(() => {
+    const scope = checkedIndexes.length ? checkedIndexes : visibleIndexes
+    const count = (predicate: (card: AssetCard) => boolean) =>
+      scope.filter((index) => {
+        const card = cards[index]
+        return Boolean(card) && !isExcluded(card) && predicate(card)
+      }).length
+    return {
+      scope: scope.length,
+      // batchGenerate('route') and batchFillGaps: cards still missing a clip.
+      route: count((card) => !card.video_output),
+      // batchFinalize: only draft-rendered clips can be re-rendered in full.
+      finalize: count((card) => Boolean(card.ltx_draft) && Boolean(card.video_output)),
+      // batchStock and batchGenerate('video'): cards without a clip.
+      video: count((card) => !card.video_output),
+      // batchGenerate('image'): cards without a still.
+      image: count((card) => !card.image_output),
+      // batchExclude works on the whole scope, excluded cards included.
+      exclude: scope.length,
+    }
+  }, [cards, checkedIndexes, visibleIndexes])
+
+  // Above this a queue stops being a quick action and becomes an evening of
+  // GPU time, so it deserves the same confirmation the cheap, reversible
+  // exclusion already had.
+  const BULK_CONFIRM_THRESHOLD = 10
+
+  const confirmHeavyBatch = (label: string, targets: number): boolean => {
+    if (targets <= BULK_CONFIRM_THRESHOLD) return true
+    return window.confirm(
+      `${label}: будет обработано ${targets} кадр(ов).\n\n`
+      + 'Это надолго — генерация занимает видеокарту и может идти часами. '
+      + 'Очередь можно остановить кнопкой «Остановить очередь»: она прервётся '
+      + 'после текущей карточки.\n\nПродолжить?',
+    )
+  }
 
   const clearDirtyCard = (cardId: string) => {
     if (!dirtyPatchesRef.current.has(cardId)) return
@@ -627,12 +769,25 @@ export default function AssetBoard() {
   // Toggle a card in/out of the final video (replaces the old approve gate).
   const toggleExclude = async (index: number) => {
     const card = cards[index]
+    // Compute the montage consequence BEFORE mutating: the exporter gives the
+    // excluded card's screen time to the previous surviving clip, and the user
+    // should learn that at the moment of the decision, not after the export.
+    const impact = !isExcluded(card) ? excludeImpact(cards, index) : null
     setLocalBusy(`exclude-${index}`)
     try {
       if (isExcluded(card)) {
         await patchCard(index, { status: hasMedia(card) ? 'generated' : 'planned' })
+        toast.success(`Кадр #${card.shot_index} возвращён в финал.`)
       } else {
         await patchCard(index, { status: 'skipped' })
+        if (impact) {
+          toast.success(`Кадр #${card.shot_index} исключён — ${impact.gainedSeconds} с уйдут кадру #${impact.recipientShot} (станет ${impact.recipientSeconds} с).`)
+          if (impact.recipientSeconds > LONG_SLOT_WARNING_SECONDS) {
+            toast.info(`Внимание: кадр #${impact.recipientShot} растянется до ${impact.recipientSeconds} с — долгий статичный план может выглядеть застывшим.`)
+          }
+        } else {
+          toast.success(`Кадр #${card.shot_index} исключён из финала${hasMedia(card) ? '' : ' (медиа не было — на монтаж не влияет)'}.`)
+        }
       }
     } catch (e) {
       if (api.isBoardRevisionConflict(e)) {
@@ -648,10 +803,10 @@ export default function AssetBoard() {
     }
   }
 
-  const runGenerateCard = async (index: number, mode: 'route' | 'image' | 'video', skipStock = false, forceFull = false): Promise<AssetCard | null> => {
+  const runGenerateCard = async (index: number, mode: 'route' | 'image' | 'video', skipStock = false, forceFull = false, deferQa = false): Promise<AssetCard | null> => {
     patchCardAt(index, { status: 'generating' }) // optimistic, so the UI reflects work immediately
     try {
-      const result = await api.generateCard(projectId, index, cards[index].card_id, mode, skipStock, forceFull)
+      const result = await api.generateCard(projectId, index, cards[index].card_id, mode, skipStock, forceFull, deferQa)
       if (result.card) {
         updateCardAt(index, result.card)
         if (selectedCardIdRef.current === result.card.card_id) void loadVariants(index, result.card.card_id)
@@ -695,7 +850,8 @@ export default function AssetBoard() {
       const card = cards[index]
       return !isExcluded(card) && Boolean(card.ltx_draft) && Boolean(card.video_output)
     })
-    if (!targets.length) { toast.error('Нет черновых кадров для финализации'); return }
+    if (!targets.length) { toast.info('Нет черновых клипов — перерендеривать нечего'); return }
+    if (!confirmHeavyBatch('Финальное качество', targets.length)) return
     startBatch('batch-finalize', 'Финал', targets.length)
     let ok = 0
     let fail = 0
@@ -780,8 +936,38 @@ export default function AssetBoard() {
     }
   }
 
+  // ai_qa_timing=after_queue: очередь генерирует без встроенного QA, а vision-
+  // модель загружается один раз в финальной фазе (нет свопа VRAM с Krea/LTX).
+  const resolveDeferQa = async (): Promise<boolean> => {
+    try {
+      const s = await api.getSettings()
+      return Boolean(s.ai_frame_qa) && s.ai_qa_timing === 'after_queue'
+    } catch {
+      return false // настройки недоступны — QA остаётся встроенным
+    }
+  }
+
+  const runCardQaPass = async (targets: Array<[number, string]>) => {
+    if (!targets.length) return
+    const label = 'AI-проверка (vision)'
+    setStockProgress({ label, done: 0, total: targets.length })
+    let done = 0
+    for (const [index, cardId] of targets) {
+      if (cancelBatchRef.current) return
+      try {
+        const res = await api.runCardQa(projectId, index, cardId)
+        if (res.card) updateCardAt(index, res.card)
+      } catch {
+        // QA-сбой не должен ронять очередь: карточка уже сгенерирована.
+      }
+      done++
+      setStockProgress({ label, done, total: targets.length })
+    }
+  }
+
   const batchGenerate = async (mode: 'route' | 'image' | 'video') => {
     const candidates = checkedIndexes.length ? checkedIndexes : visibleIndexes
+    const deferQa = await resolveDeferQa()
     if (mode !== 'route') {
       const targets = candidates.filter((index) => {
         const card = cards[index]
@@ -789,19 +975,23 @@ export default function AssetBoard() {
         if (mode === 'image') return !card.image_output
         return !card.video_output
       })
-      if (!targets.length) { toast.error('Нет карточек для генерации'); return }
+      if (!targets.length) { toast.info('Нет подходящих кадров — здесь уже всё готово'); return }
       const label = mode === 'image' ? 'Генерация картинок' : 'Генерация видео'
+      if (!confirmHeavyBatch(label, targets.length)) return
       startBatch(`batch-${mode}`, label, targets.length)
       let ok = 0
       let fail = 0
       let done = 0
+      const generated: Array<[number, string]> = []
       for (const index of targets) {
         if (cancelBatchRef.current) break
-        if (await runGenerateCard(index, mode)) ok++
+        const card = await runGenerateCard(index, mode, false, false, deferQa)
+        if (card) { ok++; generated.push([index, card.card_id]) }
         else fail++
         done++
         setStockProgress({ label, done, total: targets.length })
       }
+      if (deferQa && !cancelBatchRef.current) await runCardQaPass(generated)
       const stopped = cancelBatchRef.current
       finishBatch()
       if (stopped) toast.info(`${label}: остановлено после ${done} из ${targets.length}`)
@@ -820,7 +1010,8 @@ export default function AssetBoard() {
     const live: Record<number, AssetCard> = {}
     candidates.forEach((i) => { live[i] = cards[i] })
     const eligible = candidates.filter((i) => live[i] && !isExcluded(live[i]) && !live[i].video_output)
-    if (!eligible.length) { toast.error('Нет карточек для генерации'); return }
+    if (!eligible.length) { toast.info('Нет подходящих кадров — везде уже есть видео'); return }
+    if (!confirmHeavyBatch('Собрать материалы', eligible.length)) return
     const vt = (i: number) => (live[i].visual_type || '').toLowerCase()
 
     startBatch('batch-route', 'Очередь', eligible.length)
@@ -847,7 +1038,7 @@ export default function AssetBoard() {
       await runPhase(
         'Очередь: источники (скрины)',
         eligible.filter((i) => vt(i) === 'web_reference_card' && !live[i].video_output),
-        (i) => runGenerateCard(i, 'route'),
+        (i) => runGenerateCard(i, 'route', false, false, deferQa),
       )
     }
 
@@ -880,7 +1071,7 @@ export default function AssetBoard() {
       await runPhase(
         'Очередь 2/4: картинки (Krea)',
         eligible.filter((i) => ['still_kenburns', 'ai_image_then_i2v'].includes(vt(i)) && !live[i].image_output && !live[i].video_output),
-        (i) => runGenerateCard(i, 'image'),
+        (i) => runGenerateCard(i, 'image', false, false, deferQa),
       )
     }
 
@@ -889,7 +1080,7 @@ export default function AssetBoard() {
       await runPhase(
         'Очередь 3/4: зумы (ffmpeg)',
         eligible.filter((i) => vt(i) === 'still_kenburns' && live[i].image_output && !live[i].video_output),
-        (i) => runGenerateCard(i, 'route'),
+        (i) => runGenerateCard(i, 'route', false, false, deferQa),
       )
     }
 
@@ -898,8 +1089,18 @@ export default function AssetBoard() {
       await runPhase(
         'Очередь 4/4: видео (LTX)',
         eligible.filter((i) => vt(i) === 'ai_image_then_i2v' && live[i].image_output && !live[i].video_output),
-        (i) => runGenerateCard(i, 'video'),
+        (i) => runGenerateCard(i, 'video', false, false, deferQa),
       )
+    }
+
+    // 5) Отложенный QA: vision-модель грузится один раз на всю пачку.
+    if (!stopped && deferQa) {
+      await runCardQaPass(
+        eligible
+          .filter((i) => live[i] && (live[i].image_output || live[i].video_output))
+          .map((i) => [i, live[i].card_id] as [number, string]),
+      )
+      stopped = cancelBatchRef.current
     }
 
     finishBatch()
@@ -914,8 +1115,9 @@ export default function AssetBoard() {
       if (isExcluded(card)) return false
       return !card.video_output // skip cards that already have a clip
     })
-    if (!targets.length) { toast.error('Нет кадров без видео для подбора стока'); return }
+    if (!targets.length) { toast.info('Нет кадров без видео — подбирать сток не для чего'); return }
     const label = 'Подбор стока'
+    if (!confirmHeavyBatch(label, targets.length)) return
     startBatch('batch-stock', label, targets.length)
     let ok = 0
     let fail = 0
@@ -946,8 +1148,9 @@ export default function AssetBoard() {
       if (isExcluded(card)) return false
       return !card.video_output // only cards without a video (stock miss)
     })
-    if (!targets.length) { toast.error('Нет пустых кадров — везде уже есть видео'); return }
+    if (!targets.length) { toast.info('Нет пустых кадров — везде уже есть видео'); return }
     const label = 'Дополнение AI'
+    if (!confirmHeavyBatch('Заполнить через ИИ', targets.length)) return
     startBatch('batch-fill', label, targets.length)
     let ok = 0
     let fail = 0
@@ -970,11 +1173,17 @@ export default function AssetBoard() {
 
   const batchExclude = async () => {
     const targets = checkedIndexes.length ? checkedIndexes : visibleIndexes
-    if (!targets.length) { toast.error('Нет материалов для исключения'); return }
-    const scope = checkedIndexes.length
-      ? `${targets.length} выбранных материалов`
-      : `${targets.length} видимых материалов`
-    if (!window.confirm(`Исключить из финального видео ${scope}? Это действие изменит статус всех материалов в указанной области.`)) return
+    if (!targets.length) { toast.info('Нет материалов в текущей области'); return }
+    // The scope silently depends on checkboxes and the active filter, which is
+    // easy to misread. Listing the exact shot numbers removes the guesswork.
+    const shots = targets.map((index) => cards[index]?.shot_index ?? index + 1)
+    const listed = shots.slice(0, 12).map((n) => `#${n}`).join(', ')
+    const tail = shots.length > 12 ? ` и ещё ${shots.length - 12}` : ''
+    const source = checkedIndexes.length ? 'отмеченные галочками' : 'все видимые по текущему фильтру'
+    if (!window.confirm(
+      `Исключить из финального видео ${shots.length} кадр(ов) — ${source}:\n${listed}${tail}\n\n`
+      + 'Время каждого перейдёт соседнему плану; длина ролика не изменится. Действие обратимо.',
+    )) return
     const label = 'Исключение из финала'
     startBatch('batch-exclude', label, targets.length)
     let n = 0
@@ -1048,6 +1257,20 @@ export default function AssetBoard() {
   useEffect(() => {
     if (proceedBlockedNavigation && !hasUnsavedChanges && !isBatchBusy) proceedBlockedNavigation()
   }, [hasUnsavedChanges, isBatchBusy, proceedBlockedNavigation])
+  // useBlocker only covers in-app navigation. Closing the tab, reloading, or
+  // leaving the SPA entirely bypasses the router, so card edits that were never
+  // saved would be discarded without any prompt. The browser shows its own
+  // generic confirmation; a custom message is not supported by design.
+  useEffect(() => {
+    if (!hasUnsavedChanges && !isBatchBusy) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      // Older engines still require returnValue to be set for the prompt.
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [hasUnsavedChanges, isBatchBusy])
   useEffect(() => {
     if (!resetBlockedNavigation) return
     const dialog = navigationDialogRef.current
@@ -1165,7 +1388,8 @@ export default function AssetBoard() {
         ))}
       </section>
 
-      <section aria-labelledby="bulk-title" className="rounded-2xl border border-indigo-900/70 bg-indigo-950/20 p-4 shadow-lg shadow-slate-950/20">
+      <section aria-labelledby="bulk-title" className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-lg shadow-slate-950/20">
+        <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-indigo-500" />
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 id="bulk-title" className="text-sm font-semibold text-white">Пакетная обработка</h2>
@@ -1189,26 +1413,25 @@ export default function AssetBoard() {
 
         <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
           <div>
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-indigo-400">Основной процесс</p>
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-indigo-400">Собрать всё</p>
             <div className="flex flex-wrap gap-2">
-              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={() => batchGenerate('route')} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Выполнить очередь по маршрутам: источники, сток, картинки, зумы и LTX-видео. Готовые кадры не перезаписываются.'}>
-                Собрать материалы
-              </button>
-              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={batchFillGaps} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg bg-fuchsia-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-fuchsia-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-400 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Создать через ИИ только материалы без видео; уже подобранный сток не изменяется.'}>
-                Заполнить через ИИ
-              </button>
-              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={batchFinalize} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Перерендерить черновые LTX-клипы в финальном качестве.'}>
-                Финальное качество
-              </button>
+              <BatchButton primary label="Собрать материалы" targets={batchTargets.route} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={() => batchGenerate('route')} hint="Полная очередь по маршрутам: сток, картинки, зумы и LTX-видео. Готовые кадры не перезаписываются." />
+              <BatchButton label="Заполнить через ИИ" targets={batchTargets.route} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={batchFillGaps} hint="То же самое, но сток пропускается: кадры без видео создаются через ИИ. Найденный сток не трогается." />
             </div>
           </div>
           <div className="border-t border-indigo-900/50 pt-4 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Дополнительные операции</p>
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">По этапам</p>
             <div className="flex flex-wrap gap-2">
-              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={batchStock} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Подобрать сток для всех пустых кадров в области, игнорируя назначенный способ.'}>Только сток</button>
-              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={() => batchGenerate('image')} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Создать только Krea-изображения без видео.'}>Только картинки</button>
-              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={() => batchGenerate('video')} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : 'Создать только LTX-видео из готовых картинок.'}>Только видео</button>
-              <button type="button" aria-describedby={hasUnsavedChanges ? 'bulk-scope bulk-dirty' : 'bulk-scope'} onClick={batchExclude} disabled={Boolean(busy) || hasUnsavedChanges} className="min-h-10 rounded-lg border border-rose-900 bg-rose-950/60 px-3 py-2 text-sm font-medium text-rose-200 hover:bg-rose-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-45" title={hasUnsavedChanges ? 'Сначала сохраните изменённые карточки.' : `Исключить из финального видео ${bulkScopeLabel}. Потребуется подтверждение.`}>Исключить из финала</button>
+              <BatchButton label="Только сток" targets={batchTargets.video} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={batchStock} hint="Искать сток-видео для кадров без видео, игнорируя назначенный им способ." />
+              <BatchButton label="Только картинки" targets={batchTargets.image} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={() => batchGenerate('image')} hint="Создать только изображения в Krea, без анимации." />
+              <BatchButton label="Только видео" targets={batchTargets.video} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={() => batchGenerate('video')} hint="Создать LTX-видео из уже готовых изображений." />
+              <BatchButton label="Финальное качество" targets={batchTargets.finalize} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={batchFinalize} hint="Перерендерить черновые LTX-клипы в полном качестве." />
+            </div>
+          </div>
+          <div className="border-t border-slate-800 pt-4 lg:col-span-2">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Монтаж</p>
+            <div className="flex flex-wrap gap-2">
+              <BatchButton danger label="Убрать из финала" targets={batchTargets.exclude} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={batchExclude} hint={`Убрать из финального видео ${bulkScopeLabel}. Время перейдёт соседним планам, длина ролика не изменится, действие обратимо.`} />
             </div>
           </div>
         </div>
@@ -1248,9 +1471,31 @@ export default function AssetBoard() {
               {ROUTES.map((route) => <option key={route} value={route}>{ROUTE_FILTER_LABELS[route] || route}</option>)}
             </select>
           </label>
-          <button type="button" aria-pressed={compactMode} onClick={() => setCompactMode((value) => !value)} className={`h-10 rounded-lg border px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${compactMode ? 'border-indigo-700 bg-indigo-950/60 text-indigo-300' : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'}`} title="Переключить плотность списка материалов">
-            {compactMode ? 'Обычный вид' : 'Компактный вид'}
-          </button>
+          <div className="flex h-10 items-stretch gap-2">
+            <div role="group" aria-label="Вид отображения" className="flex overflow-hidden rounded-lg border border-slate-700">
+              <button type="button" aria-pressed={viewMode === 'cards'} onClick={() => setViewMode('cards')} className={`px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${viewMode === 'cards' ? 'bg-indigo-950/60 text-indigo-300' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`} title="Карточки с превью — для оценки того, что получилось">
+                Карточки
+              </button>
+              <button type="button" aria-pressed={viewMode === 'list'} onClick={() => setViewMode('list')} className={`border-l border-slate-700 px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${viewMode === 'list' ? 'bg-indigo-950/60 text-indigo-300' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`} title="Плотный список — для управления: где дыры, черновики и что требует решения">
+                Список
+              </button>
+            </div>
+            {viewMode === 'cards' && (
+              <button type="button" aria-pressed={compactMode} onClick={() => setCompactMode((value) => !value)} className={`rounded-lg border px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${compactMode ? 'border-indigo-700 bg-indigo-950/60 text-indigo-300' : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'}`} title="Переключить плотность карточек">
+                {compactMode ? 'Обычный' : 'Компактный'}
+              </button>
+            )}
+            {viewMode === 'list' && (
+              <label className="flex items-center">
+                <span className="sr-only">Порядок</span>
+                <select value={sortMode} onChange={(e) => setSortMode(e.target.value as typeof sortMode)} className="h-full rounded-lg border border-slate-700 bg-slate-800 px-2 text-sm text-slate-200 outline-none focus:border-indigo-500" title="Порядок строк">
+                  <option value="shot">По номеру кадра</option>
+                  <option value="problems">Сначала проблемные</option>
+                  <option value="duration">По длительности</option>
+                </select>
+              </label>
+            )}
+          </div>
           <div className="flex h-10 gap-2">
             {hasActiveFilters && <button type="button" onClick={() => { setQuery(''); setFilterStatus('all'); setFilterRoute('all') }} className="rounded-lg border border-slate-700 px-3 text-sm text-slate-400 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">Сбросить</button>}
             <button type="button" onClick={toggleVisible} className="whitespace-nowrap rounded-lg border border-slate-700 bg-slate-800 px-3 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
@@ -1320,9 +1565,92 @@ export default function AssetBoard() {
               </div>
             )}
 
-            {hasLoadedBoardRef.current && visibleIndexes.length > 0 && (
+            {hasLoadedBoardRef.current && orderedIndexes.length > 0 && viewMode === 'list' && (
+              <ul className="min-w-0 divide-y divide-slate-800/70 overflow-hidden rounded-lg border border-slate-800">
+                {orderedIndexes.map((index) => {
+                  const card = cards[index]
+                  const rawStatus = card.status || 'planned'
+                  const color = STATUS_COLORS[rawStatus] || '#64748b'
+                  const media = bestMedia(card)
+                  const excluded = isExcluded(card)
+                  const isSelected = selectedIndex === index
+                  const isDirty = dirtyCardIds.has(card.card_id)
+                  const isConflict = conflictedCardIds.has(card.card_id)
+                  const seconds = cardSeconds(card)
+                  return (
+                    <li key={`row-${card.card_id}`}>
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-current={isSelected ? 'true' : undefined}
+                        onClick={() => selectCard(index)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            selectCard(index)
+                          }
+                        }}
+                        className={`flex min-w-0 cursor-pointer items-center gap-2 px-2 py-1.5 text-xs transition-colors ${
+                          isSelected ? 'bg-indigo-950/40' : 'hover:bg-slate-800/50'
+                        } ${excluded ? 'opacity-55 saturate-50' : ''}`}
+                      >
+                        <label onClick={(event) => event.stopPropagation()} className="flex shrink-0 cursor-pointer items-center" title={`Выбрать кадр ${card.shot_index} для пакетной операции`}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Выбрать кадр ${card.shot_index}`}
+                            checked={checked.has(card.card_id)}
+                            onChange={(event) => {
+                              setChecked((prev) => {
+                                const next = new Set(prev)
+                                if (event.target.checked) next.add(card.card_id)
+                                else next.delete(card.card_id)
+                                return next
+                              })
+                            }}
+                            className="h-4 w-4 accent-indigo-500"
+                          />
+                        </label>
+                        <span aria-hidden="true" className="h-6 w-1 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                        <span className="w-24 shrink-0 font-mono text-slate-300" title={`Сцена ${card.scene_index}, кадр ${card.shot_index}`}>
+                          #{card.shot_index}<span className="text-slate-600"> · с{card.scene_index}</span>
+                        </span>
+                        <span className="w-12 shrink-0 text-right font-mono text-slate-500" title="Длительность на экране">{seconds}с</span>
+                        <span className="w-24 shrink-0 truncate text-slate-400" title={`Способ: ${card.route || 'не задан'}`}>
+                          {ROUTE_FILTER_LABELS[card.route || ''] || ROUTE_LABELS[card.route || ''] || '—'}
+                        </span>
+                        <span className="w-28 shrink-0 truncate" style={{ color }} title={`Статус: ${rawStatus}`}>
+                          {STATUS_LABELS[rawStatus] || rawStatus}
+                        </span>
+                        <span className={`w-16 shrink-0 ${media ? 'text-emerald-400' : 'text-rose-400'}`} title={media ? 'Медиа готово' : 'Медиа не создано'}>
+                          {media ? (media.type === 'video' ? 'видео' : 'кадр') : 'нет'}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-slate-500" title={card.description || card.image_prompt}>
+                          {card.description || card.image_prompt || 'Без описания'}
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          {card.ltx_draft && <span className="text-amber-400" title="Черновой рендер LTX">черн.</span>}
+                          {isWeakQa(card) && <span className="text-amber-300" title={`Оценка качества ${(card.qa_score ?? 0).toFixed(2)}`}>QA</span>}
+                          {card.text_overlay_enabled && <span className="text-cyan-300" title="Есть текст поверх видео">текст</span>}
+                          {isConflict ? <span className="text-rose-300" title="Конфликт правок">конфликт</span> : isDirty && <span className="text-amber-300" title="Есть несохранённые правки">не сохр.</span>}
+                        </span>
+                        <span onClick={(event) => event.stopPropagation()} className="shrink-0">
+                          <FinalToggle
+                            on={!excluded}
+                            disabled={Boolean(busy) || isDirty}
+                            title={isDirty ? 'Сначала сохраните правки карточки' : excluded ? 'Вернуть кадр в финальное видео' : 'Убрать кадр из финала: его время перейдёт соседнему плану'}
+                            onToggle={() => toggleExclude(index)}
+                          />
+                        </span>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+
+            {hasLoadedBoardRef.current && orderedIndexes.length > 0 && viewMode === 'cards' && (
               <div className={`grid min-w-0 gap-2 ${compactMode ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3' : 'grid-cols-1 sm:grid-cols-2'}`}>
-                {visibleIndexes.map((index) => {
+                {orderedIndexes.map((index) => {
                   const card = cards[index]
                   const media = bestMedia(card)
                   const rawStatus = card.status || 'planned'
@@ -1342,7 +1670,7 @@ export default function AssetBoard() {
                       onClick={() => selectCard(index)}
                       className={`min-w-0 cursor-pointer rounded-xl border text-left transition-colors ${compactMode ? 'p-2.5' : 'p-3.5'} ${
                         isSelected ? 'border-indigo-500/80 bg-indigo-950/30' : 'border-slate-800 bg-slate-950/45 hover:border-slate-700 hover:bg-slate-800/50'
-                      }`}
+                      } ${isExcluded(card) ? 'opacity-60 saturate-50' : ''}`}
                     >
                       <div className="flex items-start gap-2.5">
                         <label onClick={(event) => event.stopPropagation()} className="flex min-h-9 shrink-0 cursor-pointer items-start pt-0.5" title={`Выбрать кадр ${card.shot_index} для пакетной операции`}>
@@ -1385,18 +1713,24 @@ export default function AssetBoard() {
                         {card.ltx_draft && <span className="text-amber-400" title="Отрендерено черновым workflow LTX">Черновик</span>}
                         {(card.visual_type === 'web_reference_card' || card.route === 'reference') && <span className="text-sky-300" title={card.reference_url || card.reference_query || 'Карточка источника'}>Источник</span>}
                         {card.text_overlay_enabled && <span className="text-cyan-300" title={card.text_overlay_text || card.screen_text || 'Текст поверх видео'}>Есть текст</span>}
-                        {isExcluded(card) ? <span className="font-medium text-rose-400">Исключён</span> : isIncluded(card) && <span className="font-medium text-emerald-400">В финале</span>}
                         {isConflict ? <span className="font-medium text-rose-300">Конфликт правок</span> : isDirty && <span className="font-medium text-amber-300">Не сохранено</span>}
                       </div>
 
-                      <div onClick={(event) => event.stopPropagation()} className="mt-2 flex flex-wrap justify-end gap-1.5 border-t border-slate-800/80 pt-2">
-                        <button type="button" onClick={() => generate(index, 'route')} disabled={Boolean(busy)} className="min-h-9 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45" title="Создать материал по назначенному способу">Создать</button>
-                        {card.ltx_draft ? (
-                          <button type="button" onClick={() => finalize(index)} disabled={Boolean(busy)} title="Перерендерить в финальном качестве (полный LTX)" className="min-h-9 rounded-lg bg-amber-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45">Финал</button>
-                        ) : (
-                          <button type="button" onClick={() => pickStock(index)} disabled={Boolean(busy)} title="Подобрать сток-видео" className="min-h-9 rounded-lg bg-teal-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400 disabled:cursor-not-allowed disabled:opacity-45">Сток</button>
-                        )}
-                        <button type="button" onClick={() => toggleExclude(index)} disabled={Boolean(busy) || isDirty} title={isDirty ? 'Сначала сохраните правки карточки' : isExcluded(card) ? 'Вернуть материал в финал' : 'Исключить материал из финала'} className={`min-h-9 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 disabled:cursor-not-allowed disabled:opacity-45 ${isExcluded(card) ? 'bg-slate-700 hover:bg-slate-600' : 'bg-rose-900 hover:bg-rose-800'}`}>{isExcluded(card) ? 'Вернуть' : 'Исключить'}</button>
+                      <div onClick={(event) => event.stopPropagation()} className="mt-2 flex flex-wrap items-center justify-between gap-1.5 border-t border-slate-800/80 pt-2">
+                        <FinalToggle
+                          on={!isExcluded(card)}
+                          disabled={Boolean(busy) || isDirty}
+                          title={isDirty ? 'Сначала сохраните правки карточки' : isExcluded(card) ? 'Вернуть кадр в финальное видео' : 'Убрать кадр из финала: его время перейдёт соседнему плану, файлы сохранятся'}
+                          onToggle={() => toggleExclude(index)}
+                        />
+                        <div className="flex flex-wrap justify-end gap-1.5">
+                          <button type="button" onClick={() => generate(index, 'route')} disabled={Boolean(busy)} className="min-h-9 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45" title="Создать материал по назначенному способу">Создать</button>
+                          {card.ltx_draft ? (
+                            <button type="button" onClick={() => finalize(index)} disabled={Boolean(busy)} title="Перерендерить в финальном качестве (полный LTX)" className="min-h-9 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45">Финал</button>
+                          ) : (
+                            <button type="button" onClick={() => pickStock(index)} disabled={Boolean(busy)} title="Подобрать сток-видео" className="min-h-9 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45">Сток</button>
+                          )}
+                        </div>
                       </div>
                     </article>
                   )
@@ -1474,7 +1808,7 @@ export default function AssetBoard() {
                   <button type="button" onClick={() => selectedIndex !== null && generate(selectedIndex, 'image')} disabled={Boolean(busy)} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">Картинка</button>
                   <button type="button" onClick={() => selectedIndex !== null && generate(selectedIndex, 'video')} disabled={Boolean(busy)} className="min-h-10 rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">Видео</button>
                 </div>
-                <button type="button" onClick={() => selectedIndex !== null && pickStock(selectedIndex)} disabled={Boolean(busy)} className="min-h-10 w-full rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400 disabled:cursor-not-allowed disabled:opacity-45">Подобрать сток-видео</button>
+                <button type="button" onClick={() => selectedIndex !== null && pickStock(selectedIndex)} disabled={Boolean(busy)} className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45">Подобрать сток-видео</button>
               </section>
 
               {(selected.source_url || selected.source_license || selected.source_author) && (
@@ -1506,7 +1840,7 @@ export default function AssetBoard() {
                     </div>
                   )}
                   {!variantsLoading && !variantsError && [...(variantHistory?.variants || [])].reverse().map((variant) => (
-                    <div key={variant.id} className={`rounded-lg border p-2.5 ${variant.selected ? 'border-emerald-700/70 bg-emerald-950/20' : 'border-slate-800 bg-slate-950/70'}`}>
+                    <div key={variant.id} className={`rounded-lg border p-2.5 ${variant.selected ? 'border-indigo-500/80 bg-indigo-950/30' : 'border-slate-800 bg-slate-950/70'}`}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
@@ -1621,7 +1955,22 @@ export default function AssetBoard() {
 
               <div className="sticky -bottom-4 -mx-4 -mb-4 flex flex-wrap gap-2 border-t border-slate-800 bg-slate-900/95 p-4 backdrop-blur">
                 <button type="button" onClick={() => void saveSelected()} disabled={Boolean(busy) || !selectedDirty || selectedConflict} title={selectedConflict ? 'Сначала разрешите конфликт правок' : selectedDirty ? 'Сохранить изменения карточки' : 'Нет несохранённых изменений'} className="min-h-10 min-w-32 flex-1 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45">{busy === 'save' ? 'Сохраняю…' : selectedConflict ? 'Разрешите конфликт' : selectedDirty ? 'Сохранить правки' : 'Сохранено'}</button>
-                <button type="button" onClick={() => selectedIndex !== null && toggleExclude(selectedIndex)} disabled={Boolean(busy) || selectedDirty} title={selectedDirty ? 'Сначала сохраните правки' : isExcluded(selected) ? 'Вернуть материал в финальное видео' : 'Исключить материал из финального видео'} className={`min-h-10 rounded-lg px-4 py-2 text-sm font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 disabled:cursor-not-allowed disabled:opacity-45 ${isExcluded(selected) ? 'bg-slate-700 hover:bg-slate-600' : 'bg-rose-900 hover:bg-rose-800'}`}>{isExcluded(selected) ? 'Вернуть в финал' : 'Исключить'}</button>
+                <FinalToggle
+                  size="md"
+                  on={!isExcluded(selected)}
+                  disabled={Boolean(busy) || selectedDirty}
+                  title={selectedDirty
+                    ? 'Сначала сохраните правки'
+                    : isExcluded(selected)
+                      ? 'Вернуть кадр в финальное видео'
+                      : (() => {
+                          const impact = selectedIndex !== null ? excludeImpact(cards, selectedIndex) : null
+                          return impact
+                            ? `Убрать из финала: ${impact.gainedSeconds} с перейдут кадру #${impact.recipientShot} (станет ${impact.recipientSeconds} с). Файлы сохранятся.`
+                            : 'Убрать кадр из финала: файлы сохранятся, действие обратимо'
+                        })()}
+                  onToggle={() => selectedIndex !== null && toggleExclude(selectedIndex)}
+                />
               </div>
             </div>
           ) : (

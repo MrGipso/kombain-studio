@@ -12,7 +12,7 @@ import asyncio
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -50,6 +50,8 @@ def _items(cards: list) -> list[dict[str, Any]]:
     for i, c in enumerate(cards):
         sfx_output = (getattr(c, "sfx_output", "") or "").strip()
         has_file = bool(sfx_output) and Path(sfx_output).exists()
+        accent_output = (getattr(c, "sfx_accent_output", "") or "").strip()
+        has_accent = bool(accent_output) and Path(accent_output).exists()
         out.append({
             "card_index": i,
             "shot_index": c.shot_index,
@@ -61,6 +63,9 @@ def _items(cards: list) -> list[dict[str, Any]]:
             "sfx_query": getattr(c, "sfx_query", "") or "",
             "sfx_output": sfx_output if has_file else "",
             "url": _media_url(sfx_output) if has_file else "",
+            "sfx_accent_query": getattr(c, "sfx_accent_query", "") or "",
+            "sfx_accent_output": accent_output if has_accent else "",
+            "accent_url": _media_url(accent_output) if has_accent else "",
         })
     return out
 
@@ -87,6 +92,8 @@ async def get_sfx(project_id: str):
 class QueryRequest(BaseModel):
     card_indices: list[int]
     sfx_query: str = ""
+    # ambience: continuous per-location bed; accent: one-shot event at shot start.
+    target: Literal["ambience", "accent"] = "ambience"
 
 
 @router.put("/{project_id:str}/sfx/query")
@@ -103,12 +110,14 @@ async def set_query(project_id: str, req: QueryRequest):
                     raise HTTPException(404, f"Card {idx} not found")
 
             query = req.sfx_query.strip()
+            query_field = "sfx_query" if req.target == "ambience" else "sfx_accent_query"
+            output_field = "sfx_output" if req.target == "ambience" else "sfx_accent_output"
             changed = False
             for idx in req.card_indices:
                 card = cards[idx]
-                if (getattr(card, "sfx_query", "") or "").strip() != query:
-                    card.sfx_query = query
-                    card.sfx_output = ""  # query changed -> old sound no longer matches
+                if (getattr(card, query_field, "") or "").strip() != query:
+                    setattr(card, query_field, query)
+                    setattr(card, output_field, "")  # query changed -> old sound no longer matches
                     changed = True
             if changed:
                 board_store.write_asset_board(pdir, cards)
@@ -121,6 +130,7 @@ async def set_query(project_id: str, req: QueryRequest):
 class GenerateRequest(BaseModel):
     card_indices: list[int]
     fresh: bool = False  # True = new random take ("перегенерировать")
+    target: Literal["ambience", "accent"] = "ambience"
 
 
 @router.post("/{project_id:str}/sfx/generate")
@@ -140,8 +150,9 @@ async def generate(project_id: str, req: GenerateRequest):
                 for idx in req.card_indices:
                     if idx < 0 or idx >= len(cards):
                         raise HTTPException(404, f"Card {idx} not found")
+                query_field = "sfx_query" if req.target == "ambience" else "sfx_accent_query"
                 query = (
-                    getattr(cards[req.card_indices[0]], "sfx_query", "") or ""
+                    getattr(cards[req.card_indices[0]], query_field, "") or ""
                 ).strip()
                 if not query:
                     raise HTTPException(400, "У кадра нет sfx-запроса")
@@ -154,16 +165,21 @@ async def generate(project_id: str, req: GenerateRequest):
                         "operation": "sfx.generate",
                         "card_indices": req.card_indices,
                         "fresh": req.fresh,
+                        "target": req.target,
                         "query": query,
                     },
                 ) as report:
                     jobs.check(cancel_event)
                     if not woosh_url or not sfx_lib.woosh_ping(woosh_url, 3):
                         raise RuntimeError("Woosh недоступен — запустите start_woosh.bat")
-                    result = sfx_lib.generate_for_query(pdir, query, settings, req.fresh)
+                    if req.target == "accent":
+                        result = sfx_lib.generate_for_accent_query(pdir, query, settings, req.fresh)
+                    else:
+                        result = sfx_lib.generate_for_query(pdir, query, settings, req.fresh)
                     jobs.check(cancel_event)
+                    output_field = "sfx_output" if req.target == "ambience" else "sfx_accent_output"
                     for idx in req.card_indices:
-                        cards[idx].sfx_output = str(result)
+                        setattr(cards[idx], output_field, str(result))
                     board_store.write_asset_board(pdir, cards)
                     report.outcome(
                         "SFX создан",
@@ -183,8 +199,16 @@ async def generate(project_id: str, req: GenerateRequest):
 
 
 @router.post("/{project_id:str}/sfx/upload")
-async def upload(project_id: str, file: UploadFile = File(...), card_indices: str = Form(...)):
+async def upload(
+    project_id: str,
+    file: Annotated[UploadFile, File()],
+    card_indices: Annotated[str, Form()],
+    target: Annotated[str, Form()] = "ambience",
+):
     pdir = _resolve_project(project_id)
+    if target not in {"ambience", "accent"}:
+        raise HTTPException(400, "Bad target")
+    output_field = "sfx_output" if target == "ambience" else "sfx_accent_output"
     try:
         indices = [int(x) for x in card_indices.split(",") if x.strip() != ""]
     except ValueError:
@@ -229,7 +253,7 @@ async def upload(project_id: str, file: UploadFile = File(...), card_indices: st
                 dst = sfx_dir / f"custom_{time.time_ns()}_{name}"
                 staged.replace(dst)
                 for idx in indices:
-                    cards[idx].sfx_output = str(dst)
+                    setattr(cards[idx], output_field, str(dst))
                 try:
                     board_store.write_asset_board(pdir, cards)
                 except BaseException:

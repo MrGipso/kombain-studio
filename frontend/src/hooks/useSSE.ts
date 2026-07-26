@@ -6,7 +6,10 @@ interface SSEHandlers {
   onLog?: (msg: string) => void
   onProgress?: (step: string, progress: number) => void
   onDone?: (data: Record<string, unknown>) => void
-  onError?: (msg: string) => void
+  onError?: (msg: string, data?: Record<string, unknown>) => void
+  // Transport loss is not a server-side terminal event: the job may still be
+  // running. Callers that can reconcile durable job state handle it separately.
+  onDisconnect?: (msg: string) => void
   onEvent?: (event: string, data: Record<string, unknown>) => void
   // Fires exactly once when the stream closes. `aborted` means the client stopped
   // watching; the server task may still be running, so callers should not treat
@@ -17,7 +20,7 @@ interface SSEHandlers {
 export function useSSE() {
   const controllerRef = useRef<AbortController | null>(null)
 
-  const startStream = useCallback((url: string, handlers: SSEHandlers) => {
+  const startStream = useCallback((url: string, handlers: SSEHandlers, request?: RequestInit) => {
     if (controllerRef.current) {
       controllerRef.current.abort()
     }
@@ -33,7 +36,7 @@ export function useSSE() {
       handlers.onClose?.(reason || (terminalEvent ? 'completed' : 'closed'))
     }
 
-    fetch(`/api${url}`, { method: 'POST', signal: controller.signal }).then(async (res) => {
+    fetch(`/api${url}`, { method: 'POST', ...request, signal: controller.signal }).then(async (res) => {
       if (!res.ok || !res.body) {
         terminalEvent = true
         const body = await res.text().catch(() => '')
@@ -77,7 +80,7 @@ export function useSSE() {
                 }
                 if (ev === 'error') {
                   terminalEvent = true
-                  if (handlers.onError) handlers.onError(data.message as string)
+                  if (handlers.onError) handlers.onError(data.message as string, data as Record<string, unknown>)
                 }
               } catch {
                 // skip malformed SSE payloads
@@ -91,6 +94,11 @@ export function useSSE() {
     }).catch((err) => {
       if (controller.signal.aborted || err?.name === 'AbortError') {
         close('aborted')
+        return
+      }
+      if (handlers.onDisconnect) {
+        handlers.onDisconnect('Stream connection lost')
+        close('closed')
         return
       }
       terminalEvent = true

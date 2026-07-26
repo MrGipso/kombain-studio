@@ -37,7 +37,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('Pipeline Studio UI crashed', error, info.componentStack)
+    console.error('Комбайн Studio UI crashed', error, info.componentStack)
   }
 
   render() {

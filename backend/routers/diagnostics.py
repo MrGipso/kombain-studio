@@ -183,6 +183,45 @@ def _check_binary(target: str, configured: str, default_name: str) -> CheckResul
         return CheckResult(target=target, ok=True, message=f"{default_name} найден", detail=f"{resolved} ({exc})")
 
 
+def _check_omnivoice(settings) -> CheckResult:
+    presence = _check_binary("omnivoice", settings.omnivoice_cli, "omnivoice-infer")
+    if not presence.ok:
+        return presence
+    configured = settings.omnivoice_cli or "omnivoice-infer"
+    resolved = shutil.which(configured) or (configured if Path(configured).is_file() else "")
+    if not resolved:
+        return presence
+    try:
+        probe = subprocess.run(
+            [resolved, "--help"], capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
+        )
+        detail = (probe.stdout or probe.stderr or "").strip()
+        if probe.returncode == 0:
+            return CheckResult(
+                target="omnivoice", ok=True,
+                message="OmniVoice готов к запуску",
+                detail=str(resolved),
+            )
+        if "audioop" in detail.lower() or "pyaudioop" in detail.lower():
+            return CheckResult(
+                target="omnivoice", ok=False,
+                message="OmniVoice несовместим с текущим Python 3.13",
+                detail="Установите audioop-lts в окружение OmniVoice.",
+            )
+        return CheckResult(
+            target="omnivoice", ok=False,
+            message="OmniVoice найден, но не запускается",
+            detail=detail[-1000:],
+        )
+    except Exception as exc:
+        return CheckResult(
+            target="omnivoice", ok=False,
+            message="Не удалось проверить запуск OmniVoice",
+            detail=str(exc),
+        )
+
+
 def _check_embed(settings) -> CheckResult:
     base = (settings.lm_url or "http://127.0.0.1:1234/v1").rstrip("/")
     model = getattr(settings, "lm_embed_model", "") or "text-embedding-nomic-embed-text-v1.5"
@@ -274,6 +313,8 @@ async def run_check(target: str):
         return _check_binary("ffmpeg", settings.ffmpeg, "ffmpeg")
     if target == "whisper":
         return _check_whisper(settings)
+    if target == "omnivoice":
+        return _check_omnivoice(settings)
     if target == "woosh":
         return _check_woosh(settings)
     return CheckResult(target=target, ok=False, message=f"Неизвестная проверка: {target}")

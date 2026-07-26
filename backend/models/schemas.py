@@ -62,6 +62,7 @@ class Shot(BaseModel):
     priority: str = ""
     fallback: str = ""
     sfx_query: str = ""
+    sfx_accent_query: str = ""
     reference_query: str = ""
     reference_source: str = "wikipedia"
 
@@ -108,6 +109,8 @@ class AssetCard(BaseModel):
     stock_score: float = 0.0
     sfx_query: str = ""
     sfx_output: str = ""
+    sfx_accent_query: str = ""
+    sfx_accent_output: str = ""
     priority: str = "medium"
     qa_score: float = -1.0
     ltx_draft: bool = False
@@ -120,6 +123,7 @@ class AssetCard(BaseModel):
     reference_url: str = ""
     reference_output: str = ""
     reference_credit: str = ""
+    plan_fingerprint: str = ""
     card_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -193,6 +197,8 @@ class Settings(BaseModel):
     whisper_model: str = ""
     ffmpeg: str = ""
     whisper_language: str = "auto"
+    omnivoice_cli: str = "omnivoice-infer"
+    omnivoice_model: str = "k2-fsa/OmniVoice"
     output_base: str = ""
     lm_auto_unload: bool = True
     lm_unload_delay: str = "0"

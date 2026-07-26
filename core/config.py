@@ -39,6 +39,14 @@ class Settings:
     whisper_model: str = ""
     ffmpeg: str = ""
     whisper_language: str = "auto"  # "auto" = whisper detects the language per track
+    omnivoice_cli: str = "omnivoice-infer"
+    omnivoice_model: str = "k2-fsa/OmniVoice"
+    # YouTube subtitle intake. Browser cookies are opt-in because they expose
+    # the active local YouTube session to yt-dlp for the duration of a request.
+    youtube_cookies_browser: Literal["", "edge", "chrome", "firefox", "brave", "opera", "vivaldi"] = ""
+    youtube_retry_count: Annotated[int, Field(ge=0, le=5)] = 3
+    youtube_request_delay_sec: Annotated[float, Field(ge=0.0, le=10.0)] = 1.0
+    youtube_fallback_original: bool = True
     output_base: str = ""
     lm_auto_unload: bool = True
     lm_unload_delay: str = "0"
@@ -92,6 +100,10 @@ class Settings:
     # Neither mode ever triggers generation automatically.
     ai_frame_qa: bool = False
     ai_qa_mode: Literal["shadow", "review"] = "shadow"
+    # per_card: inspect right after each generated card (vision model swaps
+    # VRAM with Krea/LTX between cards); after_queue: batch queues defer QA to
+    # one final phase, loading the vision model once for the whole run.
+    ai_qa_timing: Literal["per_card", "after_queue"] = "per_card"
     ai_qa_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.45
     # LTX render resolution: "1920x1088" (Full HD) or "1280x704" (~720p, faster).
     # Dimensions must be multiples of 32 (LTX latent grid); the export always

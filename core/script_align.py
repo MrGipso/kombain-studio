@@ -34,6 +34,36 @@ def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _prefix_ratio(anchor: str, text: str) -> float:
+    """Compare an anchor with the beginning of a transcript window.
+
+    Using the anchor's own word count prevents short beat titles/narration
+    openings from being penalised merely because a transcript segment also
+    contains the following sentence.
+    """
+    anchor_words = anchor.split()
+    text_words = text.split()
+    if not anchor_words or not text_words:
+        return 0.0
+    sizes = {
+        max(1, len(anchor_words) - 2),
+        len(anchor_words),
+        min(len(text_words), len(anchor_words) + 4),
+    }
+    return max(
+        _ratio(anchor, " ".join(text_words[:size]))
+        for size in sizes
+        if size <= len(text_words)
+    )
+
+
+def _beat_text(beat: Any) -> str:
+    if not isinstance(beat, dict):
+        return ""
+    value = beat.get("text")
+    return value.strip() if isinstance(value, str) else ""
+
+
 def load_script_beats(project_dir: Path) -> list[dict[str, Any]] | None:
     """Beats with non-empty narration text, or None if the script isn't usable."""
     path = Path(project_dir) / "00_script.json"
@@ -43,7 +73,12 @@ def load_script_beats(project_dir: Path) -> list[dict[str, Any]] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-    beats = [b for b in data.get("beats", []) if isinstance(b, dict) and (b.get("text") or "").strip()]
+    if not isinstance(data, dict):
+        return None
+    raw_beats = data.get("beats", [])
+    if not isinstance(raw_beats, list):
+        return None
+    beats = [beat for beat in raw_beats if _beat_text(beat)]
     # Require the script to actually cover the video: at least 3 authored beats.
     return beats if len(beats) >= 3 else None
 
@@ -57,28 +92,31 @@ def align_beats_to_segments(beats: list[dict[str, Any]], segments: list[Any]) ->
     Returns None when too many anchors fail (narration diverged from script).
     """
     n_seg = len(segments)
-    if n_seg == 0:
+    if n_seg == 0 or len(beats) < 1:
         return None
     seg_norm = [_norm(getattr(s, "text", "") or "") for s in segments]
+    beat_texts = [_norm(_beat_text(beat)) for beat in beats]
+    if any(not text for text in beat_texts):
+        return None
 
-    total_words = sum(len(_norm(b["text"]).split()) for b in beats) or 1
+    total_words = sum(len(text.split()) for text in beat_texts) or 1
     boundaries = [0]
     failed = 0
     prev = 0
     for bi in range(1, len(beats)):
-        anchor = " ".join(_norm(beats[bi]["text"]).split()[:ANCHOR_WORDS])
+        anchor = " ".join(beat_texts[bi].split()[:ANCHOR_WORDS])
         best_idx, best_ratio = None, 0.0
         # Roll a 2-segment window so an anchor split across segments still matches.
         for i in range(prev + 1, n_seg):
             window = seg_norm[i] if i + 1 >= n_seg else seg_norm[i] + " " + seg_norm[i + 1]
-            r = _ratio(anchor, " ".join(window.split()[:ANCHOR_WORDS + 4]))
+            r = _prefix_ratio(anchor, window)
             if r > best_ratio:
                 best_idx, best_ratio = i, r
         if best_idx is None or best_ratio < MIN_BOUNDARY_RATIO:
             failed += 1
             # Proportional fallback for this one boundary: place it by the
             # beat's share of total scripted words.
-            done_words = sum(len(_norm(b["text"]).split()) for b in beats[:bi])
+            done_words = sum(len(text.split()) for text in beat_texts[:bi])
             best_idx = max(prev + 1, min(n_seg - 1, round(n_seg * done_words / total_words)))
         boundaries.append(best_idx)
         prev = best_idx
@@ -91,16 +129,40 @@ def align_beats_to_segments(beats: list[dict[str, Any]], segments: list[Any]) ->
     for a, b in zip(boundaries, boundaries[1:]):
         if b <= a:
             return None
+
+    # Boundary anchors validate beats 2..N.  Validate the first beat as well:
+    # otherwise a different script with only a matching tail can be accepted.
+    first_anchor = " ".join(beat_texts[0].split()[:ANCHOR_WORDS])
+    first_end = boundaries[1]
+    first_ratio = 0.0
+    for index in range(0, first_end):
+        window = seg_norm[index]
+        if index + 1 < first_end:
+            window += " " + seg_norm[index + 1]
+        first_ratio = max(first_ratio, _prefix_ratio(first_anchor, window))
+    if first_ratio < MIN_BOUNDARY_RATIO:
+        return None
     return list(zip(boundaries[:-1], boundaries[1:]))
 
 
-def scenes_from_script(project_dir: Path, segments: list[Any], scene_cls) -> list[Any] | None:
-    """Build Scene objects from authored beats aligned to the transcript.
+def scenes_from_script(
+    project_dir: Path,
+    segments: list[Any],
+    scene_cls,
+    min_seconds: int = 20,
+    max_seconds: int = 90,
+    target_seconds: int = 45,
+) -> list[Any] | None:
+    """Build edit-sized Scene objects inside authored transcript chapters.
 
     `scene_cls` is the caller's Scene dataclass (the monolith and core each have
-    one). Returns None when the script is absent or alignment fails — the
-    caller then falls back to embedding segmentation.
+    one). Authored beats define immutable chapter ranges; long chapters are
+    partitioned on real transcript boundaries so they cannot become multi-
+    minute editing scenes. Returns None when the script is absent or alignment
+    fails — the caller then falls back to embedding segmentation.
     """
+    from core.scenes import close_scene_timeline_gaps, partition_segments_by_duration
+
     beats = load_script_beats(project_dir)
     if not beats:
         return None
@@ -108,19 +170,35 @@ def scenes_from_script(project_dir: Path, segments: list[Any], scene_cls) -> lis
     if not ranges:
         return None
     scenes = []
-    for idx, (beat, (s0, s1)) in enumerate(zip(beats, ranges), start=1):
+    for beat_index, (beat, (s0, s1)) in enumerate(zip(beats, ranges), start=1):
         segs = segments[s0:s1]
         if not segs:
             return None
-        scenes.append(scene_cls(
-            index=idx,
-            start=getattr(segs[0], "start", "00:00:00"),
-            end=getattr(segs[-1], "end", "00:00:00"),
-            title=beat.get("title") or f"Бит {idx}",
-            voice_text=" ".join((getattr(s, "text", "") or "").strip() for s in segs),
-            visual_direction=(beat.get("visual_hint") or beat.get("goal") or ""),
-            screen_text="",
-            music_note="",
-            retention_note=beat.get("goal") or "",
-        ))
-    return scenes
+        groups = partition_segments_by_duration(
+            segs,
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            target_seconds=target_seconds,
+        )
+        base_title = beat.get("title") or f"Глава {beat_index}"
+        for part_index, part in enumerate(groups, start=1):
+            title = (
+                base_title
+                if len(groups) == 1
+                else f"{base_title} · {part_index}/{len(groups)}"
+            )
+            scenes.append(scene_cls(
+                index=len(scenes) + 1,
+                start=getattr(part[0], "start", "00:00:00"),
+                end=getattr(part[-1], "end", "00:00:00"),
+                title=title,
+                voice_text=" ".join(
+                    (getattr(segment, "text", "") or "").strip()
+                    for segment in part
+                ),
+                visual_direction=(beat.get("visual_hint") or beat.get("goal") or ""),
+                screen_text="",
+                music_note="",
+                retention_note=beat.get("goal") or "",
+            ))
+    return close_scene_timeline_gaps(scenes)

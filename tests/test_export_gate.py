@@ -110,18 +110,20 @@ def test_master_reports_every_card_and_validation_blocker(tmp_path: Path):
     report = evaluate_export_gate([card], _validation(validation_issue), "master")
 
     assert report.allowed is False
+    # `not_approved` is gone: the board replaced the approve gate with
+    # include/exclude, nothing sets the flag, and generation clears it — so it
+    # reported one unclearable finding per card and buried the real ones.
     assert {reason.code for reason in report.reasons} == {
         "validation_error",
         "missing_media",
         "needs_review",
         "ltx_draft",
-        "not_approved",
     }
     card_reasons = [reason for reason in report.reasons if reason.card_index is not None]
     assert all(reason.card_index == 0 and reason.shot_index == 7 for reason in card_reasons)
     assert report.summary.validation_errors == 1
     assert report.summary.cards_ready == 0
-    assert report.summary.blockers == 5
+    assert report.summary.blockers == 4
 
 
 def test_master_ignores_explicitly_excluded_cards(tmp_path: Path):
@@ -192,7 +194,14 @@ def test_master_blocks_stale_pipeline_stage(tmp_path: Path):
     assert reason.details == {"status": "stale", "invalidated_by": "scenes"}
 
 
-def test_blocked_master_stream_never_starts_ffmpeg(tmp_path: Path, monkeypatch):
+def test_gate_findings_are_advisory_and_do_not_stop_the_render(tmp_path: Path, monkeypatch):
+    """Findings inform, they do not forbid.
+
+    This is a local, single-user tool: the operator IS the reviewer, and
+    refusing to render made them debug the gate instead of watching the video.
+    The report must still be emitted in full — it is how the readiness panel
+    stays truthful — but the render proceeds regardless.
+    """
     class FakeProject:
         dir = tmp_path
         settings = SimpleNamespace(ffmpeg="ffmpeg")
@@ -215,6 +224,10 @@ def test_blocked_master_stream_never_starts_ffmpeg(tmp_path: Path, monkeypatch):
             return None
 
         @staticmethod
+        def mark_stage_failed(*_args, **_kwargs):
+            return None
+
+        @staticmethod
         def stage_states():
             return {
                 stage: {"status": "completed"}
@@ -223,17 +236,19 @@ def test_blocked_master_stream_never_starts_ffmpeg(tmp_path: Path, monkeypatch):
 
     export_called = False
 
-    def fail_if_exported(**_kwargs):
+    def record_export(**_kwargs):
         nonlocal export_called
         export_called = True
-        raise AssertionError("FFmpeg export must not start behind a blocked Master gate")
+        # Returning nothing takes the already-handled "render failed" path, so
+        # the test needs no ffmpeg and no downstream manifest plumbing.
+        return None
 
     monkeypatch.setattr(export_router, "load_settings", lambda: SimpleNamespace(output_base=""))
     monkeypatch.setattr(export_router, "safe_project_path", lambda *_args: tmp_path)
     monkeypatch.setattr(export_router, "open_project", lambda *_args: FakeProject())
     monkeypatch.setattr(export_router, "validate_project", lambda _project: _validation())
     monkeypatch.setattr(export_router, "write_validation_report", lambda _project: _validation())
-    monkeypatch.setattr(export_router, "export_video", fail_if_exported)
+    monkeypatch.setattr(export_router, "export_video", record_export)
 
     async def collect_stream() -> str:
         response = await export_router.export("test-project", "master")
@@ -244,7 +259,9 @@ def test_blocked_master_stream_never_starts_ffmpeg(tmp_path: Path, monkeypatch):
 
     payload = asyncio.run(collect_stream())
 
-    assert export_called is False
+    # The report still reaches the client, unchanged and complete...
     assert '"event": "gate"' in payload
     assert '"allowed": false' in payload
-    assert '"code": "master_export_blocked"' in payload
+    # ...but it no longer terminates the stream on its own.
+    assert "master_export_blocked" not in payload
+    assert export_called is True

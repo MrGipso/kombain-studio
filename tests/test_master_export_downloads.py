@@ -199,10 +199,12 @@ def test_master_rechecks_inputs_inside_project_job_before_ffmpeg(
 
     export_called = False
 
-    def fail_if_exported(**_kwargs):
+    def record_export(**_kwargs):
         nonlocal export_called
         export_called = True
-        raise AssertionError("FFmpeg must not run after the locked snapshot changes")
+        # Returning nothing takes the already-handled "render failed" path, so
+        # the assertions stay focused on the re-check itself.
+        return None
 
     clean_validation = {"issues": [], "summary": {"counts": {"error": 0}}}
     monkeypatch.setattr(export_router, "load_settings", lambda: SimpleNamespace(output_base=""))
@@ -217,7 +219,7 @@ def test_master_rechecks_inputs_inside_project_job_before_ffmpeg(
     )
     monkeypatch.setattr(export_router, "_master_input_snapshot", master_snapshot)
     monkeypatch.setattr(export_router.jobs, "project_job", project_job)
-    monkeypatch.setattr(export_router, "export_video", fail_if_exported)
+    monkeypatch.setattr(export_router, "export_video", record_export)
 
     async def collect_stream() -> str:
         response = await export_router.export("locked-project", "master")
@@ -228,8 +230,10 @@ def test_master_rechecks_inputs_inside_project_job_before_ffmpeg(
 
     payload = asyncio.run(collect_stream())
 
+    # The snapshot is still re-taken under the project lock, and the refreshed
+    # finding still reaches the client — that is what keeps the readiness panel
+    # honest. It is advisory now, so the render proceeds instead of aborting.
     assert snapshots == 2
-    assert export_called is False
-    assert failures and failures[0][0] == "export"
+    assert export_called is True
     assert '"code": "export_inputs_changed"' in payload
-    assert '"code": "master_preflight_changed"' in payload
+    assert '"code": "master_preflight_changed"' not in payload

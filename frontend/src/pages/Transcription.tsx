@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { useOutletContext, useSearchParams } from 'react-router-dom'
 import * as api from '../api/client'
 import { useSSE } from '../hooks/useSSE'
 import { useToast } from '../components/toast-context'
-import type { TranscriptSegment } from '../api/types'
+import type { TranscriptSegment, TranscriptionSource } from '../api/types'
 
 interface Context {
   projectId: string
@@ -13,6 +13,8 @@ interface Context {
 
 export default function Transcription() {
   const { projectId, busy, setBusy } = useOutletContext<Context>()
+  const [searchParams] = useSearchParams()
+  const requestedSource = searchParams.get('source')
   const { startStream } = useSSE()
   const toast = useToast()
   const [logs, setLogs] = useState<string[]>([])
@@ -20,6 +22,7 @@ export default function Transcription() {
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [running, setRunning] = useState(false)
   const [elapsed, setElapsed] = useState(0)
+  const [source, setSource] = useState<TranscriptionSource | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
   const lockedElsewhere = Boolean(busy) && !running
@@ -36,7 +39,13 @@ export default function Transcription() {
         setLogs((prev) => [...prev, `✅ Загружен сохранённый результат (${d.transcript.length} символов, ${d.segments?.length || 0} сегментов)`])
       }
     }).catch(() => {})
-  }, [projectId])
+    api.getTranscriptionSource(projectId).then((selected) => {
+      setSource(selected)
+      if (selected.available && requestedSource === 'narration') {
+        setLogs((prev) => [...prev, `✅ Озвучка ${selected.filename} принята из раздела «Сценарий»`])
+      }
+    }).catch(() => setSource(null))
+  }, [projectId, requestedSource])
 
   useEffect(() => {
     if (!running) { setElapsed(0); return }
@@ -55,6 +64,8 @@ export default function Transcription() {
     if (!file) { toast.error('Сначала выберите аудиофайл'); return }
     try {
       const result = await api.uploadAudio(projectId, file)
+      const selected = await api.getTranscriptionSource(projectId)
+      setSource(selected)
       setLogs((prev) => [...prev, `✅ Загружено: ${result.filename}`])
       toast.success(`Загружено: ${result.filename}`)
     } catch (e) {
@@ -98,6 +109,8 @@ export default function Transcription() {
 
     try {
       const result = await api.uploadAudio(projectId, file)
+      const selected = await api.getTranscriptionSource(projectId)
+      setSource(selected)
       setLogs((prev) => [...prev, `✅ Загружено: ${result.filename}`])
       fileRef.current!.value = ''
     } catch (e) {
@@ -117,13 +130,27 @@ export default function Transcription() {
   }
 
   return (
-    <div className="p-8 space-y-6">
+    <div className="max-w-[1100px] space-y-6 p-4 sm:p-6 xl:p-8">
       <h1 className="text-2xl font-bold text-white">Транскрипция</h1>
+
+      {source?.available && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700">Выбранный источник</p>
+              <h2 className="mt-1 font-semibold text-emerald-300">{source.filename}</h2>
+              <p className="mt-1 text-xs text-slate-500">{source.origin === 'omnivoice' ? 'Готовая озвучка OmniVoice из раздела «Сценарий»' : 'Загруженный аудиофайл'}</p>
+            </div>
+            <span className="rounded-lg border border-emerald-500/30 px-3 py-1.5 text-xs font-semibold text-emerald-700">Готово к транскрипции</span>
+          </div>
+          <audio controls preload="metadata" src={source.url} className="mt-4 w-full" />
+        </div>
+      )}
 
       {/* Upload */}
       <div className="bg-slate-900 rounded-xl p-6 border border-slate-800 space-y-4">
         <h2 className="text-lg font-semibold text-white">Загрузить аудио</h2>
-        <div className="flex gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row">
           <input
             ref={fileRef}
             type="file"
@@ -155,21 +182,21 @@ export default function Transcription() {
           </div>
         )}
 
-        <div className="flex gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row">
           <button
             onClick={handleTranscribe}
             disabled={running || lockedElsewhere}
             className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
           >
-            {running ? '⏳ Идёт транскрипция...' : '🎤 Загрузить и транскрибировать'}
+            {running ? 'Идёт транскрипция...' : 'Загрузить и транскрибировать'}
           </button>
           <button
             onClick={handleTranscribeExisting}
-            disabled={running || lockedElsewhere}
+            disabled={running || lockedElsewhere || !source?.available}
             title="Использовать аудио, уже сохранённое в проекте"
             className="py-3 px-5 bg-slate-700 hover:bg-slate-600 text-white font-semibold rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
           >
-            ↻ На загруженном
+            Транскрибировать выбранную дорожку
           </button>
         </div>
       </div>

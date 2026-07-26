@@ -39,10 +39,9 @@ def test_every_scored_text_response_exposes_its_schema_to_the_model():
     assert cases
     for case in cases:
         assert case["structured_output"] is True
-        payload, _ = model_eval.build_request_payload(
-            case, model="local", ttl=1, seed=7
-        )
-        assert payload["response_format"]["json_schema"]["schema"] == case[
+        response_format = model_eval.structured_response_format(case)
+        assert response_format is not None
+        assert response_format["json_schema"]["schema"] == case[
             "response_schema"
         ]
 

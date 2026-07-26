@@ -583,7 +583,7 @@ export default function Dashboard() {
           aria-valuemax={100}
           aria-valuenow={pipelineCompletion}
         >
-          <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${pipelineCompletion}%` }} />
+          <div className={`h-full rounded-full transition-all ${pipelineCompletion === 100 ? 'bg-emerald-500' : 'bg-indigo-500'}`} style={{ width: `${pipelineCompletion}%` }} />
         </div>
 
         <ol className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-5">

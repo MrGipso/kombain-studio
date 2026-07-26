@@ -2,7 +2,7 @@
   "schema_version": 1,
   "suite": "pipeline-studio-local-agent-vlm",
   "suite_version": "1.0.0",
-  "description": "Immutable text, native-tool and still-image cases captured from real Pipeline Studio projects. Existing board choices are context, not automatic ground truth.",
+  "description": "Immutable text, native-tool and still-image cases captured from real Комбайн Studio projects. Existing board choices are context, not automatic ground truth.",
   "schemas": {
     "route": {
       "type": "object",

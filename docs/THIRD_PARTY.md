@@ -26,7 +26,7 @@ notices and record exact source/model revisions and SHA-256 hashes in the
 external release inventory.
 
 The `Woosh/` checkout, virtual environment and multi-gigabyte weights are local
-runtime data and are intentionally ignored by the Pipeline Studio repository.
+runtime data and are intentionally ignored by the Комбайн Studio repository.
 
 ## Stock and references
 
@@ -39,7 +39,7 @@ that an asset is cleared for every commercial use.
 
 ## Release checklist
 
-- Select a licence for Pipeline Studio itself and add a root `LICENSE` file.
+- Select a licence for Комбайн Studio itself and add a root `LICENSE` file.
 - Generate the locked Python/npm SBOM with
   `python tools/generate_sbom.py --output artifacts/pipeline-studio.cdx.json`
   and attach it to the release.
@@ -47,3 +47,7 @@ that an asset is cleared for every commercial use.
   package lockfiles cannot describe FFmpeg, whisper.cpp, ComfyUI or local models.
 - Include notices required by code, fonts, models, stock and reference assets.
 - Disable all non-commercial integrations in commercial release profiles.
+## Script and voice intake
+
+- **yt-dlp** — downloads subtitle tracks and metadata only; video/audio download is disabled by the application.
+- **OmniVoice** — optional local TTS runtime invoked through `omnivoice-infer`. On Python 3.13+ its environment also needs `audioop-lts>=0.2.2`, because `audioop` was removed from the Python standard library. Комбайн sends narration as one batch so the model is loaded once per track, not once per fragment.

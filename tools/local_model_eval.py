@@ -1,6 +1,6 @@
 r"""Read-only A/B harness for local OpenAI-compatible chat/VLM models.
 
-The harness never calls Pipeline Studio generation endpoints and never writes
+The harness never calls Комбайн Studio generation endpoints and never writes
 inside ``projects/``.  It reads immutable text/image fixtures, runs them one at
 a time against LM Studio (or another OpenAI-compatible endpoint), and writes a
 fully auditable report under ``artifacts/local-model-eval`` by default.
@@ -293,6 +293,20 @@ def _user_text(case: dict[str, Any]) -> str:
     )
 
 
+def structured_response_format(case: dict[str, Any]) -> dict[str, Any] | None:
+    """Build the model-facing JSON Schema contract without touching fixtures."""
+    if not case.get("structured_output") or not case.get("response_schema"):
+        return None
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": _slug(case["id"]).replace("-", "_")[:64],
+            "strict": True,
+            "schema": case["response_schema"],
+        },
+    }
+
+
 def build_request_payload(
     case: dict[str, Any],
     *,
@@ -356,15 +370,8 @@ def build_request_payload(
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = case.get("tool_choice", "auto")
-    if case.get("structured_output") and case.get("response_schema"):
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": _slug(case["id"]).replace("-", "_")[:64],
-                "strict": True,
-                "schema": case["response_schema"],
-            },
-        }
+    if response_format := structured_response_format(case):
+        payload["response_format"] = response_format
     if thinking_mode != "default":
         payload["chat_template_kwargs"] = {
             "enable_thinking": thinking_mode == "on"

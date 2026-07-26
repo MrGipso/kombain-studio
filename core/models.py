@@ -59,6 +59,9 @@ class Shot:
     fallback: str
     # Short English ambient-sound phrase for the SFX generator (Woosh).
     sfx_query: str = ""
+    # One-shot event sound for this shot (phone vibration, beep, knock):
+    # played once at the shot start on top of the ambience, never looped.
+    sfx_accent_query: str = ""
     # Reference-insert route: entity to resolve and preferred source.
     reference_query: str = ""
     reference_source: str = "wikipedia"
@@ -108,6 +111,9 @@ class AssetCard:
     # SFX layer (optional): ambient-sound query and the generated audio file.
     sfx_query: str = ""
     sfx_output: str = ""
+    # Accent layer (optional): one-shot event sound at the shot start.
+    sfx_accent_query: str = ""
+    sfx_accent_output: str = ""
     # Shot importance from the LLM (high/medium/low): drives the LTX draft-mode
     # decision (hero shots keep the full two-pass render).
     priority: str = "medium"
@@ -123,6 +129,9 @@ class AssetCard:
     reference_url: str = ""
     reference_output: str = ""
     reference_credit: str = ""
+    # Hash of the media-defining shot fields.  It prevents a regenerated shot
+    # from inheriting outputs merely because it reused the same list index.
+    plan_fingerprint: str = ""
     # Stable identity survives board reordering and shot insertions.  Indices are
     # presentation/order metadata and must not be used as provenance keys.
     card_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -222,15 +231,106 @@ def make_title(text: str, index: int) -> str:
     return first or f"Scene {index}"
 
 
-def make_screen_text(text: str) -> str:
-    candidates = re.findall(r"[^.!?]+[.!?]?", text.replace("\n", " "))
-    candidates = [
-        re.sub(r"\s+", " ", item).strip(" .!?")
-        for item in candidates if len(item.split()) >= 4
-    ]
-    if not candidates:
+_NUMERIC_TOKEN_RE = re.compile(
+    r"(?<![\w])(?:\d{1,3}(?:[ \u00a0.]\d{3})+|\d+)(?:[.,]\d+)?(?:\s*[%‰])?"
+)
+_DANGLING_SCREEN_TEXT_WORDS = {
+    "а",
+    "без",
+    "благодаря",
+    "в",
+    "где",
+    "для",
+    "до",
+    "за",
+    "и",
+    "из",
+    "к",
+    "как",
+    "на",
+    "над",
+    "но",
+    "о",
+    "об",
+    "от",
+    "по",
+    "под",
+    "при",
+    "про",
+    "с",
+    "со",
+    "у",
+    "через",
+    "что",
+    "это",
+    "and",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "the",
+    "to",
+    "with",
+}
+
+
+def _normalized_numeric_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for match in _NUMERIC_TOKEN_RE.finditer(text or ""):
+        token = match.group(0).lower().replace("\u00a0", "").replace(" ", "")
+        if token.endswith(("%", "‰")):
+            suffix, token = token[-1], token[:-1]
+        else:
+            suffix = ""
+        token = token.replace(",", ".")
+        tokens.add(token + suffix)
+    return tokens
+
+
+def normalize_numeric_screen_text(
+    source_text: str,
+    candidate: str,
+    *,
+    max_words: int = 7,
+    max_chars: int = 100,
+) -> str:
+    """Accept only a short, complete numeric fact supported by narration.
+
+    On-screen copy is an accent layer, not a second subtitle track.  It is
+    therefore empty unless the candidate contains an explicit number which is
+    also present in the immutable narration text.  Overlong copy is rejected
+    instead of mechanically truncated into an unfinished phrase.
+    """
+
+    value = re.sub(r"\s+", " ", str(candidate or "")).strip()
+    if not value or len(value) > max_chars or not 1 <= len(value.split()) <= max_words:
         return ""
-    candidate = max(candidates[:5], key=len)
-    if len(candidate) > 54:
-        candidate = candidate[:51].rsplit(" ", 1)[0] + "..."
-    return candidate
+    source_numbers = _normalized_numeric_tokens(source_text)
+    candidate_numbers = _normalized_numeric_tokens(value)
+    if not candidate_numbers or not candidate_numbers.issubset(source_numbers):
+        return ""
+    last_word = value.rstrip(" .,!?:;…–—-").split()[-1].lower()
+    if last_word in _DANGLING_SCREEN_TEXT_WORDS:
+        return ""
+    return value.rstrip(" .,!?:;…–—-")
+
+
+def make_screen_text(text: str) -> str:
+    """Create a conservative numeric label for the non-LM fallback path."""
+
+    for sentence in re.split(r"(?<=[.!?])\s+", (text or "").replace("\n", " ")):
+        words = re.sub(r"\s+", " ", sentence).strip(" .!?").split()
+        number_index = next(
+            (index for index, word in enumerate(words) if any(char.isdigit() for char in word)),
+            None,
+        )
+        if number_index is None:
+            continue
+        candidate = " ".join(words[number_index : number_index + 4])
+        normalized = normalize_numeric_screen_text(text, candidate)
+        if normalized:
+            return normalized
+    return ""

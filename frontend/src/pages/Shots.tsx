@@ -177,7 +177,7 @@ export default function Shots() {
                   onClick={() => { setRoutePriority(p.key); saveMode(shotMode, stockCut, p.key) }}
                   title={p.hint}
                   className={`px-3 py-1.5 text-sm font-semibold transition-colors ${
-                    routePriority === p.key ? 'bg-teal-700 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    routePriority === p.key ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                   }`}
                 >
                   {p.label}
@@ -208,7 +208,7 @@ export default function Shots() {
           disabled={running || lockedElsewhere || !hasScenes}
           className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
         >
-          {running ? '⏳ Генерация...' : '🎬 Сгенерировать шот-лист'}
+          {running ? 'Генерация...' : 'Сгенерировать шот-лист'}
         </button>
         <button
           onClick={handleRebuildBoard}

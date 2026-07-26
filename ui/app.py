@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QStatusBar, QToolBar, QVBoxLayout, QWidget, QMessageBox,
 )
 
-from core.auto_pipeline import AutoPipeline
+from ui.auto_pipeline import AutoPipeline
 from core.config import load_settings, save_settings
 from core.locale import set_default_locale
 from core.project import Project, create_project, open_project, list_projects
@@ -43,7 +43,7 @@ TAB_ICONS = ["📊", "🎤", "📝", "🎬", "🖼️", "👁️", "⚙️"]
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Pipeline Studio")
+        self.setWindowTitle("Комбайн Studio")
         self.resize(1500, 960)
 
         self.settings = load_settings()
@@ -277,7 +277,7 @@ class MainWindow(QMainWindow):
         self.pipeline = PipelineContext(project=project)
         locale = project.load_locale()
         set_default_locale(locale)
-        self.setWindowTitle(f"Pipeline Studio — {project.name}")
+        self.setWindowTitle(f"Комбайн Studio — {project.name}")
         self.status_label.setText(f"📁 {project.name}")
 
         # Switch to workspace

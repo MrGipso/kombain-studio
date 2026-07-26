@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget, QMessageBox,
 )
 
-from core.generation_queue import GenerationQueue
+from ui.generation_queue import GenerationQueue
 from core.models import AssetCard
 from core.project import Project
 from ui.workers import AssetGeneratorWorker

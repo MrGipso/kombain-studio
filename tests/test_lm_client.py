@@ -120,6 +120,33 @@ def test_chat_preserves_legacy_openai_payload(monkeypatch):
     assert content == " raw assistant text "
 
 
+def test_chat_with_metadata_keeps_finish_reason_and_usage(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": "готово"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 45},
+            }).encode("utf-8")
+
+    monkeypatch.setattr(lm.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    reply = lm.chat_with_metadata(
+        _settings(),
+        [{"role": "user", "content": "hello"}],
+        max_tokens=200,
+    )
+
+    assert reply.content == "готово"
+    assert reply.finish_reason == "stop"
+    assert reply.prompt_tokens == 120
+    assert reply.completion_tokens == 45
+
+
 def test_chat_structured_http_sends_schema_and_repairs_once(monkeypatch):
     requests = []
     contents = iter(

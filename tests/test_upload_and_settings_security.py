@@ -72,6 +72,24 @@ def test_settings_accept_read_only_secret_flags(tmp_path, monkeypatch):
     assert len(saved) == 1
 
 
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"youtube_cookies_browser": "unknown"},
+        {"youtube_retry_count": 6},
+        {"youtube_request_delay_sec": -1},
+    ],
+)
+def test_settings_reject_invalid_youtube_controls(tmp_path, monkeypatch, patch):
+    current = Settings(output_base=str(tmp_path))
+    monkeypatch.setattr(settings_router, "load_settings", lambda: current)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(settings_router.update_settings(patch))
+
+    assert caught.value.status_code == 422
+
+
 def test_settings_save_is_atomic_on_replace_failure(tmp_path, monkeypatch):
     path = tmp_path / "settings.json"
     path.write_text('{"sentinel": true}', encoding="utf-8")

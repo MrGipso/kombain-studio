@@ -56,7 +56,7 @@ _resource_running: dict[str, tuple[str, str, str]] = {}
 _event_jobs: dict[threading.Event, str] = {}  # active cancel event -> durable job id
 _initialized_db_path: Path | None = None
 
-_GPU_LEASE_RESOURCES = frozenset({"gpu", "llm", "comfy", "stock"})
+_GPU_LEASE_RESOURCES = frozenset({"gpu", "llm", "comfy", "stock", "tts"})
 
 
 def _utc_now() -> str:

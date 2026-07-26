@@ -7,6 +7,9 @@ venv/
 env/
 .pytest_cache/
 .pytest-tmp*/
+# Ad-hoc pytest run directories left in the repo root by manual test sessions.
+pytest-*/
+pytest-*.lock
 
 # Logs and runtime output
 *.log
@@ -38,6 +41,9 @@ backend/static/index.html
 # Woosh SFX server: externally installed checkout (~5.7 GB, its own repository,
 # CC-BY-NC weights). Not part of this project's source tree.
 /Woosh/
+# MOSS-SoundEffect v2 SFX server: externally installed checkout (Apache-2.0,
+# weights live in the HuggingFace cache). Not part of this project's source tree.
+/MOSS-TTS/
 streamer.zip
 
 # Generated projects and media

@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from core.generation_queue import GenerationQueue, QueueItem
+from ui.generation_queue import GenerationQueue, QueueItem
 
 
 STATUS_COLORS = {

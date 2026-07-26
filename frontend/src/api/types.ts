@@ -148,6 +148,15 @@ export interface TranscriptSegment {
   text: string
 }
 
+export interface TranscriptionSource {
+  available: boolean
+  filename: string
+  path: string
+  url: string
+  selected: boolean
+  origin: 'omnivoice' | 'upload' | string
+}
+
 export interface Scene {
   index: number
   start: string
@@ -183,6 +192,7 @@ export interface Shot {
 
 export interface AssetCard {
   card_id: string
+  plan_fingerprint?: string
   shot_index: number
   scene_index: number
   scene_title: string
@@ -324,6 +334,12 @@ export interface Settings {
   whisper_model: string
   ffmpeg: string
   whisper_language: string
+  omnivoice_cli: string
+  omnivoice_model: string
+  youtube_cookies_browser: '' | 'edge' | 'chrome' | 'firefox' | 'brave' | 'opera' | 'vivaldi'
+  youtube_retry_count: number
+  youtube_request_delay_sec: number
+  youtube_fallback_original: boolean
   output_base: string
   lm_auto_unload: boolean
   lm_unload_delay: string
@@ -356,19 +372,81 @@ export interface Settings {
   ltx_resolution: string
   ai_frame_qa: boolean
   ai_qa_mode: 'shadow' | 'review'
+  ai_qa_timing: 'per_card' | 'after_queue'
   ai_qa_threshold: number
 }
 
 export interface ScriptBeat {
+  id: string
   title: string
   goal: string
   duration_sec: number
   visual_hint: string
   content: string
   text: string
+  target_words: number
+}
+
+export interface ScriptAgentIssue {
+  id: string
+  type: string
+  severity: 'critical' | 'high' | 'medium' | 'low' | string
+  block_index: number | null
+  message: string
+  evidence: string
+  suggested_action: string
+  occurrence_count?: number
+  block_indices?: number[]
+}
+
+export interface ScriptAgentState {
+  status: 'idle' | 'running' | 'ready' | 'ready_with_warnings' | 'needs_review' | 'failed' | 'cancelled' | string
+  stage: string
+  progress: number
+  iteration: number
+  max_iterations: number
+  score: number
+  issues: ScriptAgentIssue[]
+  history: Array<Record<string, unknown>>
+  last_report_signature: string
+  last_checked_revision: number
 }
 
 export interface ScriptState {
+  schema_version: number
+  mode: 'ready' | 'rewrite'
+  source: { type: string; name: string; url: string; language: string; caption_kind: string }
+  source_text: string
+  cleaned_text: string
+  final_text: string
+  target_duration_sec: number | null
+  target_duration_min_sec: number | null
+  target_duration_max_sec: number | null
+  duration_mode: 'auto' | 'manual' | string
+  duration_tolerance_pct: number
+  speech_style: string
+  estimated_wpm: number
+  estimated_duration_sec: number
+  source_estimated_duration_sec: number
+  actual_audio_duration_sec: number | null
+  voice_profile_id: string
+  text_revision: number
+  voice_source_revision: number | null
+  voice_outdated: boolean
+  revision: number
+  analysis: { facts: string[]; theses: string[]; warnings: string[]; quality_notes?: string[]; removed?: { text: string; reason: string }[] }
+  voice_plan: VoicePlan
+  quality: {
+    status: 'empty' | 'incomplete' | 'ready' | string
+    target_words: number
+    actual_words: number
+    word_ratio: number
+    total_beats: number
+    completed_beats: number
+    coverage_ratio: number
+    accepted_actual: boolean
+  }
+  agent: ScriptAgentState
   topic: string
   target_minutes: number
   audience_notes: string
@@ -376,6 +454,53 @@ export interface ScriptState {
   hooks: string[]
   hook_selected: number
   beats: ScriptBeat[]
+}
+
+export interface VoiceChunk {
+  id: string
+  text: string
+  emotion: string
+  intensity: number
+  speed: number
+  pause_before_ms: number
+  pause_after_ms: number
+  provider_tags: string[]
+}
+
+export interface VoicePlan {
+  status: string
+  voice_profile_id?: string
+  settings?: { speed: number; pause_scale: number }
+  chunks: VoiceChunk[]
+}
+
+export interface VoiceProfile {
+  id: string
+  type: 'preset' | 'clone' | string
+  display_name: string
+  language: string
+  description: string
+  calibrated_wpm: number
+  reference_transcript: string
+  scope: string
+  duration_sec?: number | null
+}
+
+export interface YoutubeSubtitleTrack {
+  language: string
+  kind: 'manual' | 'auto'
+  formats: string[]
+  is_original?: boolean
+}
+
+export interface YoutubeInspection {
+  id: string
+  title: string
+  channel: string
+  duration: number
+  webpage_url: string
+  original_language: string
+  tracks: YoutubeSubtitleTrack[]
 }
 
 export interface SfxItem {
@@ -389,6 +514,9 @@ export interface SfxItem {
   sfx_query: string
   sfx_output: string
   url: string
+  sfx_accent_query: string
+  sfx_accent_output: string
+  accent_url: string
 }
 
 export interface SfxState {

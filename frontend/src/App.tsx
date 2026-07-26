@@ -14,6 +14,7 @@ const AssetBoard = lazy(() => import('./pages/AssetBoard'))
 const Music = lazy(() => import('./pages/Music'))
 const Sounds = lazy(() => import('./pages/Sounds'))
 const Script = lazy(() => import('./pages/Script'))
+const Voice = lazy(() => import('./pages/Voice'))
 const Preview = lazy(() => import('./pages/Preview'))
 const Settings = lazy(() => import('./pages/Settings'))
 
@@ -26,11 +27,11 @@ function PageLoader() {
     >
       <div className="flex items-center gap-4 rounded-2xl border border-white/10 bg-slate-900/80 px-5 py-4 shadow-2xl shadow-indigo-950/30 backdrop-blur-xl">
         <span className="relative flex size-9 items-center justify-center rounded-xl bg-indigo-500 text-sm font-bold text-white shadow-lg shadow-indigo-500/20">
-          PS
+          КС
           <span className="absolute -inset-1 -z-10 animate-pulse rounded-2xl bg-indigo-500/20" />
         </span>
         <span>
-          <span className="block text-sm font-semibold text-slate-100">Pipeline Studio</span>
+          <span className="block text-sm font-semibold text-slate-100">Комбайн Studio</span>
           <span className="mt-0.5 block text-xs text-slate-500">Загрузка рабочего пространства…</span>
         </span>
       </div>
@@ -44,6 +45,7 @@ const router = createBrowserRouter(createRoutesFromElements(
     <Route path="/project/:projectId" element={<ProjectLayout />}>
       <Route index element={<Dashboard />} />
       <Route path="script" element={<Script />} />
+      <Route path="voice" element={<Voice />} />
       <Route path="transcription" element={<Transcription />} />
       <Route path="scenes" element={<Scenes />} />
       <Route path="shots" element={<Shots />} />

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import re
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,139 @@ SCENE_INPUT_SETTING_KEYS = (
     "seg_sensitivity",
     "seg_target_scenes",
 )
+
+_SCENE_TIMECODE_RE = re.compile(
+    r"^(?P<hours>\d{2,}):(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)"
+    r"(?:(?:[.,])(?P<fraction>\d{1,3}))?$"
+)
+_LEGACY_SCENE_TIMECODE_RE = re.compile(
+    r"^(?P<minutes>\d+):(?P<seconds>[0-5]\d)"
+    r"(?:(?:[.,])(?P<fraction>\d{1,3}))?$"
+)
+
+
+def _scene_timecode_milliseconds(
+    value: Any,
+    field: str,
+    *,
+    allow_legacy: bool = False,
+) -> int:
+    """Parse an editor timecode without the permissive pipeline fallbacks.
+
+    Pipeline imports accept several legacy representations.  Manual edits are
+    different: silently treating a typo as zero would corrupt every downstream
+    timeline, so this boundary deliberately accepts only HH:MM:SS(.mmm).
+    """
+    if not isinstance(value, str):
+        raise HTTPException(422, {"message": f"{field} must be a timecode string"})
+    text = value.strip()
+    match = _SCENE_TIMECODE_RE.fullmatch(text)
+    if match:
+        hours = int(match.group("hours"))
+        minutes = int(match.group("minutes"))
+    elif allow_legacy and (legacy := _LEGACY_SCENE_TIMECODE_RE.fullmatch(text)):
+        match = legacy
+        hours = 0
+        minutes = int(match.group("minutes"))
+    else:
+        match = None
+    if not match:
+        raise HTTPException(
+            422,
+            {"message": f"{field} must use HH:MM:SS or HH:MM:SS.mmm"},
+        )
+    fraction = (match.group("fraction") or "").ljust(3, "0")
+    return (
+        hours * 3_600_000
+        + minutes * 60_000
+        + int(match.group("seconds")) * 1_000
+        + int(fraction or "0")
+    )
+
+
+def _canonical_scene_timecode(milliseconds: int) -> str:
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, fraction = divmod(remainder, 1_000)
+    base = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{base}.{fraction:03d}" if fraction else base
+
+
+def _scene_edit_value(field: str, value: Any) -> Any:
+    """Normalize editor text solely for detecting whether a field changed."""
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip()
+    if field in {"start", "end"}:
+        normalized = normalized.replace(",", ".")
+    return normalized
+
+
+def _validate_scene_edit(
+    scenes: list[dict[str, Any]],
+    position: int,
+    scene_index: int,
+    updated: dict[str, Any],
+    changed_fields: set[str],
+) -> None:
+    """Protect the ordered scene timeline before committing an editor patch."""
+    updated["start"] = updated["start"].strip().replace(",", ".")
+    updated["end"] = updated["end"].strip().replace(",", ".")
+    updated["title"] = updated["title"].strip()
+    indexes = [scene.get("index") for scene in scenes]
+    if any(not isinstance(index, int) or isinstance(index, bool) for index in indexes):
+        raise HTTPException(409, "Scene plan contains an invalid index; analyze scenes again")
+    if len(indexes) != len(set(indexes)):
+        raise HTTPException(409, "Scene plan contains duplicate indexes; analyze scenes again")
+    if indexes != list(range(1, len(scenes) + 1)):
+        raise HTTPException(409, "Scene plan indexes are out of order; analyze scenes again")
+    if updated["index"] != scene_index:
+        raise HTTPException(422, {"message": "Scene index is immutable"})
+
+    start_ms = _scene_timecode_milliseconds(
+        updated["start"], "start", allow_legacy="start" not in changed_fields,
+    )
+    end_ms = _scene_timecode_milliseconds(
+        updated["end"], "end", allow_legacy="end" not in changed_fields,
+    )
+    updated["start"] = _canonical_scene_timecode(start_ms)
+    updated["end"] = _canonical_scene_timecode(end_ms)
+    if start_ms >= end_ms:
+        raise HTTPException(422, {"message": "Scene start must be earlier than scene end"})
+
+    if position:
+        previous_end = _scene_timecode_milliseconds(
+            scenes[position - 1].get("end"), "previous.end", allow_legacy=True,
+        )
+        if start_ms < previous_end:
+            raise HTTPException(422, {"message": "Scene overlaps the previous scene"})
+    if position + 1 < len(scenes):
+        next_start = _scene_timecode_milliseconds(
+            scenes[position + 1].get("start"), "next.start", allow_legacy=True,
+        )
+        if end_ms > next_start:
+            raise HTTPException(422, {"message": "Scene overlaps the next scene"})
+
+    if not updated["title"].strip():
+        raise HTTPException(422, {"message": "Scene title cannot be empty"})
+
+
+def _spreadsheet_safe(value: Any) -> Any:
+    """Keep LLM/user-authored text from becoming a formula in CSV viewers."""
+    if not isinstance(value, str):
+        return value
+    first_visible = value.lstrip(" \t\r\n")[:1]
+    if value[:1] in {"\t", "\r", "\n"} or first_visible in {"=", "+", "-", "@"}:
+        return "'" + value
+    return value
+
+
+def _markdown_text(value: Any) -> str:
+    """Render one untrusted scene field as inert, single-line Markdown text."""
+    text = " ".join(str(value or "").splitlines()).strip()
+    for marker in ("\\", "`", "*", "_", "[", "]", "<", ">", "#", "|"):
+        text = text.replace(marker, "\\" + marker)
+    return text
 
 
 def _scene_input_payload(project, segments_data: list[dict], settings: dict[str, Any]) -> dict[str, Any]:
@@ -112,7 +246,7 @@ async def analyze_scenes(project_id: str):
         loop = asyncio.get_event_loop()
 
         def log_handler(msg: str):
-            loop.call_soon_threadsafe(sse.emit, project.dir.name, "log", {"message": msg})
+            loop.call_soon_threadsafe(sse.emit_to, sub_id, "log", {"message": msg})
 
         def run_sync():
             scene_input_hash = ""
@@ -156,11 +290,11 @@ async def analyze_scenes(project_id: str):
                             "scenes", str(exc), input_hash=scene_input_hash or None,
                         )
                         raise
-                loop.call_soon_threadsafe(sse.emit, project.dir.name, "done", {"scenes": scenes})
+                loop.call_soon_threadsafe(sse.emit_to, sub_id, "done", {"scenes": scenes})
             except (jobs.ProjectBusy, jobs.JobCancelled) as exc:
-                loop.call_soon_threadsafe(sse.emit, project.dir.name, "error", {"message": str(exc)})
+                loop.call_soon_threadsafe(sse.emit_to, sub_id, "error", {"message": str(exc)})
             except Exception as exc:
-                loop.call_soon_threadsafe(sse.emit, project.dir.name, "error", {"message": str(exc)})
+                loop.call_soon_threadsafe(sse.emit_to, sub_id, "error", {"message": str(exc)})
 
         loop.run_in_executor(None, run_sync)
 
@@ -191,23 +325,23 @@ async def export_scenes(project_id: str):
             writer = csv.writer(buffer)
             writer.writerow(["Scene", "Start", "End", "Title", "Visual Direction", "Screen Text"])
             for scene in scenes:
-                writer.writerow([
+                writer.writerow([_spreadsheet_safe(value) for value in [
                     scene.get("index"), scene.get("start"), scene.get("end"),
                     scene.get("title"), scene.get("visual_direction"), scene.get("screen_text"),
-                ])
+                ]])
             atomic_write_text(csv_path, buffer.getvalue())
 
             md_path = project.dir / "visual_plan.md"
             lines = ["# Visual Plan\n"]
             for scene in scenes:
                 lines.append(
-                    f"## Scene {scene.get('index')}: {scene.get('title')} "
-                    f"({scene.get('start')} - {scene.get('end')})"
+                    f"## Scene {_markdown_text(scene.get('index'))}: {_markdown_text(scene.get('title'))} "
+                    f"({_markdown_text(scene.get('start'))} - {_markdown_text(scene.get('end'))})"
                 )
-                lines.append(f"- **Visual:** {scene.get('visual_direction', '')}")
-                lines.append(f"- **Screen:** {scene.get('screen_text', '')}")
-                lines.append(f"- **Music:** {scene.get('music_note', '')}")
-                lines.append(f"- **Retention:** {scene.get('retention_note', '')}")
+                lines.append(f"- **Visual:** {_markdown_text(scene.get('visual_direction', ''))}")
+                lines.append(f"- **Screen:** {_markdown_text(scene.get('screen_text', ''))}")
+                lines.append(f"- **Music:** {_markdown_text(scene.get('music_note', ''))}")
+                lines.append(f"- **Retention:** {_markdown_text(scene.get('retention_note', ''))}")
                 lines.append("")
             atomic_write_text(md_path, "\n".join(lines))
 
@@ -229,6 +363,7 @@ async def update_scene(project_id: str, scene_index: int, data: dict[str, Any]):
             if not project:
                 raise HTTPException(404, "Project not found")
             scenes = project.read_json("scenes") or []
+            previous_scene_state = project.stage_states().get("scenes", {})
             for position, scene in enumerate(scenes):
                 if scene.get("index") == scene_index:
                     unknown = sorted(set(data) - set(SceneSchema.model_fields))
@@ -238,6 +373,15 @@ async def update_scene(project_id: str, scene_index: int, data: dict[str, Any]):
                         updated = SceneSchema.model_validate({**scene, **data}).model_dump()
                     except ValidationError as exc:
                         raise HTTPException(422, exc.errors())
+                    changed_fields = {
+                        field
+                        for field, value in data.items()
+                        if _scene_edit_value(field, value)
+                        != _scene_edit_value(field, scene.get(field))
+                    }
+                    _validate_scene_edit(
+                        scenes, position, scene_index, updated, changed_fields,
+                    )
                     scenes[position] = updated
                     project.write_json("scenes", scenes)
                     project.mark_stage_completed(
@@ -250,6 +394,21 @@ async def update_scene(project_id: str, scene_index: int, data: dict[str, Any]):
                         )),
                         metadata={"edited": True},
                     )
+                    if previous_scene_state.get("status") == "stale":
+                        project.invalidate_stage(
+                            "scenes",
+                            reason=(
+                                previous_scene_state.get("error")
+                                or "manual edit preserved stale scene inputs"
+                            ),
+                        )
+                    elif previous_scene_state.get("status") == "failed":
+                        project.mark_stage_failed(
+                            "scenes",
+                            str(previous_scene_state.get("error") or "scene analysis failed"),
+                            input_hash=previous_scene_state.get("input_hash"),
+                            metadata={"edited": True, "preserved_status": "failed"},
+                        )
                     return updated
             raise HTTPException(404, "Scene not found")
     except jobs.ProjectBusy as exc:

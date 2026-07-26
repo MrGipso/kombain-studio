@@ -25,12 +25,12 @@ class StartScreen(QWidget):
         layout.setSpacing(24)
 
         # Logo / Title
-        title = QLabel("🎬 Pipeline Studio")
+        title = QLabel("Комбайн Studio")
         title.setStyleSheet("font-size: 42px; font-weight: 800; color: #f8fafc;")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("Universal content production pipeline")
+        subtitle = QLabel("Полный цикл производства AI-видео")
         subtitle.setStyleSheet("font-size: 16px; color: #94a3b8;")
         subtitle.setAlignment(Qt.AlignCenter)
         layout.addWidget(subtitle)

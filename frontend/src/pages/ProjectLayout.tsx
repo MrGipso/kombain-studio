@@ -2,18 +2,20 @@ import { useState, useEffect, useRef } from 'react'
 import { Outlet, NavLink, useParams, useNavigate } from 'react-router-dom'
 import * as api from '../api/client'
 import type { PipelineStageState, ProjectInfo } from '../api/types'
+import ThemeToggle from '../components/ThemeToggle'
 
 const NAV_ITEMS = [
   { to: '', label: 'Обзор', marker: '00' },
   { to: 'script', label: 'Сценарий', marker: '01' },
-  { to: 'transcription', label: 'Транскрипция', marker: '02' },
-  { to: 'scenes', label: 'Сцены', marker: '03' },
-  { to: 'shots', label: 'Кадры', marker: '04' },
-  { to: 'board', label: 'Материалы', marker: '05' },
-  { to: 'timeline', label: 'Монтаж', marker: '06' },
-  { to: 'music', label: 'Музыка', marker: '07' },
-  { to: 'sounds', label: 'Звуки', marker: '08' },
-  { to: 'preview', label: 'Предпросмотр', marker: '09' },
+  { to: 'voice', label: 'Озвучка', marker: '02' },
+  { to: 'transcription', label: 'Транскрипция', marker: '03' },
+  { to: 'scenes', label: 'Сцены', marker: '04' },
+  { to: 'shots', label: 'Кадры', marker: '05' },
+  { to: 'board', label: 'Материалы', marker: '06' },
+  { to: 'timeline', label: 'Монтаж', marker: '07' },
+  { to: 'music', label: 'Музыка', marker: '08' },
+  { to: 'sounds', label: 'Звуки', marker: '09' },
+  { to: 'preview', label: 'Экспорт', marker: '10' },
 ] as const
 
 const PIPELINE_STAGES = [
@@ -95,7 +97,7 @@ export default function ProjectLayout() {
     return (
       <div role="status" aria-live="polite" className="flex min-h-screen items-center justify-center bg-slate-950 px-6 text-slate-400">
         <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 shadow-xl shadow-black/20">
-          <span aria-hidden="true" className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500 text-[11px] font-black text-white">PS</span>
+          <span aria-hidden="true" className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500 text-[11px] font-black text-white">КС</span>
           <span>
             <span className="block text-sm font-semibold text-slate-200">Открываем проект</span>
             <span className="mt-0.5 block text-xs text-slate-500">Загружаем состояние рабочего процесса…</span>
@@ -138,16 +140,16 @@ export default function ProjectLayout() {
     <div className="flex h-screen overflow-hidden bg-slate-950 text-slate-100">
       {/* Sidebar */}
       <aside
-        aria-label={`Pipeline Studio. Навигация проекта «${project.name}»`}
+        aria-label={`Комбайн Studio. Навигация проекта «${project.name}»`}
         className="flex w-16 shrink-0 flex-col border-r border-slate-800/90 bg-slate-900 md:w-64"
       >
         <div className="border-b border-slate-800 px-2 py-3 md:px-4 md:py-4">
           <div className="flex items-center justify-center gap-3 md:justify-start">
             <div aria-hidden="true" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-500 text-[11px] font-black tracking-tight text-white shadow-lg shadow-indigo-950/50">
-              PS
+              КС
             </div>
             <div className="hidden min-w-0 md:block">
-              <p className="truncate text-sm font-bold tracking-tight text-white">Pipeline Studio</p>
+              <p className="truncate text-sm font-bold tracking-tight text-white">Комбайн Studio</p>
               <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Видеопроизводство</p>
             </div>
           </div>
@@ -183,7 +185,7 @@ export default function ProjectLayout() {
               className={({ isActive }) =>
               `group flex items-center justify-center gap-3 rounded-lg px-2 py-2 text-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 md:justify-start md:px-3 ${
                   isActive
-                    ? 'bg-indigo-500/15 font-semibold text-indigo-300 ring-1 ring-inset ring-indigo-500/20'
+                    ? 'nav-item-active bg-indigo-600 font-semibold text-white shadow-sm'
                     : 'text-slate-400 hover:bg-slate-800/80 hover:text-white'
                 }`
               }
@@ -260,6 +262,9 @@ export default function ProjectLayout() {
               {completedStages}/{pipelineStages.length}
             </div>
           </div>
+          <div className="border-t border-slate-800 px-2 py-2">
+            <ThemeToggle compact />
+          </div>
           <NavLink
             to="/settings"
             aria-label="Настройки приложения"
@@ -279,7 +284,7 @@ export default function ProjectLayout() {
       </aside>
 
       {/* Main content */}
-      <main aria-label={`Рабочая область проекта «${project.name}»`} className="min-w-0 flex-1 overflow-auto">
+      <main aria-label={`Рабочая область проекта «${project.name}»`} className="min-w-0 flex-1 overflow-auto bg-slate-950">
         <Outlet context={{ projectId, project, steps, setSteps, stageStates, setStageStates, busy, setBusy }} />
       </main>
     </div>

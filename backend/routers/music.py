@@ -260,7 +260,7 @@ async def generate_music(project_id: str):
         loop = asyncio.get_event_loop()
 
         def log(msg: str):
-            loop.call_soon_threadsafe(sse.emit, project_key, "log", {"message": msg})
+            loop.call_soon_threadsafe(sse.emit_to, sub_id, "log", {"message": msg})
 
         def run_sync():
             try:
@@ -297,18 +297,18 @@ async def generate_music(project_id: str):
                     project.save_meta()
                     project.invalidate_stage("timeline", reason="music track generated")
                 loop.call_soon_threadsafe(
-                    sse.emit, project_key, "done",
+                    sse.emit_to, sub_id, "done",
                     {"track_path": str(track), "track_url": _media_url(track), "filename": track.name},
                 )
             except jobs.JobCancelled as exc:
                 loop.call_soon_threadsafe(
-                    sse.emit,
-                    project_key,
+                    sse.emit_to,
+                    sub_id,
                     "error",
                     {"message": str(exc), "code": "cancelled"},
                 )
             except Exception as exc:
-                loop.call_soon_threadsafe(sse.emit, project_key, "error", {"message": str(exc)})
+                loop.call_soon_threadsafe(sse.emit_to, sub_id, "error", {"message": str(exc)})
 
         loop.run_in_executor(None, run_sync)
         async for msg in sse.generator(sub_id):

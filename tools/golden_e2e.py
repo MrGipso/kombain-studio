@@ -1,4 +1,4 @@
-"""Run an isolated, inexpensive Pipeline Studio golden end-to-end check.
+"""Run an isolated, inexpensive Комбайн Studio golden end-to-end check.
 
 The harness deliberately does not use the configured projects directory, jobs
 database, or server lock.  It starts a one-off backend with a minimal settings
@@ -43,7 +43,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 DEFAULT_SOURCE_SETTINGS = ROOT / "content_pipeline_settings.json"
 DEFAULT_SPEECH = (
-    "Pipeline Studio turns a short narration into a verified professional "
+    "Комбайн Studio turns a short narration into a verified professional "
     "video export."
 )
 REQUIRED_STAGES = (

@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-title Pipeline Studio
+title Kombain Studio
 
 rem Keep mutable runtime state outside the install/source tree. Preserve an
 rem existing legacy settings file on the first launch after this migration.
@@ -11,7 +11,7 @@ if not defined PIPELINE_JOBS_DB set "PIPELINE_JOBS_DB=%PIPELINE_DATA_DIR%\jobs.s
 if not exist "%PIPELINE_SETTINGS_PATH%" if exist "content_pipeline_settings.json" copy /y "content_pipeline_settings.json" "%PIPELINE_SETTINGS_PATH%" >nul
 
 echo ==================================================
-echo   Pipeline Studio
+echo   Kombain Studio
 echo ==================================================
 echo.
 echo [1/3] Building frontend...

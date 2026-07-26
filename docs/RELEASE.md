@@ -1,8 +1,8 @@
-# Pipeline Studio — release checklist
+# Комбайн Studio — release checklist
 
 ## 1. Legal and source review
 
-- Select the licence for Pipeline Studio and add the approved root `LICENSE`.
+- Select the licence for Комбайн Studio and add the approved root `LICENSE`.
   The repository intentionally does not choose one automatically.
 - Review `docs/THIRD_PARTY.md`, asset credits and the immutable Master manifest.
 - Disable Woosh and every other non-commercial integration in commercial builds.

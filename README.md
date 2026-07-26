@@ -1,12 +1,13 @@
-# Pipeline Studio
+# Комбайн Studio
 
 Local-first AI video production pipeline: script or voice recording → transcript
 → scenes → shot plan → stock/AI assets → timeline → quality control → export.
 
-The web application (`FastAPI + React`) is the primary interface. Domain and
-generation logic is canonical in `core/`, so the complete web backend runs
-headlessly without Tkinter. Qt and Tkinter entry points remain compatibility
-interfaces over the same core services.
+The FastAPI + React application is the single supported interface. It can run
+in a browser or in the native window provided by `launch.py`; both modes use
+the same backend, settings and orchestration. Historical Qt/Tk sources remain
+temporarily in the repository for migration reference, but all shipped
+launchers and `main.py` open the current interface.
 
 ## Requirements
 
@@ -16,6 +17,8 @@ interfaces over the same core services.
 - FFmpeg / FFprobe
 - whisper.cpp and a compatible model
 - LM Studio (scene and shot planning)
+- yt-dlp (subtitle-only YouTube intake for the Script → Rewrite workflow)
+- OmniVoice (`omnivoice-infer`) for chunked local narration from saved or cloned voices
 - ComfyUI (image, video, and optional music generation)
 - Woosh API (optional SFX generation)
 

@@ -1,15 +1,27 @@
 <!doctype html>
-<html lang="ru" class="dark">
+<html lang="ru" class="light" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#020617" />
+    <meta name="theme-color" content="#f8fafc" />
+    <script>
+      (() => {
+        const savedTheme = localStorage.getItem('pipeline-studio-theme')
+        const theme = savedTheme === 'dark' ? 'dark' : 'light'
+        const root = document.documentElement
+        root.dataset.theme = theme
+        root.classList.toggle('dark', theme === 'dark')
+        root.classList.toggle('light', theme === 'light')
+        root.style.colorScheme = theme
+        document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#f8fafc' : '#020617')
+      })()
+    </script>
     <meta
       name="description"
-      content="Pipeline Studio — рабочее пространство для производства AI-видео."
+      content="Комбайн Studio — рабочее пространство для производства AI-видео."
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>Pipeline Studio</title>
+    <title>Комбайн Studio</title>
   </head>
   <body class="bg-slate-950 text-slate-200">
     <div id="root"></div>

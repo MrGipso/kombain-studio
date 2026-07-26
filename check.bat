@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  Pipeline Studio - pre-commit checks (run before every commit)
+rem  Kombain Studio - pre-commit checks (run before every commit)
 rem    1) Lockfile check
 rem    2) Deterministic release SBOM
 rem    3) Python tests

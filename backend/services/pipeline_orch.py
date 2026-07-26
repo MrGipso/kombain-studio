@@ -10,6 +10,7 @@ from core import scenes as scene_tools
 from core import shot_planning as shot_planner
 from core import shots as shot_tools
 from core.models import Scene, TranscriptSegment
+from core.project import atomic_write_text
 
 
 def _to_card(c: Any) -> dict[str, Any]:
@@ -97,24 +98,35 @@ def run_scene_analysis(
     seg_sensitivity = float(settings.get("seg_sensitivity", 0.6) or 0.6)
     seg_target = int(settings.get("seg_target_scenes", 0) or 0)
 
-    _ensure_lm_context(settings, log)
     # AUTHORED scenes first: if the project has a script (00_script.json), the
     # narration was literally written as beats — align them to the transcript
     # and use the author's boundaries/titles instead of guessing statistically.
     from core import script_align
-    authored = script_align.scenes_from_script(project_dir, t_segments, Scene)
+    authored = script_align.scenes_from_script(
+        project_dir,
+        t_segments,
+        Scene,
+        seg_min,
+        seg_max,
+    )
     if authored:
-        log(f"Сцены из сценария: {len(authored)} авторских битов выровнены по аудио.")
+        log(
+            f"Авторские главы выровнены по аудио и разбиты на "
+            f"{len(authored)} монтажных сцен ({seg_min}–{seg_max} с)."
+        )
         try:
+            _ensure_lm_context(settings, log)
             authored = scene_tools.enrich_scenes_with_lm(
                 authored, base_url, model, ttl_seconds=ttl,
                 style_anchor=style_anchor,
                 character_description=character_description,
                 video_style=video_style,
+                log_callback=log,
+                require_all=True,
+                allow_plain_json_fallback=True,
             )
-        except Exception as exc:
-            log(f"LLM-обогащение сцен не удалось ({exc}); использую данные битов как есть")
-        _maybe_unload_lm(settings, "scene analysis finished (script beats)", log)
+        finally:
+            _maybe_unload_lm(settings, "scene analysis finished (script beats)", log)
         return [{"index": s.index, "start": s.start, "end": s.end, "title": s.title,
                  "voice_text": s.voice_text, "visual_direction": s.visual_direction,
                  "screen_text": s.screen_text, "music_note": s.music_note,
@@ -125,28 +137,35 @@ def run_scene_analysis(
     # boundaries from "jumping" run to run.
     try:
         log("Сегментация сцен по эмбеддингам...")
-        scenes = scene_tools.build_scenes_by_embedding(
-            t_segments, base_url, embed_model, fallback=False, ttl_seconds=ttl,
-            min_seconds=seg_min, max_seconds=seg_max, sensitivity=seg_sensitivity, target_scenes=seg_target,
-            log_callback=log,
-        )
-        # Free the embedding model from VRAM (same auto-unload policy as the main
-        # model) before the LLM labelling step loads the chat model.
-        _maybe_unload_lm(settings, "embedding segmentation finished", log, model=embed_model)
-        log(f"Границы по эмбеддингам: {len(scenes)} сцен; озаглавливаю через LLM...")
         try:
-            scenes = scene_tools.enrich_scenes_with_lm(
-                scenes, base_url, model, ttl_seconds=ttl,
-                style_anchor=style_anchor,
-                character_description=character_description,
-                video_style=video_style,
+            scenes = scene_tools.build_scenes_by_embedding(
+                t_segments, base_url, embed_model, fallback=False, ttl_seconds=ttl,
+                min_seconds=seg_min, max_seconds=seg_max, sensitivity=seg_sensitivity, target_scenes=seg_target,
+                log_callback=log,
             )
-        except Exception as exc:
-            log(f"LLM-озаглавливание не удалось ({exc}); оставляю эвристические заголовки")
+        finally:
+            # The embeddings endpoint may have loaded a model even when the
+            # request later failed. Always apply the unload policy before the
+            # chat fallback so both models do not compete for VRAM.
+            _maybe_unload_lm(
+                settings, "embedding segmentation finished", log, model=embed_model,
+            )
+        log(f"Границы по эмбеддингам: {len(scenes)} сцен; озаглавливаю через LLM...")
+        _ensure_lm_context(settings, log)
+        scenes = scene_tools.enrich_scenes_with_lm(
+            scenes, base_url, model, ttl_seconds=ttl,
+            style_anchor=style_anchor,
+            character_description=character_description,
+            video_style=video_style,
+            log_callback=log,
+            require_all=True,
+            allow_plain_json_fallback=True,
+        )
     except Exception as exc:
         # No embedding model available — fall back to LLM grouping, then duration.
         log(f"Эмбеддинги недоступны ({exc}); группирую сцены через LLM...")
         try:
+            _ensure_lm_context(settings, log)
             scenes = scene_tools.call_lm_studio_for_segments(
                 base_url, model, t_segments, ttl_seconds=ttl,
                 style_anchor=style_anchor,
@@ -154,8 +173,9 @@ def run_scene_analysis(
                 video_style=video_style,
             )
         except Exception as exc2:
-            log(f"LLM-группировка не удалась ({exc2}); режу по длительности")
-            scenes = scene_tools.build_scenes_from_segments(t_segments)
+            raise RuntimeError(
+                f"LM Studio не смогла выполнить анализ сцен: {exc2}"
+            ) from exc2
 
     _maybe_unload_lm(settings, "scene analysis finished", log)
 
@@ -207,6 +227,11 @@ def run_shot_generation(
         if settings.get("reference_enable", True)
         else "off"
     )
+    global_visual_plan: list[dict[str, object]] = []
+
+    def capture_visual_plan(items: list[dict[str, object]]) -> None:
+        global_visual_plan[:] = items
+
     shots = shot_planner.call_lm_studio_for_shots(
         base_url, model, pipeline_scenes, image_pref,
         segments=pipeline_segments, ttl_seconds=ttl,
@@ -221,6 +246,17 @@ def run_shot_generation(
         # selector (no stock — the style stays fully generated).
         ai_route_mix=(shot_mode == "ai"),
         reference_density=reference_density,
+        on_visual_plan=capture_visual_plan,
+    )
+    if not global_visual_plan:
+        raise ValueError("LM Studio не вернула обязательный глобальный визуальный план")
+    atomic_write_text(
+        project_dir / "03_global_visual_plan.json",
+        json.dumps(global_visual_plan, ensure_ascii=False, indent=2),
+    )
+    log(
+        f"Глобальный визуальный план сохранён: "
+        f"{project_dir / '03_global_visual_plan.json'}"
     )
 
     _maybe_unload_lm(settings, "shot list generation finished", log)
@@ -241,6 +277,20 @@ def run_shot_generation(
         n_stock = sum(1 for s in shots if (s.visual_type or '').lower() == 'stock_video')
         log(f"Гибрид: сток-кадры разбиты на ≤{cut}с; всего кадров {len(shots)} (стоковых {n_stock})")
 
+    # A stock cut is a timeline decision, not a new visual concept.  Collapse
+    # identical pieces back to one source card, then remove slots too short to
+    # justify their generation.  Export still trims that source to the exact
+    # final timeline range.
+    shots = shot_tools.collapse_redundant_shot_runs(
+        shots,
+        log_callback=log,
+    )
+    shots = shot_tools.enforce_minimum_shot_durations(
+        shots,
+        pipeline_scenes,
+        log_callback=log,
+    )
+
     log("Building asset board...")
     cards = board_store.build_asset_board(project_dir, shots=shots)
 
@@ -251,6 +301,7 @@ def run_shot_generation(
                   "image_prompt": s.image_prompt, "video_prompt": s.video_prompt,
                   "screen_text": s.screen_text, "motion": s.motion,
                   "priority": s.priority, "fallback": s.fallback,
-                  "sfx_query": getattr(s, "sfx_query", "")} for s in shots]
+                  "sfx_query": getattr(s, "sfx_query", ""),
+                  "sfx_accent_query": getattr(s, "sfx_accent_query", "")} for s in shots]
 
     return shots_out, _to_cards(cards)

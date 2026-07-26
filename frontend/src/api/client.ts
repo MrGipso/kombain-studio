@@ -1,4 +1,4 @@
-import type { ProjectInfo, ProjectDetail, ProjectState, ProjectJobs, ProjectRunLogs, AssetCard, AssetQASummary, AssetVariantHistory, AssetVariantSelection, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle, MusicState, SfxState, SfxItem, ScriptState, ExportMode, ExportProfileCatalog, ExportProfileName, MasterManifestInfo } from './types'
+import type { ProjectInfo, ProjectDetail, ProjectState, ProjectJobs, ProjectRunLogs, AssetCard, AssetQASummary, AssetVariantHistory, AssetVariantSelection, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle, MusicState, SfxState, SfxItem, ScriptState, ExportMode, ExportProfileCatalog, ExportProfileName, MasterManifestInfo, Scene, VoicePlan, VoiceProfile, YoutubeInspection, TranscriptionSource } from './types'
 
 const BASE = '/api'
 
@@ -78,6 +78,15 @@ export const saveTimelineSettings = (id: string, data: { voice_start: string }) 
   })
 
 // Transcription
+export const getTranscriptionSource = (projectId: string) =>
+  r<TranscriptionSource>(`/projects/${encodeURIComponent(projectId)}/transcription-source`)
+export const getNarrationSource = (projectId: string) =>
+  r<TranscriptionSource>(`/projects/${encodeURIComponent(projectId)}/transcription-source/narration`)
+export const selectNarrationForTranscription = (projectId: string) =>
+  r<TranscriptionSource>(
+    `/projects/${encodeURIComponent(projectId)}/transcription-source/narration`,
+    { method: 'POST' },
+  )
 export const uploadAudio = async (projectId: string, file: File): Promise<{ path: string; filename: string }> => {
   const form = new FormData()
   form.append('file', file)
@@ -90,9 +99,9 @@ export const uploadAudio = async (projectId: string, file: File): Promise<{ path
 }
 
 // Scenes
-export const getScenes = (id: string) => r(`/projects/${encodeURIComponent(id)}/scenes`)
-export const updateScene = (id: string, index: number, data: Record<string, unknown>) =>
-  r(`/projects/${encodeURIComponent(id)}/scenes/${index}`, {
+export const getScenes = (id: string) => r<Scene[]>(`/projects/${encodeURIComponent(id)}/scenes`)
+export const updateScene = (id: string, index: number, data: Partial<Scene>) =>
+  r<Scene>(`/projects/${encodeURIComponent(id)}/scenes/${index}`, {
     method: 'PUT',
     body: JSON.stringify(data),
   })
@@ -174,9 +183,9 @@ export const updateCard = (id: string, cardIndex: number, data: Partial<AssetCar
     headers: boardHeaders(id),
     body: JSON.stringify(data),
   }, (response) => rememberBoardWriteRevision(id, response))
-export const generateCard = (id: string, cardIndex: number, cardId: string, mode: string = 'route', skipStock = false, forceFull = false) =>
+export const generateCard = (id: string, cardIndex: number, cardId: string, mode: string = 'route', skipStock = false, forceFull = false, deferQa = false) =>
   r<{ ok: boolean; card?: AssetCard }>(
-    `/projects/${encodeURIComponent(id)}/generate/${cardIndex}?mode=${mode}${skipStock ? '&skip_stock=true' : ''}${forceFull ? '&force_full=true' : ''}`, {
+    `/projects/${encodeURIComponent(id)}/generate/${cardIndex}?mode=${mode}${skipStock ? '&skip_stock=true' : ''}${forceFull ? '&force_full=true' : ''}${deferQa ? '&defer_qa=true' : ''}`, {
     method: 'POST',
     headers: cardOperationHeaders(id, cardId),
   }, (response) => rememberBoardWriteRevision(id, response))
@@ -238,7 +247,7 @@ export const getPresets = () => r<Preset[]>('/presets')
 
 // Diagnostics — test external dependencies
 export interface DiagnosticResult { target: string; ok: boolean; message: string; detail?: string }
-export const runDiagnostic = (target: 'lm' | 'embed' | 'comfy' | 'ffmpeg' | 'whisper' | 'woosh') =>
+export const runDiagnostic = (target: 'lm' | 'embed' | 'comfy' | 'ffmpeg' | 'whisper' | 'omnivoice' | 'woosh') =>
   r<DiagnosticResult>(`/diagnostics/${target}`)
 
 // Validation
@@ -293,23 +302,94 @@ export const generateBeatText = (id: string, beatIndex: number) =>
 export const exportScript = (id: string) =>
   r<{ ok: boolean; text: string; path: string; words: number; est_minutes: number; missing_beats: number[] }>(
     `/projects/${encodeURIComponent(id)}/script/export`, { method: 'POST' })
+export const importScriptText = (id: string, data: { mode: 'ready' | 'rewrite'; text: string; target_minutes?: number; source_name?: string }) =>
+  r<ScriptState>(`/projects/${encodeURIComponent(id)}/script/import-text`, {
+    method: 'POST', body: JSON.stringify(data),
+  })
+export const importScriptFile = async (id: string, file: File, mode: 'ready' | 'rewrite', targetMinutes?: number): Promise<ScriptState> => {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('mode', mode)
+  if (targetMinutes) form.append('target_minutes', String(targetMinutes))
+  const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/script/import-file`, { method: 'POST', body: form })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+export const inspectYoutubeSubtitles = (id: string, url: string) =>
+  r<YoutubeInspection>(`/projects/${encodeURIComponent(id)}/script/youtube/inspect`, {
+    method: 'POST', body: JSON.stringify({ url }),
+  })
+export const importYoutubeSubtitles = (id: string, data: { url: string; language: string; kind: string; fallback_language?: string; fallback_kind?: string; target_minutes?: number; source_duration_sec?: number }) =>
+  r<ScriptState>(`/projects/${encodeURIComponent(id)}/script/youtube/import`, {
+    method: 'POST', body: JSON.stringify(data),
+  })
+export const processScript = (id: string, rewriteStyle = 'deep', targetMinutes?: number) =>
+  r<ScriptState>(`/projects/${encodeURIComponent(id)}/script/process`, {
+    method: 'POST', body: JSON.stringify({ rewrite_style: rewriteStyle, target_minutes: targetMinutes }),
+  })
+export const startRewriteAgent = (id: string) =>
+  `/projects/${encodeURIComponent(id)}/script/agent-stream`
+export const expandScript = (id: string) =>
+  r<ScriptState>(`/projects/${encodeURIComponent(id)}/script/expand`, { method: 'POST' })
+export const acceptActualScriptDuration = (id: string) =>
+  r<ScriptState>(`/projects/${encodeURIComponent(id)}/script/accept-actual`, { method: 'POST' })
+export const createVoicePlan = (id: string, speed = 1, pauseScale = 1) =>
+  r<{ script: ScriptState; plan: VoicePlan }>(`/projects/${encodeURIComponent(id)}/script/voice-plan`, {
+    method: 'POST', body: JSON.stringify({ speed, pause_scale: pauseScale }),
+  })
+export const getVoiceProfiles = (id: string) =>
+  r<VoiceProfile[]>(`/projects/${encodeURIComponent(id)}/voices`)
+export const transcribeReferenceVoice = async (id: string, file: File): Promise<{ text: string; language: string; segments: { start: string; end: string; text: string }[] }> => {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/voices/reference/transcribe`, { method: 'POST', body: form })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+export const addReferenceVoice = async (id: string, file: File, data: { display_name: string; language: string; transcript: string }): Promise<VoiceProfile> => {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('display_name', data.display_name)
+  form.append('language', data.language)
+  form.append('transcript', data.transcript)
+  const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/voices/reference`, { method: 'POST', body: form })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+export interface VoiceRenderSettings {
+  speed: number
+  pause_scale: number
+  num_step: number
+  guidance_scale: number
+  denoise: boolean
+  postprocess_output: boolean
+  device: 'auto' | 'cuda' | 'cpu' | 'mps'
+}
+export const renderOmniVoice = (id: string, profileId: string, settings: VoiceRenderSettings) =>
+  r<{ ok: boolean; script: ScriptState; path: string; duration_sec: number }>(`/projects/${encodeURIComponent(id)}/tts/render`, {
+    method: 'POST', body: JSON.stringify({ profile_id: profileId, ...settings }),
+  })
+export const startOmniVoiceRender = (id: string) =>
+  `/projects/${encodeURIComponent(id)}/tts/render-stream`
 
 // SFX (per-shot ambience layer)
 export const getSfx = (id: string) => r<SfxState>(`/projects/${encodeURIComponent(id)}/sfx`)
-export const setSfxQuery = (id: string, cardIndices: number[], sfxQuery: string) =>
+export type SfxTarget = 'ambience' | 'accent'
+export const setSfxQuery = (id: string, cardIndices: number[], sfxQuery: string, target: SfxTarget = 'ambience') =>
   r<{ ok: boolean; items: SfxItem[] }>(`/projects/${encodeURIComponent(id)}/sfx/query`, {
     method: 'PUT',
-    body: JSON.stringify({ card_indices: cardIndices, sfx_query: sfxQuery }),
+    body: JSON.stringify({ card_indices: cardIndices, sfx_query: sfxQuery, target }),
   })
-export const generateSfx = (id: string, cardIndices: number[], fresh = false) =>
+export const generateSfx = (id: string, cardIndices: number[], fresh = false, target: SfxTarget = 'ambience') =>
   r<{ ok: boolean; url: string; items: SfxItem[] }>(`/projects/${encodeURIComponent(id)}/sfx/generate`, {
     method: 'POST',
-    body: JSON.stringify({ card_indices: cardIndices, fresh }),
+    body: JSON.stringify({ card_indices: cardIndices, fresh, target }),
   })
-export const uploadSfx = async (id: string, cardIndices: number[], file: File): Promise<{ ok: boolean; url: string; items: SfxItem[] }> => {
+export const uploadSfx = async (id: string, cardIndices: number[], file: File, target: SfxTarget = 'ambience'): Promise<{ ok: boolean; url: string; items: SfxItem[] }> => {
   const form = new FormData()
   form.append('file', file)
   form.append('card_indices', cardIndices.join(','))
+  form.append('target', target)
   const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/sfx/upload`, { method: 'POST', body: form })
   if (!res.ok) throw new Error(await res.text())
   return res.json()

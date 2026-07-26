@@ -5,9 +5,9 @@ description = "Universal content production pipeline (transcription -> scenes ->
 requires-python = ">=3.12"  # supported and tested project baseline
 
 # Web server (backend/) runtime dependencies.
-# The web server is headless and does not require Tk or Qt. The legacy Tk entry
-# uses the Python tkinter system package; the PySide interface is the optional
-# `desktop` extra below. External tools are NOT Python packages: whisper.cpp,
+# The supported application is headless and does not require Tk or Qt.
+# Historical UI sources remain isolated for migration reference. External
+# tools are NOT Python packages: whisper.cpp,
 # ffmpeg, LM Studio and ComfyUI must be installed/run separately.
 dependencies = [
     "fastapi>=0.110",
@@ -15,14 +15,18 @@ dependencies = [
     "pydantic>=2.6",
     "python-multipart>=0.0.9",  # required by FastAPI for file uploads (transcription audio)
     "pillow>=10.0",             # perceptual-hash dedup for the stock route (optional but recommended)
+    "yt-dlp>=2025.6.30",        # subtitle-only YouTube intake for the Rewrite workflow
 ]
 
 [project.optional-dependencies]
 # Native LM Studio structured-output transport. The core client keeps an
 # OpenAI-compatible HTTP fallback, so headless installs do not require it.
 local-ai = ["lmstudio>=1.5,<2"]
-# Desktop UI (ui/, main.py, content_pipeline_qt.py). Not needed for the web server.
+# Isolated historical PySide code; not used by any supported launcher.
 desktop = ["PySide6>=6.6"]
+# Native window around the web application (launch.py). Uses the system webview,
+# so it needs no browser, no Node and no Qt. Unrelated to the `desktop` extra.
+desktop-app = ["pywebview>=5.0"]
 # Reference-insert route (Wikipedia / arXiv screenshots). Optional: without it
 # the route still works, falling back to a clean card rendered from the page's
 # API summary (needs only Pillow, already a core dep). Install for real page

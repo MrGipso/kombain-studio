@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from core import scenes
-from core.models import Scene, TranscriptSegment, seconds_to_timecode
+from core.models import Scene, TranscriptSegment, seconds_to_timecode, timecode_to_seconds
 
 
 def _segments(count: int = 4, seconds: int = 20) -> list[TranscriptSegment]:
@@ -95,6 +95,82 @@ def test_embedding_boundaries_are_repeatable(monkeypatch: pytest.MonkeyPatch):
     ]
 
 
+def test_embedding_target_one_produces_one_scene_when_duration_allows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    segments = _segments(count=4, seconds=10)
+    monkeypatch.setattr(
+        scenes,
+        "_lm_embeddings",
+        lambda *_args, **_kwargs: [[1.0, float(index)] for index in range(4)],
+    )
+
+    result = scenes.build_scenes_by_embedding(
+        segments,
+        "http://lm/v1",
+        target_scenes=1,
+        min_seconds=1,
+        max_seconds=120,
+        min_unit_words=1,
+    )
+
+    assert len(result) == 1
+    assert result[0].start == segments[0].start
+    assert result[0].end == segments[-1].end
+    assert result[0].voice_text == " ".join(segment.text for segment in segments)
+
+
+def test_embedding_partition_respects_minimum_after_maximum_splitting(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    segments = _segments(count=5, seconds=10)
+    monkeypatch.setattr(
+        scenes,
+        "_lm_embeddings",
+        lambda *_args, **_kwargs: [
+            [1.0, 0.0],
+            [0.9, 0.1],
+            [0.0, 1.0],
+            [0.1, 0.9],
+            [1.0, 0.0],
+        ],
+    )
+
+    result = scenes.build_scenes_by_embedding(
+        segments,
+        "http://lm/v1",
+        target_scenes=2,
+        min_seconds=20,
+        max_seconds=30,
+        min_unit_words=1,
+        window=1,
+    )
+
+    durations = [
+        timecode_to_seconds(scene.end) - timecode_to_seconds(scene.start)
+        for scene in result
+    ]
+    assert len(result) == 2
+    assert all(20 <= duration <= 30 for duration in durations)
+    assert " ".join(scene.voice_text for scene in result) == " ".join(
+        segment.text for segment in segments
+    )
+
+
+def test_scene_partition_validator_rejects_subsecond_overlap():
+    segments = [
+        TranscriptSegment("00:00:00.000", "00:00:05.900", "First"),
+        TranscriptSegment("00:00:05.100", "00:00:10.000", "Second"),
+    ]
+    partition = [
+        scenes.make_scene_from_segments(1, [segments[0]]),
+        scenes.make_scene_from_segments(2, [segments[1]]),
+    ]
+
+    assert scenes._precise_timecode_seconds("00:00:05,900") == pytest.approx(5.9)
+    assert scenes._validate_scene_partition(partition, segments) is False
+
+
 def test_embedding_client_sorts_vectors_and_applies_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -136,6 +212,64 @@ def test_embedding_client_sorts_vectors_and_applies_ttl(
         "ttl": 30,
     }
     assert seen["timeout"] == 120
+
+
+@pytest.mark.parametrize(
+    ("items", "message"),
+    [
+        (
+            [
+                {"index": 0, "embedding": [1.0, 0.0]},
+                {"index": 0, "embedding": [0.0, 1.0]},
+            ],
+            "indexes mismatch",
+        ),
+        (
+            [
+                {"index": 0, "embedding": [1.0, 0.0]},
+                {"index": 1, "embedding": [1.0]},
+            ],
+            "dimension mismatch",
+        ),
+        (
+            [
+                {"index": 0, "embedding": [1.0, float("nan")]},
+                {"index": 1, "embedding": [0.0, 1.0]},
+            ],
+            "non-finite",
+        ),
+        (
+            [
+                {"index": 0, "embedding": []},
+                {"index": 1, "embedding": [0.0, 1.0]},
+            ],
+            "non-empty",
+        ),
+    ],
+)
+def test_embedding_client_rejects_malformed_vectors_before_segmentation(
+    monkeypatch: pytest.MonkeyPatch,
+    items: list[dict],
+    message: str,
+):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"data": items}).encode("utf-8")
+
+    monkeypatch.setattr(
+        scenes.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        scenes._lm_embeddings("http://lm/v1", "embed-model", ["one", "two"])
 
 
 def test_lm_array_parser_accepts_fences_prose_and_repairs_complete_prefix():
@@ -204,6 +338,111 @@ def test_lm_segment_parsing_keeps_source_text_and_fills_uncovered_tail(
     assert seen["timeout"] == 240
 
 
+def test_lm_segment_parsing_repairs_initial_and_middle_gaps(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    segments = _segments(count=5, seconds=10)
+    raw = [
+        {
+            "title": "Second scene",
+            "segment_ids": [2],
+            "visual_direction": "A red tram crosses a snowy square",
+        },
+        {
+            "title": "Fourth scene",
+            "segment_ids": [4],
+            "visual_direction": "A blue boat enters a quiet harbour",
+        },
+    ]
+    monkeypatch.setattr(
+        scenes.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _response(raw),
+    )
+
+    result = scenes.call_lm_studio_for_segments(
+        "http://lm/v1", "scene-model", segments
+    )
+
+    assert [scene.voice_text for scene in result] == [
+        segment.text for segment in segments
+    ]
+    assert result[0].start == segments[0].start
+    assert result[-1].end == segments[-1].end
+    assert [scene.index for scene in result] == list(range(1, len(result) + 1))
+
+
+def test_lm_segment_parsing_repairs_duplicates_and_out_of_order_ids(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    segments = _segments(count=4, seconds=10)
+    # Both the scene objects and ids inside the first object are out of order;
+    # duplicated ids must not duplicate narration in the result.
+    raw = [
+        {
+            "title": "Middle scene",
+            "segment_ids": [3, 2, 2],
+            "visual_direction": "Macro view of a green circuit board",
+        },
+        {
+            "title": "Opening scene",
+            "segment_ids": [1, 1],
+            "visual_direction": "Wide sunrise over a mountain ridge",
+        },
+    ]
+    monkeypatch.setattr(
+        scenes.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _response(raw),
+    )
+
+    result = scenes.call_lm_studio_for_segments(
+        "http://lm/v1", "scene-model", segments
+    )
+
+    assert [scene.voice_text for scene in result] == [
+        segments[0].text,
+        f"{segments[1].text} {segments[2].text}",
+        segments[3].text,
+    ]
+    flattened = " ".join(scene.voice_text for scene in result)
+    assert flattened == " ".join(segment.text for segment in segments)
+    assert [scene.index for scene in result] == [1, 2, 3]
+
+
+def test_lm_segment_parsing_rejects_sparse_range_with_distant_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    segments = _segments(count=6, seconds=10)
+    raw = [
+        {
+            "title": "Hallucinated giant range",
+            "segment_ids": [1, 6],
+            "visual_direction": "One implausibly broad scene",
+        },
+        {
+            "title": "Valid middle",
+            "segment_ids": [2, 3],
+            "visual_direction": "A focused two-part scene",
+        },
+    ]
+    monkeypatch.setattr(
+        scenes.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _response(raw),
+    )
+
+    result = scenes.call_lm_studio_for_segments(
+        "http://lm/v1", "scene-model", segments,
+    )
+
+    assert "Hallucinated giant range" not in [scene.title for scene in result]
+    assert " ".join(scene.voice_text for scene in result) == " ".join(
+        segment.text for segment in segments
+    )
+    assert any(scene.voice_text == f"{segments[1].text} {segments[2].text}" for scene in result)
+
+
 def test_enrichment_changes_labels_but_not_boundaries_or_voice(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -218,21 +457,26 @@ def test_enrichment_changes_labels_but_not_boundaries_or_voice(
         music_note="Old music",
         retention_note="Old retention",
     )
-    raw = [
-        {
-            "index": 1,
-            "title": "New title",
-            "visual_direction": "New concrete visual",
-            "screen_text": "",
-            "music_note": "New music",
-            "retention_note": "New retention",
-        },
-        {"index": "bad", "title": "Ignored"},
-    ]
+    envelope = scenes.SceneEnrichmentEnvelope(
+        scenes=[
+            scenes.SceneEnrichmentLabel(
+                index=1,
+                title="New title",
+                visual_direction="New concrete visual",
+                screen_text="",
+                music_note="New music",
+                retention_note="New retention",
+            )
+        ]
+    )
     monkeypatch.setattr(
-        scenes.urllib.request,
-        "urlopen",
-        lambda *_args, **_kwargs: _response(raw),
+        scenes.lm_client,
+        "chat_structured",
+        lambda *_args, **_kwargs: scenes.lm_client.StructuredReply(
+            value=envelope,
+            attempts=1,
+            transport="openai",
+        ),
     )
 
     result = scenes.enrich_scenes_with_lm(

@@ -172,17 +172,12 @@ def validate_shots(project: Project, scene_by_index: dict[int, dict], transcript
 
 
 def _card_route(card: dict) -> str:
-    route = str(card.get("route", "") or "").lower()
-    vt = str(card.get("visual_type", "") or "").lower()
-    if route in {"stock", "kenburns", "image", "image+video"}:
-        return route
-    if vt == "stock_video":
-        return "stock"
-    if vt == "still_kenburns":
-        return "kenburns"
-    if vt == "ai_image":
-        return "image"
-    return "image+video" if card.get("video_model") else "image"
+    # Keep the validation gate on the exact same route resolver as export.
+    # In particular, web_reference_card is a video-backed `reference` route,
+    # not a generic image+video generation request.
+    from core.export import card_route
+
+    return card_route(card)
 
 
 def _expected_visual_type(route: str) -> str:
@@ -191,6 +186,7 @@ def _expected_visual_type(route: str) -> str:
         "kenburns": "still_kenburns",
         "image": "ai_image",
         "image+video": "ai_image_then_i2v",
+        "reference": "web_reference_card",
     }.get(route, "")
 
 
@@ -231,7 +227,7 @@ def validate_asset_board(project: Project) -> list[ValidationIssue]:
             issues.append(_issue("error", "asset_board", "video_output указывает на несуществующий файл", item, path=video_output))
 
         if not excluded and not assigned_media:
-            if route in {"stock", "kenburns", "image+video"} and not video_output:
+            if route in {"stock", "kenburns", "image+video", "reference"} and not video_output:
                 level = "error" if status == "generated" else "warning"
                 issues.append(_issue(level, "asset_board", "Маршрут требует video_output, но видео отсутствует", item, route=route, status=status))
             if route == "image" and not image_output:

@@ -136,6 +136,13 @@ def test_build_reconciles_shot_and_preserves_card_identity_and_user_state(tmp_pa
         encoding="utf-8",
     )
     old = _card(
+        start="00:00:00",
+        end="00:00:06",
+        description="A new wide documentary view inside the same server room",
+        asset_query="new server room",
+        image_prompt="New concrete server room",
+        video_prompt="Slow push forward through the racks",
+        motion="slow push",
         approved=True,
         assigned_media="assets/videos/manual.mp4",
         source_license="CC BY 4.0",
@@ -171,6 +178,83 @@ def test_build_reconciles_shot_and_preserves_card_identity_and_user_state(tmp_pa
     assert rebuilt.assigned_media == old.assigned_media
     assert rebuilt.timeline_start == old.timeline_start
     assert rebuilt.source_license == old.source_license
+
+
+def test_build_invalidates_media_when_same_index_gets_a_different_plan(tmp_path):
+    project_dir = tmp_path / "changed-plan"
+    project_dir.mkdir()
+    scene = Scene(
+        index=1,
+        start="00:00:00",
+        end="00:00:05",
+        title="Printing",
+        voice_text="Printing rollers create new banknotes.",
+        visual_direction="Printing press",
+        screen_text="",
+        music_note="",
+        retention_note="",
+    )
+    (project_dir / "02_scenes.json").write_text(
+        json.dumps([asdict(scene)], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    old = _card(
+        description="Cars behind a security fence",
+        asset_query="salvage yard fence",
+        image_prompt="Damaged cars behind chain link",
+        video_prompt="Camera pans over the fence",
+        image_output=str(project_dir / "assets" / "images" / "shot_001.png"),
+        video_output=str(project_dir / "assets" / "videos" / "shot_001.mp4"),
+        assigned_media="assets/videos/manual-old.mp4",
+        source_url="https://example.test/old",
+        source_license="Old license",
+        status="generated",
+        approved=True,
+        qa_score=0.95,
+    )
+    image_path = project_dir / "assets" / "images" / "shot_001.png"
+    video_path = project_dir / "assets" / "videos" / "shot_001.mp4"
+    image_path.parent.mkdir(parents=True)
+    video_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"old image")
+    video_path.write_bytes(b"old video")
+    old.image_output = str(image_path)
+    old.video_output = str(video_path)
+    board.write_asset_board(project_dir, [old])
+    shot = Shot(
+        index=1,
+        scene_index=1,
+        start="00:00:00",
+        end="00:00:05",
+        visual_type="ai_image_then_i2v",
+        description="Close-up of working printing press rollers",
+        asset_query="printing press rollers",
+        image_model="krea2_turbo",
+        video_model="ltx2.3_i2v",
+        image_prompt="Heavy steel printing rollers under factory light",
+        video_prompt="The rollers rotate at high speed",
+        screen_text="",
+        motion="fast rotation",
+        priority="high",
+        fallback="still image",
+    )
+
+    rebuilt = board.build_asset_board(project_dir, shots=[shot])[0]
+
+    assert rebuilt.card_id != old.card_id
+    assert rebuilt.plan_fingerprint == board.media_plan_fingerprint(shot)
+    assert rebuilt.description == shot.description
+    assert rebuilt.image_prompt == shot.image_prompt
+    assert rebuilt.video_prompt == shot.video_prompt
+    assert rebuilt.route == "image+video"
+    assert rebuilt.status == "planned"
+    assert rebuilt.approved is False
+    assert rebuilt.image_output == ""
+    assert rebuilt.video_output == ""
+    assert rebuilt.assigned_media == ""
+    assert rebuilt.source_url == ""
+    assert rebuilt.source_license == ""
+    assert rebuilt.qa_score == -1.0
 
 
 def test_atomic_write_failure_keeps_previous_board(tmp_path, monkeypatch):

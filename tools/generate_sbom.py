@@ -336,7 +336,7 @@ def generate_sbom(root: Path) -> dict[str, Any]:
         "metadata": {
             "tools": [
                 {
-                    "vendor": "Pipeline Studio",
+                    "vendor": "Комбайн Studio",
                     "name": "tools/generate_sbom.py",
                 }
             ],

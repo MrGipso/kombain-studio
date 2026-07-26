@@ -8,10 +8,14 @@ models, style presets, the LM payload helper, and the Python standard library.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import statistics
 import urllib.request
+from types import SimpleNamespace
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from core import lm as lm_client
 from core.models import (
@@ -20,15 +24,64 @@ from core.models import (
     clean_script_text,
     estimate_duration_seconds,
     make_screen_text,
+    normalize_numeric_screen_text,
     seconds_to_timecode,
     split_into_blocks,
-    timecode_to_seconds,
 )
 from core.style_presets import (
     DEFAULT_VIDEO_STYLE,
     get_video_style,
     style_director_brief,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+_SCENE_ENRICHMENT_MAX_SCENES = 8
+_SCENE_ENRICHMENT_MAX_VOICE_CHARS = 12_000
+
+
+class SceneEnrichmentLabel(BaseModel):
+    """Creative metadata returned by the LM for one immutable scene."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    index: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=120)
+    visual_direction: str = Field(min_length=1, max_length=2_000)
+    screen_text: str = Field(max_length=100)
+    music_note: str = Field(max_length=500)
+    retention_note: str = Field(max_length=500)
+
+
+class SceneEnrichmentEnvelope(BaseModel):
+    """Strict response envelope for one bounded enrichment batch."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scenes: list[SceneEnrichmentLabel] = Field(
+        min_length=1,
+        max_length=_SCENE_ENRICHMENT_MAX_SCENES,
+    )
+
+
+def _precise_timecode_seconds(value: str) -> float:
+    """Parse pipeline/legacy timecodes without discarding sub-second precision."""
+    text = str(value or "").strip().replace(",", ".")
+    parts = text.split(":")
+    try:
+        if len(parts) == 3:
+            seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        elif len(parts) == 2:
+            seconds = int(parts[0]) * 60 + float(parts[1])
+        else:
+            seconds = float(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid timecode: {value!r}") from exc
+    if not math.isfinite(seconds):
+        raise ValueError(f"non-finite timecode: {value!r}")
+    return seconds
 
 
 def make_title(text: str, index: int) -> str:
@@ -97,6 +150,28 @@ def make_scene_from_segments(index: int, segments: list[TranscriptSegment]) -> S
     )
 
 
+def close_scene_timeline_gaps(
+    scenes: list[Scene],
+    *,
+    max_gap_seconds: int = 2,
+) -> list[Scene]:
+    """Absorb short transcript-rounding pauses into the preceding scene.
+
+    Whisper/imported subtitle timestamps commonly leave one-second holes even
+    though the source video is continuous.  Keeping the narration text intact,
+    extend the preceding edit scene to the next scene start so downstream shot
+    scheduling never creates black timeline gaps.
+    """
+    limit = max(0, int(max_gap_seconds))
+    for current, following in zip(scenes, scenes[1:]):
+        current_end = _precise_timecode_seconds(current.end)
+        following_start = _precise_timecode_seconds(following.start)
+        gap = following_start - current_end
+        if 0 < gap <= limit:
+            current.end = following.start
+    return scenes
+
+
 def build_heuristic_scenes(script_text: str) -> list[Scene]:
     scenes: list[Scene] = []
     cursor = 0
@@ -128,9 +203,9 @@ def build_scenes_from_segments(
 
     for segment in segments:
         if not current:
-            scene_start_seconds = timecode_to_seconds(segment.start)
+            scene_start_seconds = _precise_timecode_seconds(segment.start)
         current.append(segment)
-        duration = timecode_to_seconds(segment.end) - scene_start_seconds
+        duration = _precise_timecode_seconds(segment.end) - scene_start_seconds
         words = sum(len(item.text.split()) for item in current)
         if duration >= target_seconds or words >= 100:
             scenes.append(make_scene_from_segments(len(scenes) + 1, current))
@@ -139,7 +214,7 @@ def build_scenes_from_segments(
     if current:
         scenes.append(make_scene_from_segments(len(scenes) + 1, current))
 
-    return scenes
+    return close_scene_timeline_gaps(scenes)
 
 
 def _lm_embeddings(
@@ -161,10 +236,39 @@ def _lm_embeddings(
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = json.loads(response.read().decode("utf-8"))
-    items = sorted(data.get("data", []), key=lambda item: item.get("index", 0))
-    embeddings = [item["embedding"] for item in items]
-    if len(embeddings) != len(texts):
-        raise ValueError(f"embedding count mismatch: {len(embeddings)} != {len(texts)}")
+    raw_items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(raw_items, list):
+        raise ValueError("embedding response must contain a data array")
+    try:
+        items = sorted(raw_items, key=lambda item: item["index"])
+    except (KeyError, TypeError) as exc:
+        raise ValueError("embedding response contains an invalid item") from exc
+    indices = [item.get("index") for item in items if isinstance(item, dict)]
+    if any(type(index) is not int for index in indices) or indices != list(range(len(texts))):
+        raise ValueError(
+            f"embedding indexes mismatch: {indices!r} != {list(range(len(texts)))!r}"
+        )
+
+    embeddings: list[list[float]] = []
+    dimension: int | None = None
+    for item in items:
+        vector = item.get("embedding")
+        if not isinstance(vector, list) or not vector:
+            raise ValueError("embedding vector must be a non-empty array")
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in vector
+        ):
+            raise ValueError("embedding vector contains a non-finite or non-numeric value")
+        if dimension is None:
+            dimension = len(vector)
+        elif len(vector) != dimension:
+            raise ValueError(
+                f"embedding dimension mismatch: {len(vector)} != {dimension}"
+            )
+        embeddings.append([float(value) for value in vector])
     return embeddings
 
 
@@ -195,10 +299,10 @@ def _merge_segments_into_units(
     unit_start = 0.0
     for segment in segments:
         if not current:
-            unit_start = timecode_to_seconds(segment.start)
+            unit_start = _precise_timecode_seconds(segment.start)
         current.append(segment)
         words += len((segment.text or "").split())
-        duration = timecode_to_seconds(segment.end) - unit_start
+        duration = _precise_timecode_seconds(segment.end) - unit_start
         ends_sentence = (segment.text or "").rstrip().endswith((".", "!", "?", "…"))
         if (words >= min_words and ends_sentence) or duration >= max_unit_seconds:
             units.append(current)
@@ -232,6 +336,300 @@ def _depth_scores(gap_scores: list[float]) -> list[float]:
             + gap_scores[right] - gap_scores[index]
         )
     return depths
+
+
+def _is_exact_index_partition(groups: list[list[int]], item_count: int) -> bool:
+    """Return whether *groups* cover ``range(item_count)`` exactly once.
+
+    Scene construction has several repair/fallback paths.  Keeping this small
+    invariant check next to the partitioners prevents a locally plausible
+    group list from silently dropping, duplicating, or reordering narration.
+    """
+    cursor = 0
+    for group in groups:
+        if not group or group != list(range(cursor, cursor + len(group))):
+            return False
+        cursor += len(group)
+    return cursor == item_count
+
+
+def _validate_scene_partition(
+    scenes: list[Scene], segments: list[TranscriptSegment]
+) -> bool:
+    """Validate exact transcript coverage and monotone scene metadata.
+
+    The validator deliberately compares ``voice_text`` with the source
+    transcript instead of trusting LLM-produced text.  It accepts gaps between
+    source timecodes, but rejects backwards scene starts/ends and requires each
+    scene boundary to coincide with a source segment boundary.
+    """
+    if not segments:
+        return not scenes
+    if not scenes:
+        return False
+
+    cursor = 0
+    previous_end: float | None = None
+    for expected_index, scene in enumerate(scenes, start=1):
+        if scene.index != expected_index or cursor >= len(segments):
+            return False
+        if scene.start != segments[cursor].start:
+            return False
+
+        try:
+            start_seconds = _precise_timecode_seconds(scene.start)
+            end_seconds = _precise_timecode_seconds(scene.end)
+        except (TypeError, ValueError):
+            return False
+        if end_seconds < start_seconds:
+            return False
+        if previous_end is not None and start_seconds < previous_end:
+            return False
+
+        text_parts: list[str] = []
+        matched_end: int | None = None
+        for segment_index in range(cursor, len(segments)):
+            segment = segments[segment_index]
+            text_parts.append((segment.text or "").strip())
+            voice_matches = (
+                " ".join(text_parts).strip() == (scene.voice_text or "").strip()
+            )
+            closes_on_segment = segment.end == scene.end
+            closes_on_next_start = (
+                segment_index + 1 < len(segments)
+                and segments[segment_index + 1].start == scene.end
+            )
+            if voice_matches and (closes_on_segment or closes_on_next_start):
+                matched_end = segment_index + 1
+                break
+        if matched_end is None:
+            return False
+
+        cursor = matched_end
+        previous_end = end_seconds
+
+    return cursor == len(segments)
+
+
+def _constrained_unit_partition(
+    units: list[list[TranscriptSegment]],
+    depths: list[float],
+    preferred_boundaries: set[int],
+    *,
+    min_seconds: int,
+    max_seconds: int,
+    desired_scenes: int,
+) -> list[list[int]]:
+    """Partition units while satisfying duration limits whenever possible.
+
+    This is a compact dynamic program over contiguous unit ranges.  Duration
+    violations are minimized first; among equally valid partitions it chooses
+    the scene count closest to ``desired_scenes`` and then the strongest
+    semantic boundaries.  Consequently a requested target never creates short
+    fragments when a zero-violation partition exists, while indivisible long
+    units and awkward tails still receive a deterministic best-effort result.
+    """
+    item_count = len(units)
+    if item_count == 0:
+        return []
+
+    minimum = max(0.0, float(min_seconds))
+    maximum = max(minimum, float(max_seconds))
+    desired = max(1, min(int(desired_scenes), item_count))
+    preferred_bonus = max(depths, default=0.0) + 1.0
+
+    def duration(start: int, end: int) -> float:
+        return _precise_timecode_seconds(
+            units[end - 1][-1].end
+        ) - _precise_timecode_seconds(
+            units[start][0].start
+        )
+
+    # states[position][count] =
+    # (total duration violation, semantic score, previous position, previous count)
+    states: list[dict[int, tuple[float, float, int | None, int | None]]] = [
+        {} for _ in range(item_count + 1)
+    ]
+    states[0][0] = (0.0, 0.0, None, None)
+
+    for start in range(item_count):
+        if not states[start]:
+            continue
+        for end in range(start + 1, item_count + 1):
+            span = duration(start, end)
+            shortfall = max(0.0, minimum - span)
+            overflow = max(0.0, span - maximum)
+            violation = shortfall + overflow
+            boundary_score = 0.0
+            if end < item_count:
+                gap_index = end - 1
+                boundary_score = depths[gap_index]
+                if gap_index in preferred_boundaries:
+                    boundary_score += preferred_bonus
+
+            for count, state in list(states[start].items()):
+                new_count = count + 1
+                candidate = (
+                    state[0] + violation,
+                    state[1] + boundary_score,
+                    start,
+                    count,
+                )
+                current = states[end].get(new_count)
+                if current is None or (candidate[0], -candidate[1]) < (
+                    current[0],
+                    -current[1],
+                ):
+                    states[end][new_count] = candidate
+
+            # With monotone transcript timecodes, every later range can only
+            # increase an existing overflow.  Keeping the first over-limit
+            # range permits best-effort recovery without making the DP cubic.
+            if span > maximum:
+                break
+
+    if not states[item_count]:
+        return [list(range(item_count))]
+
+    final_count, _ = min(
+        states[item_count].items(),
+        key=lambda item: (
+            item[1][0],
+            abs(item[0] - desired),
+            -item[1][1],
+            item[0],
+        ),
+    )
+    groups: list[list[int]] = []
+    end = item_count
+    count = final_count
+    while end > 0:
+        state = states[end][count]
+        start = state[2]
+        previous_count = state[3]
+        if start is None or previous_count is None:
+            return [list(range(item_count))]
+        groups.append(list(range(start, end)))
+        end = start
+        count = previous_count
+    groups.reverse()
+    return groups
+
+
+def partition_segments_by_duration(
+    segments: list[TranscriptSegment],
+    *,
+    min_seconds: int = 20,
+    max_seconds: int = 90,
+    target_seconds: int = 45,
+) -> list[list[TranscriptSegment]]:
+    """Split a transcript range into balanced, sentence-aligned edit scenes.
+
+    This is intentionally independent from embeddings: authored script beats
+    already provide the semantic chapter boundaries.  Inside each chapter we
+    only need deterministic edit-sized scenes whose boundaries remain attached
+    to real transcript timestamps.
+
+    Duration constraints have priority.  Among equally valid partitions the
+    dynamic program prefers scene lengths near ``target_seconds`` and natural
+    sentence/pause boundaries.  Every source segment is returned exactly once.
+    """
+    if not segments:
+        return []
+
+    minimum = max(0.0, float(min_seconds))
+    maximum = max(minimum, float(max_seconds))
+    target = min(maximum, max(minimum or 1.0, float(target_seconds)))
+    item_count = len(segments)
+    total_duration = max(
+        0.0,
+        _precise_timecode_seconds(segments[-1].end)
+        - _precise_timecode_seconds(segments[0].start),
+    )
+    desired = max(1, int(round(total_duration / target)))
+    desired = max(desired, int(math.ceil(total_duration / maximum)))
+    desired = min(desired, item_count)
+
+    # states[position][count] =
+    # (duration_violation, target_deviation, -boundary_quality, prev_position)
+    states: list[
+        dict[int, tuple[float, float, float, int | None]]
+    ] = [{} for _ in range(item_count + 1)]
+    states[0][0] = (0.0, 0.0, 0.0, None)
+
+    def span_duration(start: int, end: int) -> float:
+        return (
+            _precise_timecode_seconds(segments[end - 1].end)
+            - _precise_timecode_seconds(segments[start].start)
+        )
+
+    def boundary_quality(end: int) -> float:
+        if end >= item_count:
+            return 0.0
+        previous = segments[end - 1]
+        following = segments[end]
+        score = 1.0 if (previous.text or "").rstrip().endswith((".", "!", "?", "…")) else 0.0
+        gap = (
+            _precise_timecode_seconds(following.start)
+            - _precise_timecode_seconds(previous.end)
+        )
+        return score + min(2.0, max(0.0, gap))
+
+    for start in range(item_count):
+        if not states[start]:
+            continue
+        for end in range(start + 1, item_count + 1):
+            duration = span_duration(start, end)
+            violation = max(0.0, minimum - duration) + max(0.0, duration - maximum)
+            deviation = abs(duration - target)
+            quality = boundary_quality(end)
+            for count, state in list(states[start].items()):
+                new_count = count + 1
+                candidate = (
+                    state[0] + violation,
+                    state[1] + deviation,
+                    state[2] - quality,
+                    start,
+                )
+                current = states[end].get(new_count)
+                if current is None or candidate[:3] < current[:3]:
+                    states[end][new_count] = candidate
+            # Keep the first over-limit candidate for best-effort recovery, but
+            # later endpoints can only increase the overflow.
+            if duration > maximum:
+                break
+
+    if not states[item_count]:
+        return [list(segments)]
+
+    final_count, _ = min(
+        states[item_count].items(),
+        key=lambda item: (
+            item[1][0],
+            abs(item[0] - desired),
+            item[1][1],
+            item[1][2],
+            item[0],
+        ),
+    )
+    ranges: list[tuple[int, int]] = []
+    end = item_count
+    count = final_count
+    while end > 0:
+        state = states[end][count]
+        start = state[3]
+        if start is None:
+            return [list(segments)]
+        ranges.append((start, end))
+        end = start
+        count -= 1
+    ranges.reverse()
+
+    groups = [segments[start:end] for start, end in ranges]
+    flattened = [segment for group in groups for segment in group]
+    if flattened != segments:
+        return [list(segments)]
+    return groups
 
 
 def build_scenes_by_embedding(
@@ -278,9 +676,15 @@ def build_scenes_by_embedding(
     ]
     depths = _depth_scores(gaps)
 
-    if target_scenes and target_scenes > 1:
+    try:
+        requested_target = max(0, int(target_scenes))
+    except (TypeError, ValueError):
+        requested_target = 0
+
+    if requested_target:
+        requested_target = min(requested_target, len(units))
         order = sorted(range(gap_count), key=lambda index: depths[index], reverse=True)
-        chosen = set(order[: max(0, int(target_scenes) - 1)])
+        chosen = set(order[: requested_target - 1])
     else:
         mean_depth = statistics.fmean(depths) if depths else 0.0
         std_depth = statistics.pstdev(depths) if len(depths) > 1 else 0.0
@@ -291,48 +695,30 @@ def build_scenes_by_embedding(
             if depths[index] > 0 and depths[index] >= cutoff
         }
 
-    groups: list[list[int]] = []
+    semantic_groups: list[list[int]] = []
     start = 0
     for index in range(gap_count):
         if index in chosen:
-            groups.append(list(range(start, index + 1)))
+            semantic_groups.append(list(range(start, index + 1)))
             start = index + 1
-    groups.append(list(range(start, len(units))))
+    semantic_groups.append(list(range(start, len(units))))
 
-    def group_duration(group: list[int]) -> float:
-        return timecode_to_seconds(units[group[-1]][-1].end) - timecode_to_seconds(
-            units[group[0]][0].start
-        )
-
-    changed = True
-    while changed and len(groups) > 1:
-        changed = False
-        for index, group in enumerate(groups):
-            if group_duration(group) < min_seconds:
-                if index + 1 < len(groups):
-                    groups[index + 1] = group + groups[index + 1]
-                else:
-                    groups[index - 1] = groups[index - 1] + group
-                groups.pop(index)
-                changed = True
-                break
-
-    def split_long(group: list[int]) -> list[list[int]]:
-        if group_duration(group) <= max_seconds or len(group) < 2:
-            return [group]
-        cut = max(group[:-1], key=lambda unit_index: depths[unit_index])
-        left = [unit_index for unit_index in group if unit_index <= cut]
-        right = [unit_index for unit_index in group if unit_index > cut]
-        return split_long(left) + split_long(right)
-
-    final: list[list[int]] = []
-    for group in groups:
-        final.extend(split_long(group))
+    desired_scenes = requested_target or len(semantic_groups)
+    final = _constrained_unit_partition(
+        units,
+        depths,
+        chosen,
+        min_seconds=min_seconds,
+        max_seconds=max_seconds,
+        desired_scenes=desired_scenes,
+    )
+    if not _is_exact_index_partition(final, len(units)):
+        return build_scenes_from_segments(segments)
 
     if log_callback:
         log_callback(
             f"TextTiling: реплик={len(units)}, границ={len(final) - 1}, сцен={len(final)} "
-            f"(sensitivity={sensitivity}, target={target_scenes or 'auto'}, окно={block_window})"
+            f"(sensitivity={sensitivity}, target={requested_target or 'auto'}, окно={block_window})"
         )
 
     scenes: list[Scene] = []
@@ -341,6 +727,9 @@ def build_scenes_by_embedding(
             segment for unit_index in group for segment in units[unit_index]
         ]
         scenes.append(make_scene_from_segments(scene_index, scene_segments))
+    close_scene_timeline_gaps(scenes)
+    if not _validate_scene_partition(scenes, segments):
+        return build_scenes_from_segments(segments)
     return scenes
 
 
@@ -420,6 +809,170 @@ def parse_lm_json_array(content: str, label: str = "LM Studio") -> list:
     )
 
 
+def _iter_scene_enrichment_batches(scenes: list[Scene]):
+    """Yield requestable batches without splitting a scene's narration.
+
+    A single narration longer than the hard request budget cannot satisfy both
+    constraints.  It is deliberately omitted from LM calls and therefore keeps
+    its existing deterministic labels; later scenes remain eligible.
+    """
+
+    batch: list[Scene] = []
+    voice_chars = 0
+    for scene in scenes:
+        scene_chars = len(scene.voice_text or "")
+        if scene_chars > _SCENE_ENRICHMENT_MAX_VOICE_CHARS:
+            if batch:
+                yield batch
+                batch = []
+                voice_chars = 0
+            continue
+        if batch and (
+            len(batch) >= _SCENE_ENRICHMENT_MAX_SCENES
+            or voice_chars + scene_chars > _SCENE_ENRICHMENT_MAX_VOICE_CHARS
+        ):
+            yield batch
+            batch = []
+            voice_chars = 0
+        batch.append(scene)
+        voice_chars += scene_chars
+    if batch:
+        yield batch
+
+
+def _letter_script_counts(text: str) -> tuple[int, int]:
+    """Return (Cyrillic, Latin) counts for a conservative language guard."""
+
+    cyrillic = 0
+    latin = 0
+    for char in text or "":
+        if not char.isalpha():
+            continue
+        codepoint = ord(char)
+        if (
+            0x0400 <= codepoint <= 0x052F
+            or 0x1C80 <= codepoint <= 0x1C8F
+            or 0x2DE0 <= codepoint <= 0x2DFF
+            or 0xA640 <= codepoint <= 0xA69F
+        ):
+            cyrillic += 1
+        elif (
+            0x0041 <= codepoint <= 0x005A
+            or 0x0061 <= codepoint <= 0x007A
+            or 0x00C0 <= codepoint <= 0x024F
+            or 0x1E00 <= codepoint <= 0x1EFF
+        ):
+            latin += 1
+    return cyrillic, latin
+
+
+def _dominant_letter_script(text: str, *, minimum_letters: int) -> str | None:
+    cyrillic, latin = _letter_script_counts(text)
+    total = cyrillic + latin
+    if total < minimum_letters:
+        return None
+    if cyrillic / total >= 0.7:
+        return "cyrillic"
+    if latin / total >= 0.7:
+        return "latin"
+    return None
+
+
+def _language_script_matches(source: str, candidate: str) -> bool:
+    """Reject only an obvious Cyrillic/Latin translation mismatch.
+
+    Numbers, very short text, mixed-script labels and short uppercase acronyms
+    are intentionally accepted.  This is a script-family guard rather than a
+    claim to distinguish, for example, Russian from Ukrainian.
+    """
+
+    source_script = _dominant_letter_script(source, minimum_letters=6)
+    if source_script is None:
+        return True
+    letters = [char for char in candidate or "" if char.isalpha()]
+    if len(letters) < 3:
+        return True
+    if len(letters) <= 6 and all(not char.islower() for char in letters):
+        return True
+    candidate_script = _dominant_letter_script(candidate, minimum_letters=3)
+    return candidate_script is None or candidate_script == source_script
+
+
+def _apply_scene_enrichment_batch(
+    batch: list[Scene], labels: list[SceneEnrichmentLabel]
+) -> bool:
+    """Validate identity and apply one response atomically to creative fields."""
+
+    expected_indices = [scene.index for scene in batch]
+    actual_indices = [label.index for label in labels]
+    if (
+        len(expected_indices) != len(set(expected_indices))
+        or len(actual_indices) != len(set(actual_indices))
+        or set(actual_indices) != set(expected_indices)
+    ):
+        return False
+
+    by_index = {label.index: label for label in labels}
+    prepared: list[tuple[Scene, tuple[str, str, str, str, str]]] = []
+    for scene in batch:
+        label = by_index[scene.index]
+        title = (
+            label.title
+            if _language_script_matches(scene.voice_text, label.title)
+            else scene.title
+        )
+        screen_text = normalize_numeric_screen_text(
+            scene.voice_text,
+            label.screen_text,
+        )
+        prepared.append(
+            (
+                scene,
+                (
+                    title,
+                    label.visual_direction,
+                    screen_text,
+                    label.music_note,
+                    label.retention_note,
+                ),
+            )
+        )
+
+    previous = [
+        (
+            scene,
+            (
+                scene.title,
+                scene.visual_direction,
+                scene.screen_text,
+                scene.music_note,
+                scene.retention_note,
+            ),
+        )
+        for scene in batch
+    ]
+    try:
+        for scene, values in prepared:
+            (
+                scene.title,
+                scene.visual_direction,
+                scene.screen_text,
+                scene.music_note,
+                scene.retention_note,
+            ) = values
+    except Exception:
+        for scene, values in previous:
+            (
+                scene.title,
+                scene.visual_direction,
+                scene.screen_text,
+                scene.music_note,
+                scene.retention_note,
+            ) = values
+        return False
+    return True
+
+
 def enrich_scenes_with_lm(
     scenes: list[Scene],
     base_url: str,
@@ -429,10 +982,15 @@ def enrich_scenes_with_lm(
     character_description: str = "",
     niche: str = "documentary",
     video_style: str = DEFAULT_VIDEO_STYLE,
+    log_callback=None,
+    require_all: bool = False,
+    allow_plain_json_fallback: bool = False,
 ) -> list[Scene]:
-    """Fill creative fields without changing fixed scene boundaries."""
+    """Fill creative fields in bounded, validated, batch-atomic LM calls."""
     if not scenes:
         return scenes
+    del niche  # retained for compatibility with analyzer/plugin call sites
+
     style = get_video_style(video_style)
     style_block = "\n" + style_director_brief(video_style, style_anchor) + "\n"
     character_block = (
@@ -440,74 +998,257 @@ def enrich_scenes_with_lm(
         if character_description
         else ""
     )
-    compact = "\n".join(
-        f"{scene.index}|{scene.start}-{scene.end}|{(scene.voice_text or '').strip()}"
-        for scene in scenes
+    style_guard = (
+        "Для документального стиля запрещены вязание, пряжа, amigurumi, "
+        "игрушечные и рукодельные материалы; показывай реальные локации "
+        "и предметы как фотореалистичный документальный кадр.\n"
+        if style.id == "documentary"
+        else ""
     )
-    prompt = (
-        f"Ты режиссёр монтажа YouTube-контента в стиле \"{style.name}\".\n\n"
-        "Границы сцен УЖЕ заданы. НЕ объединяй и НЕ разбивай их, НЕ меняй index/тайминги/текст.\n"
-        "Для КАЖДОЙ сцены по её тексту придумай поля:\n"
-        "- title — короткое название сцены;\n"
-        "- visual_direction — КОНКРЕТНОЕ описание сцены в выбранном стиле: локация, кто/что в кадре, ракурс, "
-        "эмоция, простой визуальный символ; не копируй текст диктора дословно;\n"
-        "- screen_text — короткая надпись на экран (2-7 слов) или пусто;\n"
-        "- music_note — короткая заметка по музыке;\n"
-        "- retention_note — заметка по удержанию.\n"
-        f"{style_block}{character_block}"
-        "title и screen_text — на ТОМ ЖЕ ЯЗЫКЕ, что и текст сцены (voice_text); не переводи их на русский.\n"
-        "visual_direction делай разным для соседних сцен (чередуй планы).\n"
-        "Верни ТОЛЬКО валидный JSON-массив объектов с полями: "
-        "index, title, visual_direction, screen_text, music_note, retention_note.\n"
-        "index — номер сцены из входа.\n\n"
-        "Сцены (index|start-end|текст):\n"
-        f"{compact}"
+    lm_settings = SimpleNamespace(
+        lm_url=base_url,
+        lm_model=model.strip() or "local-model",
+        lm_auto_unload=False,
+        lm_unload_delay="0",
     )
-    payload: dict = {
-        "model": model.strip() or "local-model",
-        "messages": [
+
+    def report(message: str) -> None:
+        if log_callback:
+            log_callback(message)
+
+    def short_error(exc: Exception) -> str:
+        message = lm_client.explain_error(exc).replace("\r", " ").replace("\n", " ")
+        message = re.sub(r"\s+", " ", message).strip()
+        return message[:500] + ("..." if len(message) > 500 else "")
+
+    def plain_scene_messages(scene: Scene) -> list[dict]:
+        return [
             {
                 "role": "system",
-                "content": "Отвечай только валидным JSON. Не добавляй markdown. visual_direction — буквальная физическая сцена, без метафор и символов.",
+                "content": (
+                    "Ты анализируешь РОВНО ОДНУ уже смонтированную сцену. "
+                    "Верни один JSON-объект и ничего больше. Не разбивай сцену "
+                    "на кадры, варианты или подсцены."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Стиль: {style.name}.\n"
+                    f"{style_block}{character_block}"
+                    "Проанализируй весь текст как ОДНУ монтажную сцену. "
+                    "Нужна одна суммарная режиссёрская концепция, а не список кадров.\n"
+                    "Верни РОВНО один JSON-объект с полями: index, title, "
+                    "visual_direction, screen_text, music_note, retention_note.\n"
+                    f"index обязан быть {scene.index}. Других объектов и массивов быть не должно.\n"
+                    "screen_text по умолчанию оставляй пустой строкой. Заполняй его "
+                    "ТОЛЬКО если в тексте сцены есть явная цифра, сумма, процент, дата "
+                    "или измеримое значение; надпись обязана содержать ту же цифру "
+                    "дословно, быть законченным фактом из 2–7 слов. Не используй "
+                    "screen_text для заголовков, терминов или пересказа диктора.\n"
+                    "title и непустой screen_text пиши на том же языке, что и текст сцены; "
+                    "visual_direction можно писать по-английски для следующих "
+                    "моделей генерации.\n"
+                    f"{style_guard}"
+                    f"Сцена {scene.index} | {scene.start}-{scene.end}\n"
+                    f"Текст: {(scene.voice_text or '').strip()}"
+                ),
+            },
+        ]
+
+    def parse_plain_label(scene: Scene, content: str) -> SceneEnrichmentLabel:
+        parsed = lm_client.extract_json(content)
+        if not isinstance(parsed, dict):
+            raise ValueError("LM Studio должна вернуть один JSON-объект")
+        if "scenes" in parsed:
+            values = parsed.get("scenes")
+            if not isinstance(values, list) or len(values) != 1:
+                raise ValueError(
+                    "LM Studio разбила одну сцену на несколько объектов"
+                )
+            parsed = values[0]
+        if not isinstance(parsed, dict):
+            raise ValueError("LM Studio вернула неверный объект сцены")
+
+        def bounded_text(
+            field: str,
+            max_chars: int,
+            *,
+            max_words: int | None = None,
+            reject_overflow: bool = False,
+        ) -> str:
+            value = parsed.get(field, "")
+            if not isinstance(value, str):
+                raise ValueError(f"LM Studio вернула нестроковое поле {field}")
+            text = re.sub(r"\s+", " ", value).strip()
+            if max_words is not None:
+                if reject_overflow and len(text.split()) > max_words:
+                    return ""
+                text = " ".join(text.split()[:max_words])
+            if len(text) > max_chars:
+                if reject_overflow:
+                    return ""
+                shortened = text[:max_chars].rstrip()
+                if " " in shortened:
+                    shortened = shortened.rsplit(" ", 1)[0]
+                text = shortened.rstrip(" ,.;:–—-")
+            return text
+
+        normalized = {
+            "index": scene.index,
+            "title": bounded_text("title", 120),
+            "visual_direction": bounded_text("visual_direction", 2000),
+            "screen_text": bounded_text(
+                "screen_text",
+                100,
+                max_words=7,
+                reject_overflow=True,
+            ),
+            "music_note": bounded_text("music_note", 500),
+            "retention_note": bounded_text("retention_note", 500),
+        }
+        # A one-scene request has an unambiguous identity. Some models locally
+        # renumber it to 1; keep their creative work but restore the immutable
+        # project index before strict field validation.
+        return SceneEnrichmentLabel.model_validate(normalized)
+
+    for batch in _iter_scene_enrichment_batches(scenes):
+        compact = "\n".join(
+            f"{scene.index}|{scene.start}-{scene.end}|{(scene.voice_text or '').strip()}"
+            for scene in batch
+        )
+        prompt = (
+            f"Ты режиссёр монтажа YouTube-контента в стиле \"{style.name}\".\n\n"
+            "Границы сцен УЖЕ заданы. НЕ объединяй и НЕ разбивай их, "
+            "НЕ меняй index/тайминги/текст.\n"
+            "Для КАЖДОЙ сцены по её тексту придумай поля:\n"
+            "- title — короткое название сцены;\n"
+            "- visual_direction — КОНКРЕТНОЕ описание сцены в выбранном стиле: "
+            "локация, кто/что в кадре, ракурс, эмоция;\n"
+            "- screen_text — ПО УМОЛЧАНИЮ пустая строка. Заполняй ТОЛЬКО для "
+            "явной цифры/суммы/процента/даты/измеримого значения из voice_text; "
+            "надпись обязана содержать ту же цифру дословно и быть законченным "
+            "фактом из 2-7 слов. Не используй заголовки, термины и пересказ;\n"
+            "- music_note — короткая заметка по музыке;\n"
+            "- retention_note — заметка по удержанию.\n"
+            f"{style_block}{character_block}"
+            "title и непустой screen_text — на ТОМ ЖЕ ЯЗЫКЕ, что и voice_text; не переводи.\n"
+            "Верни ТОЛЬКО JSON-объект {\"scenes\": [...]}. В массиве должен быть "
+            "ровно один объект для каждого входного index и никаких других объектов.\n"
+            "Поля объекта: index, title, visual_direction, screen_text, music_note, "
+            "retention_note. Не возвращай start, end или voice_text.\n\n"
+            "Сцены (index|start-end|текст):\n"
+            f"{compact}"
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Отвечай только валидным JSON по заданной схеме. Не добавляй markdown. "
+                    "visual_direction — буквальная физическая сцена."
+                ),
             },
             {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.3,
-    }
-    lm_client.add_ttl(payload, ttl_seconds)
-    request = urllib.request.Request(
-        base_url.rstrip("/") + "/chat/completions",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=240) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    content = data["choices"][0]["message"]["content"].strip()
-    raw = parse_lm_json_array(content, "LM scene enrichment")
-    by_index: dict[int, dict] = {}
-    for item in raw:
+        ]
+        indices = [scene.index for scene in batch]
         try:
-            by_index[int(item.get("index"))] = item
-        except (TypeError, ValueError):
-            continue
-    for scene in scenes:
-        item = by_index.get(scene.index)
-        if not item:
-            continue
-        scene.title = str(item.get("title", scene.title)).strip() or scene.title
-        scene.visual_direction = (
-            str(item.get("visual_direction", scene.visual_direction)).strip()
-            or scene.visual_direction
-        )
-        scene.screen_text = str(item.get("screen_text", scene.screen_text)).strip()
-        scene.music_note = (
-            str(item.get("music_note", scene.music_note)).strip() or scene.music_note
-        )
-        scene.retention_note = (
-            str(item.get("retention_note", scene.retention_note)).strip()
-            or scene.retention_note
-        )
+            reply = lm_client.chat_structured(
+                lm_settings,
+                messages,
+                SceneEnrichmentEnvelope,
+                model=model.strip() or "local-model",
+                transport="openai",
+                temperature=0.3,
+                max_tokens=4096,
+                timeout=240,
+                ttl=ttl_seconds,
+                schema_name="scene_enrichment_batch",
+            )
+            envelope = reply.value
+            if not isinstance(envelope, SceneEnrichmentEnvelope):
+                raise ValueError(
+                    f"unexpected structured value for scenes {indices}"
+                )
+            if not _apply_scene_enrichment_batch(batch, envelope.scenes):
+                raise ValueError(
+                    f"LM Studio returned non-exact scene indexes for batch {indices}"
+                )
+        except Exception as exc:
+            strict_error = short_error(exc)
+            logger.warning(
+                "Scene enrichment failed for batch %s: %s",
+                indices,
+                strict_error,
+            )
+            if not allow_plain_json_fallback:
+                if require_all:
+                    raise RuntimeError(
+                        f"LM Studio не проанализировала сцены {indices}: {strict_error}"
+                    ) from exc
+                continue
+
+            report(
+                f"LM Studio: strict JSON Schema недоступна для сцен {indices}; "
+                "повторяю анализ обычным JSON."
+            )
+            try:
+                plain_labels: list[SceneEnrichmentLabel] = []
+                for scene in batch:
+                    last_scene_error: Exception | None = None
+                    for plain_attempt in range(2):
+                        retry_messages = plain_scene_messages(scene)
+                        if plain_attempt:
+                            retry_messages[-1]["content"] += (
+                                "\n\nПРЕДЫДУЩИЙ ОТВЕТ БЫЛ СИНТАКСИЧЕСКИ ПОВРЕЖДЁН. "
+                                "Повтори с нуля: один компактный JSON-объект, двойные "
+                                "кавычки у всех ключей и строк, без переносов внутри строк, "
+                                "без markdown и комментариев."
+                            )
+                            report(
+                                f"LM Studio: повторяю повреждённый JSON для сцены "
+                                f"{scene.index} (2/2)."
+                            )
+                        try:
+                            content = lm_client.chat(
+                                lm_settings,
+                                retry_messages,
+                                temperature=0.2 if plain_attempt else 0.25,
+                                timeout=240,
+                                ttl=ttl_seconds,
+                                max_tokens=1200,
+                            )
+                            plain_labels.append(parse_plain_label(scene, content))
+                            last_scene_error = None
+                            break
+                        except Exception as scene_exc:
+                            last_scene_error = scene_exc
+                    if last_scene_error is not None:
+                        raise last_scene_error
+                if not _apply_scene_enrichment_batch(batch, plain_labels):
+                    raise ValueError(
+                        f"LM Studio returned non-exact scene indexes for batch {indices}"
+                    )
+                report(
+                    f"LM Studio: сцены {indices[0]}–{indices[-1]} "
+                    "успешно проанализированы через JSON fallback."
+                )
+            except Exception as fallback_exc:
+                fallback_error = short_error(fallback_exc)
+                logger.warning(
+                    "Plain JSON scene enrichment failed for batch %s: %s",
+                    indices,
+                    fallback_error,
+                )
+                report(
+                    f"LM Studio не смогла проанализировать сцены {indices}: "
+                    f"{fallback_error}"
+                )
+                if require_all:
+                    raise RuntimeError(
+                        f"LM Studio не проанализировала сцены {indices}: "
+                        f"{fallback_error}"
+                    ) from fallback_exc
+                continue
     return scenes
 
 
@@ -606,6 +1347,9 @@ def call_lm_studio_for_segments(
     niche: str = "documentary",
     video_style: str = DEFAULT_VIDEO_STYLE,
 ) -> list[Scene]:
+    if not segments:
+        return []
+
     endpoint = base_url.rstrip("/") + "/chat/completions"
     compact_transcript = "\n".join(
         f"{index}|{segment.start}-{segment.end}|{segment.text.strip()}"
@@ -676,24 +1420,49 @@ def call_lm_studio_for_segments(
     content = data["choices"][0]["message"]["content"].strip()
     raw_scenes = parse_lm_json_array(content, "LM Studio segment analysis")
     by_id = {index: segment for index, segment in enumerate(segments, start=1)}
-    scenes: list[Scene] = []
-    last_id = 0
-
-    for raw in raw_scenes:
+    candidates: list[tuple[int, int, int, dict]] = []
+    for raw_position, raw in enumerate(raw_scenes):
         if not isinstance(raw, dict):
             continue
+        raw_ids = raw.get("segment_ids")
+        if not isinstance(raw_ids, (list, tuple)):
+            continue
         ids: list[int] = []
-        for item in raw.get("segment_ids") or []:
+        for item in raw_ids:
+            if isinstance(item, bool):
+                continue
             try:
                 segment_id = int(item)
             except (TypeError, ValueError):
                 continue
-            if segment_id in by_id and segment_id > last_id:
+            if segment_id in by_id:
                 ids.append(segment_id)
-        ids = sorted(set(ids))
         if not ids:
             continue
-        selected = [by_id[item] for item in ids]
+        unique_ids = sorted(set(ids))
+        if unique_ids != list(range(unique_ids[0], unique_ids[-1] + 1)):
+            # A distant hallucinated id must not widen a plausible scene over
+            # hundreds of unrelated source segments. Skip the candidate; the
+            # deterministic gap/tail fallback below will preserve all text.
+            continue
+        candidates.append((unique_ids[0], unique_ids[-1], raw_position, raw))
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    scenes: list[Scene] = []
+    cursor = 1
+
+    def append_fallback(first_id: int, last_id: int) -> None:
+        if first_id > last_id:
+            return
+        scenes.extend(build_scenes_from_segments(segments[first_id - 1 : last_id]))
+
+    for first_id, last_id, _raw_position, raw in candidates:
+        if last_id < cursor:
+            continue
+        if first_id > cursor:
+            append_fallback(cursor, first_id - 1)
+        first_id = max(first_id, cursor)
+        selected = [by_id[item] for item in range(first_id, last_id + 1)]
         text = " ".join(segment.text.strip() for segment in selected).strip()
         scenes.append(
             Scene(
@@ -710,14 +1479,17 @@ def call_lm_studio_for_segments(
                 ).strip(),
             )
         )
-        last_id = ids[-1]
+        cursor = last_id + 1
 
-    if last_id < len(segments):
-        scenes.extend(build_scenes_from_segments(segments[last_id:]))
-        for index, scene in enumerate(scenes, start=1):
-            scene.index = index
+    if cursor <= len(segments):
+        append_fallback(cursor, len(segments))
+    for index, scene in enumerate(scenes, start=1):
+        scene.index = index
 
-    return _merge_similar_scenes(scenes)
+    result = _merge_similar_scenes(scenes)
+    if not _validate_scene_partition(result, segments):
+        return build_scenes_from_segments(segments)
+    return result
 
 
 def _merge_similar_scenes(scenes: list[Scene]) -> list[Scene]:

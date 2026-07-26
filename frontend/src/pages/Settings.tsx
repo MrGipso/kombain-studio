@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
+import ThemeToggle from '../components/ThemeToggle'
 import type { Settings as SettingsType } from '../api/types'
 
-type DiagTarget = 'lm' | 'embed' | 'comfy' | 'ffmpeg' | 'whisper' | 'woosh'
+type DiagTarget = 'lm' | 'embed' | 'comfy' | 'ffmpeg' | 'whisper' | 'omnivoice' | 'woosh'
 const SECRET_FIELDS = new Set<keyof SettingsType>(['pexels_api_key', 'pixabay_api_key'])
 const DIAG_TARGETS: { key: DiagTarget; label: string }[] = [
   { key: 'lm', label: 'LM Studio' },
@@ -12,6 +13,7 @@ const DIAG_TARGETS: { key: DiagTarget; label: string }[] = [
   { key: 'comfy', label: 'ComfyUI' },
   { key: 'ffmpeg', label: 'FFmpeg' },
   { key: 'whisper', label: 'Whisper' },
+  { key: 'omnivoice', label: 'OmniVoice' },
   { key: 'woosh', label: 'Woosh SFX' },
 ]
 
@@ -74,11 +76,31 @@ export default function Settings() {
     { key: 'whisper_model', label: 'Whisper Model Path' },
     { key: 'ffmpeg', label: 'FFmpeg Path' },
     { key: 'whisper_language', label: 'Whisper Language' },
+    { key: 'omnivoice_cli', label: 'OmniVoice CLI (omnivoice-infer)' },
+    { key: 'omnivoice_model', label: 'OmniVoice Model' },
     { key: 'output_base', label: 'Output Base Path' },
     { key: 'image_model_preference', label: 'Image Model Preference' },
     { key: 'pexels_api_key', label: 'Pexels API Key (стоки)' },
     { key: 'pixabay_api_key', label: 'Pixabay API Key (стоки)' },
     { key: 'lm_vision_model', label: 'LM Studio Vision Model (оценка стока)' },
+  ]
+
+  const settingGroups = [
+    {
+      title: 'Модели и сервисы',
+      description: 'Подключения к LM Studio и ComfyUI, а также модели, используемые в пайплайне.',
+      keys: ['lm_url', 'lm_model', 'lm_embed_model', 'lm_vision_model', 'lm_context', 'comfy_url', 'image_model_preference'],
+    },
+    {
+      title: 'Пути и инструменты',
+      description: 'Локальные workflow, Whisper, FFmpeg и папка для результатов.',
+      keys: ['comfy_krea_workflow', 'comfy_ideogram_workflow', 'comfy_ltx_workflow', 'comfy_ltx_draft_workflow', 'comfy_ace_workflow', 'whisper_cli', 'whisper_model', 'ffmpeg', 'whisper_language', 'omnivoice_cli', 'omnivoice_model', 'output_base'],
+    },
+    {
+      title: 'Источники стоков',
+      description: 'Ключи внешних каталогов. Сохранённые секреты не отображаются повторно.',
+      keys: ['pexels_api_key', 'pixabay_api_key'],
+    },
   ]
 
   const stockNumbers: { key: keyof SettingsType; label: string }[] = [
@@ -96,37 +118,128 @@ export default function Settings() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 p-8">
-      <div className="max-w-2xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-white">Настройки</h1>
-          <button
-            onClick={() => navigate(-1)}
-            className="text-sm text-slate-500 hover:text-white transition-colors cursor-pointer"
-          >
-            ← Назад
-          </button>
-        </div>
+    <div className="min-h-screen bg-slate-950 px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-5xl space-y-6">
+        <header className="sticky top-0 z-20 -mx-2 flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/95 px-4 py-4 shadow-lg shadow-slate-950/20 backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-400">Системная конфигурация</p>
+            <h1 className="mt-1 text-2xl font-bold text-white">Настройки</h1>
+            <p className="mt-1 text-sm text-slate-500">Модели, локальные инструменты, генерация и диагностика подключений.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <ThemeToggle />
+            <button
+              onClick={() => navigate(-1)}
+              className="min-h-10 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white cursor-pointer"
+            >
+              ← Назад
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="min-h-10 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              {saved ? 'Сохранено' : saving ? 'Сохранение…' : 'Сохранить'}
+            </button>
+          </div>
+        </header>
 
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6 space-y-4">
-          {fields.map(({ key, label }) => {
-            const isSecret = SECRET_FIELDS.has(key)
-            const isSet = isSecret && secretIsSet(key)
-            return (
-            <div key={key}>
-              <label className="block text-xs text-slate-500 mb-1">
-                {label}{isSet ? ' · задан, оставьте пустым чтобы не менять' : ''}
-              </label>
-              <input
-                type={isSecret ? 'password' : 'text'}
-                value={(settings[key] as string) || ''}
-                placeholder={isSet ? 'Новый ключ или пусто без изменений' : ''}
-                onChange={(e) => setSettings({ ...settings, [key]: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500 font-mono"
-              />
+        <div className="space-y-8 rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-7">
+          {settingGroups.map((group) => (
+            <section key={group.title} className="border-b border-slate-800 pb-8 last:border-b-0 last:pb-0">
+              <div className="mb-5">
+                <h2 className="text-base font-semibold text-white">{group.title}</h2>
+                <p className="mt-1 text-sm text-slate-500">{group.description}</p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                {fields.filter(({ key }) => group.keys.includes(String(key))).map(({ key, label }) => {
+                  const isSecret = SECRET_FIELDS.has(key)
+                  const isSet = isSecret && secretIsSet(key)
+                  return (
+                    <div key={key} className={String(key).includes('workflow') || key === 'output_base' ? 'md:col-span-2' : ''}>
+                      <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                        {label}{isSet ? ' · ключ сохранён' : ''}
+                      </label>
+                      <input
+                        type={isSecret ? 'password' : 'text'}
+                        value={(settings[key] as string) || ''}
+                        placeholder={isSet ? 'Новый ключ или пусто без изменений' : ''}
+                        onChange={(e) => setSettings({ ...settings, [key]: e.target.value })}
+                        className="min-h-10 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 font-mono text-sm text-white focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+          ))}
+
+          <section className="space-y-4 border-b border-slate-800 pb-8">
+            <div>
+              <h2 className="text-base font-semibold text-white">YouTube и субтитры</h2>
+              <p className="mt-1 text-sm text-slate-500">Устойчивость yt-dlp при ограничениях YouTube. Cookies используются только во время получения метаданных и субтитров.</p>
             </div>
-            )
-          })}
+            <div className="grid gap-4 md:grid-cols-3">
+              <label>
+                <span className="mb-1.5 block text-xs font-medium text-slate-500">Cookies из браузера</span>
+                <select
+                  value={settings.youtube_cookies_browser || ''}
+                  onChange={(e) => setSettings({ ...settings, youtube_cookies_browser: e.target.value as SettingsType['youtube_cookies_browser'] })}
+                  className="min-h-10 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                >
+                  <option value="">Не использовать</option>
+                  <option value="edge">Microsoft Edge</option>
+                  <option value="chrome">Google Chrome</option>
+                  <option value="firefox">Mozilla Firefox</option>
+                  <option value="brave">Brave</option>
+                  <option value="opera">Opera</option>
+                  <option value="vivaldi">Vivaldi</option>
+                </select>
+              </label>
+              <label>
+                <span className="mb-1.5 block text-xs font-medium text-slate-500">Повторы · 0–5</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={settings.youtube_retry_count}
+                  onChange={(e) => setSettings({ ...settings, youtube_retry_count: Number(e.target.value) })}
+                  className="min-h-10 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 font-mono text-sm text-white focus:border-indigo-500 focus:outline-none"
+                />
+              </label>
+              <label>
+                <span className="mb-1.5 block text-xs font-medium text-slate-500">Пауза между запросами · сек</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.5}
+                  value={settings.youtube_request_delay_sec}
+                  onChange={(e) => setSettings({ ...settings, youtube_request_delay_sec: Number(e.target.value) })}
+                  className="min-h-10 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 font-mono text-sm text-white focus:border-indigo-500 focus:outline-none"
+                />
+              </label>
+            </div>
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-950/30 p-3">
+              <input
+                type="checkbox"
+                checked={settings.youtube_fallback_original}
+                onChange={(e) => setSettings({ ...settings, youtube_fallback_original: e.target.checked })}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span>
+                <span className="block text-sm font-medium text-slate-300">Использовать исходную дорожку как резервную</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">Если выбранный перевод недоступен, Комбайн попробует оригинальные субтитры. При HTTP 429 дополнительные запросы не выполняются.</span>
+              </span>
+            </label>
+            <p className="text-xs leading-5 text-amber-700">Cookies помогают при проверке «я не робот» и возрастных ограничениях, но не обходят активный лимит IP. Для браузерных cookies должна быть выполнена авторизация на YouTube.</p>
+          </section>
+
+          <section className="space-y-4 border-b border-slate-800 pb-8">
+            <div>
+              <h2 className="text-base font-semibold text-white">Генерация видео</h2>
+              <p className="mt-1 text-sm text-slate-500">Качество LTX, управление моделью и параметры подбора стоков.</p>
+            </div>
 
           <div>
             <label className="block text-xs text-slate-500 mb-1">LTX: разрешение генерации (экспорт масштабирует под выбранный delivery-профиль)</label>
@@ -172,7 +285,7 @@ export default function Settings() {
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-3 pt-1">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {stockNumbers.map(({ key, label }) => (
               <div key={key}>
                 <label className="block text-xs text-slate-500 mb-1">{label}</label>
@@ -255,9 +368,14 @@ export default function Settings() {
             </label>
           </div>
 
+          </section>
+
           {/* Authenticity: export finishing + SFX layer */}
-          <div className="border-t border-slate-800 pt-4 space-y-4">
-            <h2 className="text-sm text-slate-400 uppercase tracking-wider">Экспорт и звук</h2>
+          <section className="space-y-4">
+            <div>
+              <h2 className="text-base font-semibold text-white">Экспорт, контроль качества и звук</h2>
+              <p className="mt-1 text-sm text-slate-500">Финишная обработка, автоматическая проверка материалов и SFX-слой.</p>
+            </div>
             <div className="flex flex-wrap items-center gap-6">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -298,7 +416,7 @@ export default function Settings() {
                 <span className="text-sm text-slate-300">QA кадров и видео (Vision Model + FFmpeg, без автоперегенерации)</span>
               </label>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <div>
                 <label className="block text-xs text-slate-500 mb-1">Режим QA</label>
                 <select
@@ -309,6 +427,18 @@ export default function Settings() {
                 >
                   <option value="shadow">shadow — только отчёт</option>
                   <option value="review">review — отметить needs_review</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Когда проверять</label>
+                <select
+                  value={settings.ai_qa_timing || 'per_card'}
+                  onChange={(e) => setSettings({ ...settings, ai_qa_timing: e.target.value as 'per_card' | 'after_queue' })}
+                  disabled={!settings.ai_frame_qa}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm disabled:opacity-40"
+                >
+                  <option value="per_card">между генерациями</option>
+                  <option value="after_queue">после всей очереди (без свопа VRAM)</option>
                 </select>
               </div>
               <div>
@@ -339,7 +469,7 @@ export default function Settings() {
                 <span className="text-sm text-slate-300">SFX-слой (ambient через Woosh)</span>
               </label>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <label className="block text-xs text-slate-500 mb-1">Woosh API URL</label>
                 <input
@@ -362,21 +492,16 @@ export default function Settings() {
               Woosh — SFX-модель Sony AI (github.com/SonyResearch/Woosh). Запустите её API-сервер отдельно
               (порт не 8000 — он занят этим приложением). Веса CC-BY-NC — только для некоммерческого использования.
             </p>
-          </div>
-
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
-          >
-            {saved ? '✅ Сохранено' : saving ? '⏳ Сохранение...' : '💾 Сохранить настройки'}
-          </button>
+          </section>
         </div>
 
         {/* Connection diagnostics */}
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6 space-y-3">
+        <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-7">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm text-slate-400 uppercase tracking-wider">Проверка подключений</h2>
+            <div>
+              <h2 className="text-base font-semibold text-white">Проверка подключений</h2>
+              <p className="mt-1 text-sm text-slate-500">Проверка внешних сервисов по текущим путям и URL.</p>
+            </div>
             <button
               onClick={checkAll}
               className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700 cursor-pointer"
@@ -384,7 +509,6 @@ export default function Settings() {
               Проверить всё
             </button>
           </div>
-          <p className="text-xs text-slate-600">Сохраняет настройки и проверяет внешние зависимости по текущим путям/URL.</p>
           <div className="space-y-2">
             {DIAG_TARGETS.map(({ key, label }) => {
               const r = diag[key]
@@ -409,7 +533,7 @@ export default function Settings() {
               )
             })}
           </div>
-        </div>
+        </section>
       </div>
     </div>
   )

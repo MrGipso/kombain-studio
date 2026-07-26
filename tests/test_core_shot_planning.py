@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,32 @@ def _raw_shot(**overrides) -> dict:
     }
     values.update(overrides)
     return values
+
+
+def _global_plan(scenes: list[Scene]) -> list[planning.GlobalVisualPlanItem]:
+    families = planning.GLOBAL_VISUAL_FAMILIES
+    return [
+        planning.GlobalVisualPlanItem(
+            scene_index=scene.index,
+            narrative_role=f"Роль сцены {scene.index}",
+            visual_family=families[(scene.index - 1) % len(families)],
+            location=f"Уникальная локация {scene.index}",
+            primary_subject=f"Главный объект {scene.index}",
+            shot_progression="Общий план, действие, предметная деталь",
+            palette=f"Палитра {scene.index}",
+            transition=f"Переход к сцене {scene.index + 1}",
+            avoid=f"Не повторять объект предыдущей сцены {scene.index}",
+        )
+        for scene in scenes
+    ]
+
+
+def _stub_global_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        planning,
+        "create_global_visual_plan",
+        lambda _base_url, _model, scenes, **_kwargs: _global_plan(scenes),
+    )
 
 
 def test_module_import_is_headless_and_does_not_load_global_config():
@@ -154,6 +181,7 @@ def test_truncated_lm_array_recovers_last_complete_object():
 
 
 def test_segment_planning_retries_weak_motion_then_applies_postprocessing(monkeypatch):
+    _stub_global_plan(monkeypatch)
     requests: list[str] = []
     weak = _raw_shot(video_prompt="", motion="")
     strong = _raw_shot()
@@ -194,6 +222,7 @@ def test_segment_planning_retries_weak_motion_then_applies_postprocessing(monkey
 
 
 def test_bad_scene_response_falls_back_without_double_composing_style(monkeypatch):
+    _stub_global_plan(monkeypatch)
     calls = 0
     logs: list[str] = []
 
@@ -216,7 +245,7 @@ def test_bad_scene_response_falls_back_without_double_composing_style(monkeypatc
         video_style="documentary",
     )
 
-    assert calls == 2
+    assert calls == 3
     assert len(shots) == 2
     assert logs and "запасную раскадровку" in logs[0]
     assert all(shot.image_prompt.count("Rendered ") == 1 for shot in shots)
@@ -280,6 +309,291 @@ def test_timing_and_route_normalization_match_desktop_characterization():
     assert (reference.image_model, reference.video_model) == ("", "")
     assert unknown.visual_type == "ai_image_then_i2v"
     assert (unknown.image_model, unknown.video_model) == ("ideogram4", "ltx2.3_i2v")
+
+
+def test_final_scheduler_fills_long_scene_without_stretching_last_shot():
+    scene = _scene(end="00:04:40")
+    shots = [
+        _shot(index=index + 1, start=f"00:00:{start:02d}", end=f"00:00:{start + 4:02d}")
+        for index, start in enumerate((0, 12, 24, 36, 48, 57))
+    ]
+    segments = [
+        TranscriptSegment(
+            planning.seconds_to_timecode(start),
+            planning.seconds_to_timecode(min(start + 10, 280)),
+            f"Фрагмент {start // 10}.",
+        )
+        for start in range(0, 280, 10)
+    ]
+
+    finalized = planning.finalize_shot_timeline(shots, [scene], segments)
+    intervals = [
+        (
+            planning.timecode_to_seconds(shot.start),
+            planning.timecode_to_seconds(shot.end),
+        )
+        for shot in finalized
+    ]
+
+    assert intervals[0][0] == 0
+    assert intervals[-1][1] == 280
+    assert all(left[1] == right[0] for left, right in zip(intervals, intervals[1:]))
+    # Transcript boundaries may be accepted up to two seconds beyond the
+    # nominal 15-second generation limit, but a multi-minute tail is forbidden.
+    assert max(end - start for start, end in intervals) <= planning.SHOT_MAX_SECONDS + 2
+    assert len(finalized) > len(shots)
+    assert [shot.index for shot in finalized] == list(range(1, len(finalized) + 1))
+
+
+def test_final_scheduler_splits_sparse_subtitles_at_exact_duration_limit():
+    finalized = planning.finalize_shot_timeline(
+        [_shot(end="00:01:00")],
+        [_scene(end="00:01:00")],
+        [],
+    )
+
+    durations = [
+        planning.timecode_to_seconds(shot.end)
+        - planning.timecode_to_seconds(shot.start)
+        for shot in finalized
+    ]
+    assert durations == [15, 15, 15, 15]
+
+
+def test_per_scene_planner_receives_global_map_and_used_concept_memory(monkeypatch):
+    _stub_global_plan(monkeypatch)
+    prompts: list[str] = []
+    second_scene = Scene(
+        index=2,
+        start="00:00:10",
+        end="00:00:20",
+        title="Quality control",
+        voice_text="Inspectors verify every printed sheet.",
+        visual_direction="Inspectors examine banknote sheets under bright light",
+        screen_text="",
+        music_note="",
+        retention_note="",
+    )
+
+    def fake_request(_base_url, _model, prompt, ttl_seconds=None):
+        prompts.append(prompt)
+        return [_raw_shot()]
+
+    monkeypatch.setattr(planning, "request_lm_shots", fake_request)
+
+    planning.call_lm_studio_for_shots(
+        "http://lm.test/v1",
+        "model",
+        [_scene(), second_scene],
+        segments=[
+            TranscriptSegment("00:00:00", "00:00:10", "Data moves."),
+            TranscriptSegment("00:00:10", "00:00:20", "Inspectors verify sheets."),
+        ],
+        video_style="documentary",
+        reference_density="off",
+    )
+
+    assert len(prompts) == 2
+    assert all("Server room" in prompt and "Quality control" in prompt for prompt in prompts)
+    assert "УЖЕ ИСПОЛЬЗОВАННЫЕ ВИЗУАЛЬНЫЕ КОНЦЕПТЫ" in prompts[1]
+    assert "server room racks" in prompts[1]
+
+
+def test_global_visual_plan_parser_and_audit_accept_diverse_complete_plan():
+    source_scenes = [
+        Scene(
+            index=index,
+            start=f"00:00:{(index - 1) * 10:02d}",
+            end=f"00:00:{index * 10:02d}",
+            title=f"Scene {index}",
+            voice_text=f"Narration {index}.",
+            visual_direction="",
+            screen_text="",
+            music_note="",
+            retention_note="",
+        )
+        for index in range(1, 6)
+    ]
+    payload = json.dumps(
+        [item.as_dict() for item in _global_plan(source_scenes)],
+        ensure_ascii=False,
+    )
+
+    parsed = planning.parse_global_visual_plan(payload, source_scenes)
+
+    assert [item.scene_index for item in parsed] == [1, 2, 3, 4, 5]
+    assert planning.audit_global_visual_plan(parsed) == []
+
+
+def test_global_visual_plan_audit_rejects_monotonous_video_language():
+    plan = [
+        planning.GlobalVisualPlanItem(
+            scene_index=index,
+            narrative_role="Объяснение",
+            visual_family="observational_broll",
+            location="Серверная",
+            primary_subject="Мониторы и стойки",
+            shot_progression="Общий план серверов, монитор, терминал",
+            palette="Синий LED",
+            transition="Склейка",
+            avoid="Повтор",
+        )
+        for index in range(1, 11)
+    ]
+
+    violations = planning.audit_global_visual_plan(plan)
+
+    assert any("визуальных семейств" in item for item in violations)
+    assert any("серверные/дата-центры" in item for item in violations)
+    assert any("экраны/терминалы" in item for item in violations)
+
+
+def test_global_visual_plan_audit_rejects_generic_repeated_narrative_role():
+    plan = _global_plan(
+        [
+            Scene(
+                index=index,
+                start=f"00:00:{(index - 1) * 5:02d}",
+                end=f"00:00:{index * 5:02d}",
+                title=f"Scene {index}",
+                voice_text=f"Narration {index}",
+                visual_direction="",
+                screen_text="",
+                music_note="",
+                retention_note="",
+            )
+            for index in range(1, 7)
+        ]
+    )
+    plan = [
+        planning.GlobalVisualPlanItem(
+            **{
+                **item.as_dict(),
+                "narrative_role": "Развитие аргумента и продвижение истории",
+            }
+        )
+        for item in plan
+    ]
+
+    violations = planning.audit_global_visual_plan(plan)
+
+    assert any("narrative_role" in item for item in violations)
+
+
+def test_final_shot_audit_rejects_cliche_returning_across_the_film():
+    scenes = [
+        Scene(
+            index=index,
+            start=f"00:00:{(index - 1) * 5:02d}",
+            end=f"00:00:{index * 5:02d}",
+            title=f"Scene {index}",
+            voice_text="Narration",
+            visual_direction="",
+            screen_text="",
+            music_note="",
+            retention_note="",
+        )
+        for index in range(1, 9)
+    ]
+    shots = [
+        _shot(
+            index=index,
+            scene_index=index,
+            start=scenes[index - 1].start,
+            end=scenes[index - 1].end,
+            description="Generic glowing server rack",
+            asset_query="server rack blinking lights",
+        )
+        for index in range(1, 9)
+    ]
+
+    violations = planning.audit_final_shot_list(shots, scenes)
+
+    assert any("серверные/дата-центры" in item for item in violations)
+    assert planning.audit_final_shot_list(
+        shots,
+        scenes,
+        include_creative=False,
+    ) == []
+    assert any(
+        "серверные/дата-центры" in item
+        for item in planning.audit_final_visual_variety(shots, scenes)
+    )
+
+
+def test_pipeline_logs_creative_warning_without_discarding_shots(monkeypatch):
+    _stub_global_plan(monkeypatch)
+    logs: list[str] = []
+    monkeypatch.setattr(
+        planning,
+        "request_lm_shots",
+        lambda *_args, **_kwargs: [
+            _raw_shot(
+                description="Hands inspect a freshly printed sheet",
+                asset_query="quality inspector printed sheet",
+                image_prompt="Hands inspect a freshly printed sheet under neutral light.",
+                video_prompt="Hands turn the sheet while the camera moves closer.",
+                sfx_query="paper rustle",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        planning,
+        "audit_final_visual_variety",
+        lambda _shots, _scenes: ["экраны/терминалы возвращаются в 14 сценах; максимум 12"],
+    )
+
+    shots = planning.call_lm_studio_for_shots(
+        "http://lm.test/v1",
+        "model",
+        [_scene()],
+        segments=[TranscriptSegment("00:00:00", "00:00:10", "Printed sheets.")],
+        reference_density="off",
+        log_callback=logs.append,
+    )
+
+    assert shots
+    assert any(
+        "Это не ломает таймлайн: шот-лист сохранён" in message
+        for message in logs
+    )
+
+
+def test_global_visual_plan_parser_normalizes_harmless_local_model_shapes():
+    scene = _scene()
+    item = _global_plan([scene])[0].as_dict()
+    item["narrative_role"] = ["Вводит тему", "создаёт вопрос"]
+    item["visual_family"] = "industrial_location"
+    item["avoid"] = ["серверная", "синие мониторы"]
+
+    parsed = planning.parse_global_visual_plan(
+        json.dumps([item], ensure_ascii=False),
+        [scene],
+    )
+
+    assert parsed[0].narrative_role == "Вводит тему; создаёт вопрос"
+    assert parsed[0].visual_family == "institutional_location"
+    assert parsed[0].avoid == "серверная; синие мониторы"
+
+
+def test_numeric_screen_text_gate_keeps_one_supported_fact_per_scene():
+    scene = _scene()
+    scene.voice_text = "In 2008, 95% of the volume replaced old notes."
+    shots = [
+        _shot(index=1, screen_text="2008: the crisis begins"),
+        _shot(index=2, screen_text="95% replaced old notes"),
+        _shot(index=3, screen_text="A system under pressure"),
+        _shot(index=4, screen_text="2009: recovery"),
+    ]
+
+    planning.enforce_numeric_screen_text(shots, [scene])
+
+    assert [shot.screen_text for shot in shots] == [
+        "2008: the crisis begins",
+        "",
+        "",
+        "",
+    ]
 
 
 @pytest.mark.parametrize("bad", ["{}", "not json", "[1, 2]"])

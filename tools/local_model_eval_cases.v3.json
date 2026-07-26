@@ -2,7 +2,7 @@
   "schema_version": 1,
   "suite": "pipeline-studio-local-agent-vlm",
   "suite_version": "3.0.0",
-  "description": "Versioned text, native-tool and still-image cases captured from real Pipeline Studio projects. Labels are withheld from model-visible identifiers and inputs; image QA includes a matched/swapped fixture pair.",
+  "description": "Versioned text, native-tool and still-image cases captured from real Комбайн Studio projects. Labels are withheld from model-visible identifiers and inputs; image QA includes a matched/swapped fixture pair.",
   "schemas": {
     "route": {
       "type": "object",

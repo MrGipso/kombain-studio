@@ -54,7 +54,7 @@ async def generate_shots(project_id: str):
         loop = asyncio.get_event_loop()
 
         def log_handler(msg: str):
-            loop.call_soon_threadsafe(sse.emit, project.dir.name, "log", {"message": msg})
+            loop.call_soon_threadsafe(sse.emit_to, sub_id, "log", {"message": msg})
 
         def run_sync():
             try:
@@ -86,8 +86,8 @@ async def generate_shots(project_id: str):
                                 f"Сцена {scenes_done['n']} из {total_scenes}",
                             )
                             loop.call_soon_threadsafe(
-                                sse.emit,
-                                current_project.dir.name,
+                                sse.emit_to,
+                                sub_id,
                                 "scene_shots",
                                 {"shots": [
                                     shot.__dict__ if hasattr(shot, "__dict__") else shot
@@ -95,8 +95,8 @@ async def generate_shots(project_id: str):
                                 ]},
                             )
                             loop.call_soon_threadsafe(
-                                sse.emit,
-                                current_project.dir.name,
+                                sse.emit_to,
+                                sub_id,
                                 "progress",
                                 {"step": "shots", "progress": progress},
                             )
@@ -154,15 +154,15 @@ async def generate_shots(project_id: str):
                         )
                         raise
                 loop.call_soon_threadsafe(
-                    sse.emit,
-                    project.dir.name,
+                    sse.emit_to,
+                    sub_id,
                     "done",
                     {"shots": shots, "cards": cards},
                 )
             except (jobs.ProjectBusy, jobs.JobCancelled) as exc:
-                loop.call_soon_threadsafe(sse.emit, project.dir.name, "error", {"message": str(exc)})
+                loop.call_soon_threadsafe(sse.emit_to, sub_id, "error", {"message": str(exc)})
             except Exception as exc:
-                loop.call_soon_threadsafe(sse.emit, project.dir.name, "error", {"message": str(exc)})
+                loop.call_soon_threadsafe(sse.emit_to, sub_id, "error", {"message": str(exc)})
 
         loop.run_in_executor(None, run_sync)
 

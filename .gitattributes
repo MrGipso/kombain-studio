@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+# Windows launchers are consumed by cmd.exe and keep native CRLF endings.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary project assets must never be newline-normalized.
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.webp binary
+*.wav binary
+*.mp3 binary
+*.mp4 binary

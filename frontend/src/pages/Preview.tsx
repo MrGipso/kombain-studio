@@ -99,14 +99,12 @@ export default function Preview() {
   const [assetQa, setAssetQa] = useState<AssetQASummary | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [exporting, setExporting] = useState(false)
-  const [exportMode, setExportMode] = useState<ExportMode | null>(null)
   const [profiles, setProfiles] = useState<ExportProfile[]>([])
   const [draftProfile, setDraftProfile] = useState<ExportProfileName>('delivery')
   const [activeProfile, setActiveProfile] = useState<ExportProfileName | null>(null)
   const [gateReport, setGateReport] = useState<ExportGateReport | null>(null)
   const [technicalQc, setTechnicalQc] = useState<TechnicalMediaQc | null>(null)
   const [masterManifest, setMasterManifest] = useState<MasterManifestInfo | null>(null)
-  const [approvingIndex, setApprovingIndex] = useState<number | null>(null)
   const [selectedUrl, setSelectedUrl] = useState('')
   const logEndRef = useRef<HTMLDivElement>(null)
   const lockedElsewhere = Boolean(busy) && !exporting
@@ -150,17 +148,20 @@ export default function Preview() {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
-  const handleExport = (mode: ExportMode) => {
+  // One action, one quality selector. Draft/Master used to be two buttons with
+  // different rules; the quality profile is the only difference that matters to
+  // the operator, and the strict gate behind "Master" is advisory now. The
+  // top-quality profile still writes the audit manifest.
+  const handleExport = (profile: ExportProfileName) => {
     if (exporting || busy) { if (busy && !exporting) toast.error('Дождитесь завершения текущей задачи'); return }
-    const profile: ExportProfileName = mode === 'master' ? 'master' : draftProfile
+    const mode: ExportMode = profile === 'master' ? 'master' : 'draft'
     const profileLabel = profiles.find((item) => item.name === profile)?.label || profile
     setExporting(true)
-    setExportMode(mode)
+
     setActiveProfile(profile)
     setTechnicalQc(null)
     if (mode === 'master') setMasterManifest(null)
-    if (mode === 'draft') setGateReport(null)
-    const label = `${mode === 'master' ? 'Master export' : 'Draft export'} · ${profileLabel}`
+    const label = `Сборка · ${profileLabel}`
     setBusy(label)
     setLogs((prev) => [...prev.slice(-120), `${label}: старт`])
 
@@ -185,67 +186,43 @@ export default function Preview() {
           setMasterManifest(data.master_manifest)
         }
         setLogs((prev) => [...prev.slice(-180), `${label}: готово ${data.path || ''}`])
-        toast.success(`${mode === 'master' ? 'Master' : 'Draft'} MP4 готов`)
+        toast.success(`Видео готово · ${profileLabel}`)
         setExporting(false)
-        setExportMode(null)
+
         setActiveProfile(null)
         setBusy(null)
         await load()
       },
       onError: (msg) => {
         setLogs((prev) => [...prev.slice(-180), `${label}: ${msg}`])
-        toast.error(mode === 'master' && msg.includes('blocked') ? 'Master заблокирован — исправьте причины ниже' : `${label}: ${msg}`)
+        toast.error(`${label}: ${msg}`)
         setExporting(false)
-        setExportMode(null)
+
         setActiveProfile(null)
         setBusy(null)
       },
     })
   }
 
-  const approveCard = async (cardIndex: number) => {
-    setApprovingIndex(cardIndex)
-    try {
-      const updated = await api.updateCard(projectId, cardIndex, { approved: true, status: 'approved' })
-      setCards((prev) => prev.map((card, index) => index === cardIndex ? updated : card))
-      setGateReport((previous) => {
-        if (!previous) return previous
-        const reasons = previous.reasons.filter((reason) => !(
-          reason.card_index === cardIndex && (reason.code === 'not_approved' || reason.code === 'needs_review')
-        ))
-        return {
-          ...previous,
-          allowed: reasons.length === 0,
-          summary: { ...previous.summary, blockers: reasons.length },
-          reasons,
-        }
-      })
-      toast.success(`Кадр ${updated.shot_index} утверждён`)
-    } catch (e) {
-      toast.error((e as Error).message)
-    } finally {
-      setApprovingIndex(null)
-    }
-  }
-
   const selectedIsVideo = selectedUrl.toLowerCase().match(/\.(mp4|webm|mov)(\?|$)/)
   const selectedIsImage = selectedUrl.toLowerCase().match(/\.(png|jpg|jpeg|webp)(\?|$)/)
   const draftProfileInfo = profiles.find((item) => item.name === draftProfile)
   const masterProfileInfo = profiles.find((item) => item.name === 'master')
+  const activeProfileInfo = profiles.find((item) => item.name === activeProfile)
 
   return (
     <div className="p-6 space-y-5 max-w-[1600px]">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-white">Preview & Export</h1>
-          <p className="text-sm text-slate-500 mt-1">Финальное видео (со звуком, по таймлайну) · {media?.items.length || 0} клипов с медиа</p>
+          <h1 className="text-2xl font-semibold text-white">Экспорт</h1>
+          <p className="text-sm text-slate-500 mt-1">Финальное видео со звуком по таймлайну · {media?.items.length || 0} клипов с медиа</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to="../timeline" className="px-4 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-100">
-            Timeline
+            Монтаж
           </Link>
           <label className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-400">
-            Draft profile
+            Качество
             <select
               value={draftProfile}
               onChange={(event) => setDraftProfile(event.target.value as ExportProfileName)}
@@ -256,20 +233,22 @@ export default function Preview() {
               {!profiles.length && <option value="delivery">Delivery 1080p</option>}
             </select>
           </label>
-          <button onClick={() => handleExport('draft')} disabled={exporting || lockedElsewhere} title="Черновая сборка: допускает неутверждённые и незавершённые кадры" className="px-4 py-2 rounded-lg bg-slate-700 border border-slate-600 text-white text-sm font-semibold disabled:opacity-45">
-            {exporting && exportMode === 'draft' ? `Draft ${activeProfile || ''}…` : 'Draft MP4'}
-          </button>
-          <button onClick={() => handleExport('master')} disabled={exporting || lockedElsewhere} title="Финальная сборка: Master profile, только утверждённые готовые кадры без ошибок QC" className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45">
-            {exporting && exportMode === 'master' ? 'Master HQ…' : 'Master MP4'}
+          <button
+            onClick={() => handleExport(draftProfile)}
+            disabled={exporting || lockedElsewhere}
+            title="Собрать видео с выбранным качеством. Замечания ниже не мешают сборке."
+            className="px-5 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-45"
+          >
+            {exporting ? `Собираю · ${activeProfileInfo?.label || activeProfile || ''}…` : 'Собрать видео'}
           </button>
           {exporting && (
             <button onClick={handleCancel} className="px-4 py-2 rounded-lg bg-rose-800 hover:bg-rose-700 text-white text-sm font-semibold">
-              Отменить
+              Остановить
             </button>
           )}
           {media?.export_url && (
             <a href={api.getDownloadUrl(projectId)} download className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold">
-              Download
+              Скачать
             </a>
           )}
         </div>
@@ -277,56 +256,58 @@ export default function Preview() {
 
       <div className="flex flex-wrap gap-x-6 gap-y-1 rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-2.5 text-xs text-slate-400">
         <span>
-          Draft: {draftProfileInfo ? `${draftProfileInfo.width}×${draftProfileInfo.height} · ${draftProfileInfo.fps} fps · ${draftProfileInfo.video_codec.toUpperCase()} · AAC ${draftProfileInfo.audio_bitrate_kbps}k` : 'Delivery 1080p'}
+          {draftProfileInfo
+            ? `${draftProfileInfo.label}: ${draftProfileInfo.width}×${draftProfileInfo.height} · ${draftProfileInfo.fps} fps · ${draftProfileInfo.video_codec.toUpperCase()} · AAC ${draftProfileInfo.audio_bitrate_kbps}k`
+            : 'Delivery 1080p'}
         </span>
-        <span>
-          Master: {masterProfileInfo ? `${masterProfileInfo.width}×${masterProfileInfo.height} · CRF ${masterProfileInfo.crf} · AAC ${masterProfileInfo.audio_bitrate_kbps}k` : '1080p HQ'}
+        <span className="text-slate-600">
+          {draftProfile === 'master'
+            ? 'Максимальное качество: медленнее, и к файлу выписывается аудит-манифест.'
+            : `Для финальной версии выберите «${masterProfileInfo?.label || 'Master'}» — медленнее, но с аудит-манифестом.`}
         </span>
-        <span className="text-slate-600">Draft допускает незавершённые кадры; Master всегда использует строгий gate и профиль Master.</span>
       </div>
 
-      {gateReport?.mode === 'master' && (
-        <section className={`rounded-lg border ${gateReport.allowed ? 'border-emerald-700/70 bg-emerald-950/20' : 'border-rose-800/70 bg-rose-950/20'}`}>
+      {/* Readiness: findings, not permissions. Shown before the render so the
+          answer to "will this ship well" does not require starting a render. */}
+      {gateReport && (
+        <section className={`rounded-lg border ${gateReport.allowed ? 'border-emerald-700/70 bg-emerald-950/20' : 'border-amber-700/70 bg-amber-950/20'}`}>
           <div className="px-4 py-3 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-semibold text-white">Master quality gate</h2>
+              <h2 className="text-base font-semibold text-white">Готовность материалов</h2>
               <p className="mt-1 text-xs text-slate-400">
-                Готово {gateReport.summary.cards_ready} из {gateReport.summary.cards_required} обязательных кадров
-                {gateReport.summary.cards_excluded ? ` · исключено ${gateReport.summary.cards_excluded}` : ''}
+                Готово {gateReport.summary.cards_ready} из {gateReport.summary.cards_required} кадров
+                {gateReport.summary.cards_excluded ? ` · вне финала ${gateReport.summary.cards_excluded}` : ''}
               </p>
             </div>
-            <span className={`rounded px-2.5 py-1 text-xs font-semibold ${gateReport.allowed ? 'bg-emerald-600/20 text-emerald-300' : 'bg-rose-600/20 text-rose-300'}`}>
-              {gateReport.allowed ? 'Master разрешён' : `${gateReport.summary.blockers} блокировок`}
+            <span className={`rounded px-2.5 py-1 text-xs font-semibold ${gateReport.allowed ? 'bg-emerald-600/20 text-emerald-300' : 'bg-amber-600/20 text-amber-300'}`}>
+              {gateReport.allowed ? 'Замечаний нет' : `${gateReport.summary.blockers} замечаний`}
             </span>
           </div>
           {gateReport.reasons.length ? (
-            <div className="max-h-80 overflow-y-auto divide-y divide-white/5">
-              {gateReport.reasons.map((reason, index) => (
-                <div key={`${reason.code}-${reason.card_index ?? 'project'}-${index}`} className="flex items-center gap-3 px-4 py-2.5">
-                  <span className="rounded bg-rose-500/15 px-2 py-0.5 text-[10px] font-mono text-rose-300">{reason.code}</span>
-                  <span className="min-w-0 flex-1 text-sm text-slate-200">{reason.message}</span>
-                  {reason.code === 'not_approved' && reason.card_index !== null && (
-                    <button
-                      onClick={() => approveCard(reason.card_index!)}
-                      disabled={approvingIndex !== null || exporting}
-                      className="shrink-0 rounded bg-emerald-800 px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-45"
-                    >
-                      {approvingIndex === reason.card_index ? '…' : 'Утвердить'}
-                    </button>
-                  )}
-                  {reason.card_index !== null && (
-                    <button
-                      onClick={() => navigate(`/project/${projectId}/board?card=${reason.card_index}`)}
-                      className="shrink-0 rounded bg-slate-800 border border-slate-700 px-2.5 py-1 text-xs text-slate-200"
-                    >
-                      Открыть
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
+            <>
+              <p className="px-4 pt-3 text-xs text-slate-400">
+                Это подсказки, а не запреты — сборку можно запускать в любом случае.
+                Кадр без медиа просто не попадёт в видео, его время займёт соседний план.
+              </p>
+              <div className="max-h-80 overflow-y-auto divide-y divide-white/5">
+                {gateReport.reasons.map((reason, index) => (
+                  <div key={`${reason.code}-${reason.card_index ?? 'project'}-${index}`} className="flex items-center gap-3 px-4 py-2.5">
+                    <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-mono text-amber-300">{reason.code}</span>
+                    <span className="min-w-0 flex-1 text-sm text-slate-200">{reason.message}</span>
+                    {reason.card_index !== null && (
+                      <button
+                        onClick={() => navigate(`/project/${projectId}/board?card=${reason.card_index}`)}
+                        className="shrink-0 rounded bg-slate-800 border border-slate-700 px-2.5 py-1 text-xs text-slate-200"
+                      >
+                        Открыть
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
           ) : (
-            <div className="px-4 py-4 text-sm text-emerald-300">Все проверки пройдены. Можно собирать Master MP4.</div>
+            <div className="px-4 py-4 text-sm text-emerald-300">Все проверки пройдены — материалы готовы.</div>
           )}
         </section>
       )}

@@ -212,7 +212,7 @@ export default function Music() {
               disabled={running || lockedElsewhere}
               className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
             >
-              {running ? '⏳ Генерация...' : '🎵 Сгенерировать музыку'}
+              {running ? 'Генерация...' : 'Сгенерировать музыку'}
             </button>
 
             {/* Export mix settings */}
@@ -332,7 +332,7 @@ export default function Music() {
                         onClick={() => previewRegion(t.filename, tr.start, tr.end)}
                         className="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
                       >
-                        ▶ участок
+                        Прослушать участок
                       </button>
                       {tr.end > tr.start && (
                         <span className="text-xs text-indigo-300">→ {Math.round(tr.end - tr.start)}с</span>

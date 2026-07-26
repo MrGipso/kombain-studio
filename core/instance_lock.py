@@ -44,7 +44,7 @@ class InstanceLock:
         except (OSError, BlockingIOError) as exc:
             stream.close()
             raise InstanceAlreadyRunning(
-                "Pipeline Studio is already running for this runtime data directory"
+                "Комбайн Studio уже запущен для этого каталога данных"
             ) from exc
         self._stream = stream
         return self
