@@ -102,17 +102,40 @@ def run_scene_analysis(
     # narration was literally written as beats — align them to the transcript
     # and use the author's boundaries/titles instead of guessing statistically.
     from core import script_align
+
+    # Chapter boundaries come from the author, but the cuts INSIDE a chapter
+    # are still placed semantically: a duration-only split puts a cut every
+    # target_seconds regardless of what is being said. Degrades to the duration
+    # partitioner by itself when the embedding endpoint is unavailable.
+    def _semantic_split(segs, *, min_seconds, max_seconds, target_seconds):
+        return scene_tools.partition_segments_by_embedding(
+            segs,
+            base_url,
+            embed_model,
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            target_seconds=target_seconds,
+            sensitivity=seg_sensitivity,
+            ttl_seconds=ttl,
+            log_callback=log,
+        )
+
     authored = script_align.scenes_from_script(
         project_dir,
         t_segments,
         Scene,
         seg_min,
         seg_max,
+        partitioner=_semantic_split,
     )
     if authored:
         log(
-            f"Авторские главы выровнены по аудио и разбиты на "
-            f"{len(authored)} монтажных сцен ({seg_min}–{seg_max} с)."
+            f"Границы глав взяты из авторского скрипта; резки внутри глав — "
+            f"по эмбеддингам ({embed_model}). Получилось {len(authored)} "
+            f"монтажных сцен ({seg_min}–{seg_max} с)."
+        )
+        _maybe_unload_lm(
+            settings, "chapter segmentation finished", log, model=embed_model,
         )
         try:
             _ensure_lm_context(settings, log)

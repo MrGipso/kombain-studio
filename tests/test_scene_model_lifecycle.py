@@ -43,7 +43,9 @@ def test_embedding_model_is_released_before_chat_model_is_loaded(
 ):
     events: list[str] = []
     logs: list[str] = []
-    monkeypatch.setattr(script_align, "scenes_from_script", lambda *_args: None)
+    monkeypatch.setattr(
+        script_align, "scenes_from_script", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         pipeline_orch.scene_tools,
         "build_scenes_by_embedding",
@@ -76,7 +78,9 @@ def test_failed_embedding_attempt_is_released_before_lm_grouping(
     tmp_path: Path, monkeypatch,
 ):
     events: list[str] = []
-    monkeypatch.setattr(script_align, "scenes_from_script", lambda *_args: None)
+    monkeypatch.setattr(
+        script_align, "scenes_from_script", lambda *_args, **_kwargs: None
+    )
 
     def fail_embedding(*_args, **_kwargs):
         events.append("embed")

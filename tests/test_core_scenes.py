@@ -587,3 +587,176 @@ def test_desktop_reexports_canonical_scene_analysis():
     assert desktop.call_lm_studio is scenes.call_lm_studio
     assert desktop.enrich_scenes_with_lm is scenes.enrich_scenes_with_lm
     assert desktop.call_lm_studio_for_segments is scenes.call_lm_studio_for_segments
+
+
+def _chapter_segments(count: int, seconds: int = 10) -> list[TranscriptSegment]:
+    """A chapter whose first half and second half are about different things."""
+
+    topics = ("harbour cranes lift steel containers onto the waiting cargo ship.",
+              "central bank clerks reconcile ledgers inside a quiet stone hall.")
+    return [
+        TranscriptSegment(
+            start=seconds_to_timecode(index * seconds),
+            end=seconds_to_timecode((index + 1) * seconds),
+            text=topics[0 if index < count // 2 else 1],
+        )
+        for index in range(count)
+    ]
+
+
+def test_embedding_partition_cuts_on_the_topic_shift(monkeypatch: pytest.MonkeyPatch):
+    """Inside one chapter the cut follows meaning, not the stopwatch."""
+
+    segments = _chapter_segments(8)
+
+    def fake_embeddings(base_url, model, texts, timeout=120, ttl_seconds=None):
+        # Two well-separated clusters matching the two halves of the chapter.
+        return [
+            [1.0, 0.0] if "harbour" in text else [0.0, 1.0]
+            for text in texts
+        ]
+
+    monkeypatch.setattr(scenes, "_lm_embeddings", fake_embeddings)
+
+    groups = scenes.partition_segments_by_embedding(
+        segments,
+        "http://lm/v1",
+        min_seconds=10,
+        max_seconds=90,
+        target_seconds=40,
+    )
+
+    assert sum(len(group) for group in groups) == len(segments)
+    assert [segment for group in groups for segment in group] == segments
+    assert len(groups) > 1
+    boundary_texts = {group[0].text for group in groups}
+    assert len(boundary_texts) > 1
+
+
+def test_embedding_partition_falls_back_when_endpoint_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No embedding endpoint must degrade to duration, never lose narration."""
+
+    segments = _chapter_segments(8)
+    notes: list[str] = []
+
+    def broken(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(scenes, "_lm_embeddings", broken)
+
+    groups = scenes.partition_segments_by_embedding(
+        segments,
+        "http://lm/v1",
+        min_seconds=10,
+        max_seconds=90,
+        target_seconds=40,
+        log_callback=notes.append,
+    )
+    expected = scenes.partition_segments_by_duration(
+        segments, min_seconds=10, max_seconds=90, target_seconds=40
+    )
+
+    assert groups == expected
+    assert sum(len(group) for group in groups) == len(segments)
+    assert any("длительности" in note for note in notes)
+
+
+def test_script_chapters_use_the_supplied_partitioner(tmp_path: Path):
+    """Authored chapters stay authoritative; only the inner cuts are delegated."""
+
+    from core import script_align
+
+    sentences = [
+        "Первая глава открывает историю печатного цеха и рассказывает про станки очень подробно",
+        "Продолжение первой главы уточняет как именно устроена подача бумаги внутри большого станка",
+        "Завершение первой главы описывает упаковку готовых листов в тяжёлые металлические ящики склада",
+        "Вторая глава переходит к перевозке груза через океан на больших контейнерных судах компании",
+        "Продолжение второй главы объясняет маршруты судов и расписание портовых кранов в дневную смену",
+        "Финал второй главы показывает разгрузку контейнеров и оформление сопроводительных документов в порту",
+        "Третья глава посвящена банковским залам где клерки сверяют бумажные реестры при дневном свете",
+        "Продолжение третьей главы раскрывает как проверяются подписи и печати на старых архивных бумагах",
+        "Последняя глава подводит итог и возвращает зрителя к началу истории про печатный цех",
+    ]
+    segments = [
+        TranscriptSegment(
+            start=seconds_to_timecode(index * 10),
+            end=seconds_to_timecode((index + 1) * 10),
+            text=text,
+        )
+        for index, text in enumerate(sentences)
+    ]
+    (tmp_path / "00_script.json").write_text(
+        json.dumps(
+            {
+                "beats": [
+                    {"title": f"Глава {number}", "text": " ".join(sentences[start:start + 3])}
+                    for number, start in enumerate((0, 3, 6), start=1)
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[int] = []
+
+    def partitioner(segs, *, min_seconds, max_seconds, target_seconds):
+        calls.append(len(segs))
+        return [list(segs)]
+
+    result = script_align.scenes_from_script(
+        tmp_path, segments, Scene, 10, 90, 40, partitioner=partitioner
+    )
+
+    assert result is not None, "authored chapters should align to the narration"
+    assert calls == [3, 3, 3], "each chapter is partitioned separately"
+    assert len(result) == 3
+    assert result[0].start == "00:00:00"
+    assert result[-1].end == segments[-1].end
+
+
+def test_script_chapters_recover_when_partitioner_loses_segments(tmp_path: Path):
+    """A partitioner may degrade, but narration must never be dropped."""
+
+    from core import script_align
+
+    sentences = [
+        f"Предложение номер {index} рассказывает свою отдельную мысль достаточно подробно и длинно"
+        for index in range(9)
+    ]
+    segments = [
+        TranscriptSegment(
+            start=seconds_to_timecode(index * 10),
+            end=seconds_to_timecode((index + 1) * 10),
+            text=text,
+        )
+        for index, text in enumerate(sentences)
+    ]
+    (tmp_path / "00_script.json").write_text(
+        json.dumps(
+            {
+                "beats": [
+                    {"title": f"Глава {number}", "text": " ".join(sentences[start:start + 3])}
+                    for number, start in enumerate((0, 3, 6), start=1)
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def lossy(segs, *, min_seconds, max_seconds, target_seconds):
+        return [list(segs[:1])]  # silently drops the rest of the chapter
+
+    result = script_align.scenes_from_script(
+        tmp_path, segments, Scene, 10, 90, 40, partitioner=lossy
+    )
+
+    assert result is not None
+    covered = sum(
+        len([s for s in segments if scene.start <= s.start < scene.end])
+        for scene in result
+    )
+    assert covered == len(segments)

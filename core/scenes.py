@@ -521,6 +521,112 @@ def _constrained_unit_partition(
     return groups
 
 
+def partition_segments_by_embedding(
+    segments: list[TranscriptSegment],
+    base_url: str,
+    model: str = "text-embedding-nomic-embed-text-v1.5",
+    *,
+    min_seconds: int = 20,
+    max_seconds: int = 90,
+    target_seconds: int = 45,
+    sensitivity: float = 0.6,
+    window: int = 2,
+    min_unit_words: int = 12,
+    ttl_seconds: int | None = None,
+    log_callback=None,
+) -> list[list[TranscriptSegment]]:
+    """Semantic edit-scene partition of one transcript range.
+
+    Same contract as :func:`partition_segments_by_duration` — every source
+    segment is returned exactly once and the duration limits still win — but
+    the cut points land where the topic actually shifts instead of on a
+    stopwatch.  Used inside authored script chapters so the author's structure
+    stays intact while the cuts within a chapter remain semantic.
+
+    Falls back to the duration partitioner on any failure: no embedding
+    endpoint, a degenerate range, or a partition that does not cover the input
+    exactly once.  Scene boundaries are too important to leave to a partial
+    result.
+    """
+
+    def _fallback(reason: str) -> list[list[TranscriptSegment]]:
+        if log_callback and reason:
+            log_callback(
+                f"Резки внутри главы: эмбеддинги не применились ({reason}); "
+                "использую разбиение по длительности."
+            )
+        return partition_segments_by_duration(
+            segments,
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            target_seconds=target_seconds,
+        )
+
+    if not segments:
+        return []
+
+    units = _merge_segments_into_units(segments, min_words=min_unit_words)
+    if len(units) <= 1:
+        # Nothing to cut inside: one unit is one scene by construction.
+        return [list(segments)]
+
+    unit_texts = [
+        " ".join((segment.text or "").strip() for segment in unit).strip() or " "
+        for unit in units
+    ]
+    try:
+        embeddings = _lm_embeddings(
+            base_url, model, unit_texts, ttl_seconds=ttl_seconds
+        )
+    except Exception as exc:  # noqa: BLE001 - any transport failure degrades
+        return _fallback(str(exc)[:160])
+
+    gap_count = len(units) - 1
+    block_window = max(1, int(window))
+    gaps = [
+        _block_similarity(embeddings, index, block_window)
+        for index in range(gap_count)
+    ]
+    depths = _depth_scores(gaps)
+
+    span = _precise_timecode_seconds(segments[-1].end) - _precise_timecode_seconds(
+        segments[0].start
+    )
+    desired = max(1, min(len(units), round(span / max(1.0, float(target_seconds)))))
+
+    if desired > 1:
+        order = sorted(range(gap_count), key=lambda index: depths[index], reverse=True)
+        chosen = set(order[: desired - 1])
+    else:
+        mean_depth = statistics.fmean(depths) if depths else 0.0
+        std_depth = statistics.pstdev(depths) if len(depths) > 1 else 0.0
+        cutoff = mean_depth + (0.5 - sensitivity) * std_depth
+        chosen = {
+            index
+            for index in range(gap_count)
+            if depths[index] > 0 and depths[index] >= cutoff
+        }
+
+    groups = _constrained_unit_partition(
+        units,
+        depths,
+        chosen,
+        min_seconds=min_seconds,
+        max_seconds=max_seconds,
+        desired_scenes=desired,
+    )
+    if not _is_exact_index_partition(groups, len(units)):
+        return _fallback("разбиение не покрыло главу целиком")
+
+    partition = [
+        [segment for unit_index in group for segment in units[unit_index]]
+        for group in groups
+    ]
+    if sum(len(group) for group in partition) != len(segments):
+        return _fallback("потеряны сегменты при сборке")
+    return partition
+
+
 def partition_segments_by_duration(
     segments: list[TranscriptSegment],
     *,

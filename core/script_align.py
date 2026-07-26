@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,7 @@ def scenes_from_script(
     min_seconds: int = 20,
     max_seconds: int = 90,
     target_seconds: int = 45,
+    partitioner: Callable[..., list[list[Any]]] | None = None,
 ) -> list[Any] | None:
     """Build edit-sized Scene objects inside authored transcript chapters.
 
@@ -160,8 +162,16 @@ def scenes_from_script(
     partitioned on real transcript boundaries so they cannot become multi-
     minute editing scenes. Returns None when the script is absent or alignment
     fails — the caller then falls back to embedding segmentation.
+
+    `partitioner` chooses where the cuts inside a chapter land. It defaults to
+    the duration partitioner; callers with an embedding endpoint pass the
+    semantic one so an authored chapter is still cut on topic shifts rather
+    than every `target_seconds`. Chapter boundaries stay authoritative either
+    way — the partitioner is only ever handed one chapter at a time.
     """
     from core.scenes import close_scene_timeline_gaps, partition_segments_by_duration
+
+    split = partitioner or partition_segments_by_duration
 
     beats = load_script_beats(project_dir)
     if not beats:
@@ -174,12 +184,20 @@ def scenes_from_script(
         segs = segments[s0:s1]
         if not segs:
             return None
-        groups = partition_segments_by_duration(
+        groups = split(
             segs,
             min_seconds=min_seconds,
             max_seconds=max_seconds,
             target_seconds=target_seconds,
         )
+        # A partitioner is allowed to degrade, never to lose narration.
+        if sum(len(group) for group in groups) != len(segs):
+            groups = partition_segments_by_duration(
+                segs,
+                min_seconds=min_seconds,
+                max_seconds=max_seconds,
+                target_seconds=target_seconds,
+            )
         base_title = beat.get("title") or f"Глава {beat_index}"
         for part_index, part in enumerate(groups, start=1):
             title = (
