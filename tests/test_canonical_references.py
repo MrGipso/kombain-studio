@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from core import canonical_references
 from core import comfy_generation
 from core.config import Settings
@@ -110,3 +112,29 @@ def test_required_reference_mode_fails_static_contract_before_generation(tmp_pat
     assert not status["ok"]
     assert not status["enabled"]
     assert "not found" in status["error"]
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "image_flux2_klein_reference_api.json",
+        "image_qwen_edit_reference_api.json",
+    ],
+)
+def test_bundled_reference_workflows_implement_engine_contract(filename: str):
+    path = Path(__file__).resolve().parents[1] / "workflows" / filename
+    settings = Settings(
+        comfy_reference_workflow=str(path),
+        reference_conditioning_mode="required",
+    )
+
+    status = comfy_generation.reference_workflow_status(settings)
+    workflow = comfy_generation.prepare_reference_image_workflow(
+        "same subject, different shot",
+        "canonical.png",
+        12,
+        settings=settings,
+    )
+
+    assert status["ok"] and status["enabled"]
+    assert len(workflow) >= 15
