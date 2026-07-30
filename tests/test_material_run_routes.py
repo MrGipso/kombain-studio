@@ -145,6 +145,73 @@ def test_provider_preflight_checks_only_required_material_workflows(
     assert set(result["workflows"]) == {"krea", "ltx"}
 
 
+def test_provider_preflight_includes_enabled_reference_workflow(
+    monkeypatch, tmp_path
+):
+    project = tmp_path / "project"
+    _project(project)
+    board_path = project / "06_asset_board.json"
+    cards = json.loads(board_path.read_text("utf-8"))
+    cards[0]["reference_frame_id"] = "office"
+    cards.append(
+        {
+            **cards[0],
+            "card_id": "card-2",
+            "shot_index": 2,
+            "start": "00:00:04",
+            "end": "00:00:08",
+        }
+    )
+    _write(board_path, cards)
+    reference = tmp_path / "reference.json"
+    _write(
+        reference,
+        {
+            "load": {
+                "class_type": "LoadImage",
+                "inputs": {"image": "old.png"},
+                "_meta": {"title": "ENGINE_REFERENCE_IMAGE"},
+            },
+            "prompt": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "old"},
+                "_meta": {"title": "ENGINE_PROMPT"},
+            },
+            "save": {
+                "class_type": "SaveImage",
+                "inputs": {"filename_prefix": "old"},
+                "_meta": {"title": "ENGINE_OUTPUT"},
+            },
+        },
+    )
+    settings = SimpleNamespace(
+        comfy_url="http://127.0.0.1:8188",
+        comfy_krea_workflow="",
+        comfy_reference_workflow=str(reference),
+        reference_conditioning_mode="required",
+        comfy_ideogram_workflow="",
+        comfy_ltx_workflow="",
+        comfy_ltx_draft_workflow="",
+        comfy_ace_workflow="",
+    )
+    paths = assets_router.comfy_client.configured_workflow_paths(settings)
+    object_info = {}
+    for name in ("krea", "ltx", "reference"):
+        workflow = json.loads(paths[name].read_text("utf-8"))
+        for node in workflow.values():
+            object_info[str(node["class_type"])] = {}
+    monkeypatch.setattr(
+        assets_router.comfy_client,
+        "comfy_request_json",
+        lambda *_args, **_kwargs: object_info,
+    )
+
+    result = assets_router._material_workflow_preflight(project, settings)
+
+    assert result["ok"] is True
+    assert result["required_workflows"] == ["krea", "ltx", "reference"]
+
+
 def test_unattended_preflight_uses_full_ltx_when_manual_draft_mode_is_auto(
     monkeypatch, tmp_path
 ):

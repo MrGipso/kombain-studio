@@ -69,6 +69,7 @@ export default function Settings() {
     { key: 'comfy_url', label: 'ComfyUI URL' },
     { key: 'comfy_install_dir', label: 'Portable ComfyUI — каталог установки' },
     { key: 'comfy_krea_workflow', label: 'Krea Workflow Path' },
+    { key: 'comfy_reference_workflow', label: 'Canonical Reference Workflow Path (API JSON)' },
     { key: 'comfy_ideogram_workflow', label: 'Ideogram Workflow Path' },
     { key: 'comfy_ltx_workflow', label: 'LTX Workflow Path' },
     { key: 'comfy_ltx_draft_workflow', label: 'LTX Draft Workflow Path (пусто = workflows/LTX23_GGUF_i2v_draft_api.json)' },
@@ -95,7 +96,7 @@ export default function Settings() {
     {
       title: 'Пути и инструменты',
       description: 'Локальные workflow, Whisper, FFmpeg и папка для результатов.',
-      keys: ['comfy_install_dir', 'comfy_krea_workflow', 'comfy_ideogram_workflow', 'comfy_ltx_workflow', 'comfy_ltx_draft_workflow', 'comfy_ace_workflow', 'whisper_cli', 'whisper_model', 'ffmpeg', 'whisper_language', 'omnivoice_cli', 'omnivoice_model', 'output_base'],
+      keys: ['comfy_install_dir', 'comfy_krea_workflow', 'comfy_reference_workflow', 'comfy_ideogram_workflow', 'comfy_ltx_workflow', 'comfy_ltx_draft_workflow', 'comfy_ace_workflow', 'whisper_cli', 'whisper_model', 'ffmpeg', 'whisper_language', 'omnivoice_cli', 'omnivoice_model', 'output_base'],
     },
     {
       title: 'Источники стоков',
@@ -306,9 +307,23 @@ export default function Settings() {
 
           <section className="space-y-4 border-b border-slate-800 pb-8">
             <div>
-              <h2 className="text-base font-semibold text-white">Генерация видео</h2>
-              <p className="mt-1 text-sm text-slate-500">Качество LTX, управление моделью и параметры подбора стоков.</p>
+              <h2 className="text-base font-semibold text-white">Генерация материалов</h2>
+              <p className="mt-1 text-sm text-slate-500">Canonical references, качество LTX, управление моделью и параметры подбора стоков.</p>
             </div>
+
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Canonical reference для связанных кадров</label>
+            <select
+              value={settings.reference_conditioning_mode || 'auto'}
+              onChange={(e) => setSettings({ ...settings, reference_conditioning_mode: e.target.value as SettingsType['reference_conditioning_mode'] })}
+              className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500"
+            >
+              <option value="off">off — только текстовый Context Bible</option>
+              <option value="auto">auto — использовать reference-workflow, если он настроен</option>
+              <option value="required">required — не запускать «Материал» без рабочего reference-workflow</option>
+            </select>
+            <p className="mt-1 text-xs leading-5 text-slate-500">Для режима auto/required API-workflow должен содержать по одному узлу с названиями ENGINE_REFERENCE_IMAGE, ENGINE_PROMPT и ENGINE_OUTPUT.</p>
+          </div>
 
           <div>
             <label className="block text-xs text-slate-500 mb-1">LTX: разрешение генерации (экспорт масштабирует под выбранный delivery-профиль)</label>

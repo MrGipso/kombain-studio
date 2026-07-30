@@ -70,6 +70,9 @@ def configured_workflow_paths(settings: object) -> dict[str, Path]:
         configured = str(getattr(settings, setting_names.get(name, ""), "") or "").strip()
         path = Path(configured).expanduser() if configured else default
         resolved[name] = path.resolve()
+    reference = str(getattr(settings, "comfy_reference_workflow", "") or "").strip()
+    if reference:
+        resolved["reference"] = Path(reference).expanduser().resolve()
     return resolved
 
 

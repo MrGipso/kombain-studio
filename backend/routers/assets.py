@@ -20,6 +20,7 @@ from core import reference as reference_lib
 from core import asset_variants
 from core import asset_qa
 from core import asset_qa_store
+from core import canonical_references
 from core import comfy as comfy_client
 from core import comfy_generation
 from core import lm as lm_client
@@ -329,6 +330,7 @@ def _generate_sync(
     *,
     cancel_check: Callable[[], bool] | None = None,
     defer_qa: bool = False,
+    reference_image: Path | None = None,
 ) -> dict[str, Any]:
     """Blocking generation logic, runs in thread pool. When skip_stock is True,
     a stock-routed card is generated with AI directly (no stock lookup). When
@@ -474,6 +476,7 @@ def _generate_sync(
                 card,
                 cancel_check=cancel_check,
                 settings=project.settings,
+                reference_image=reference_image,
             )
             card.image_output = str(img_path)
         seconds = max(2.0, timecode_to_seconds(card.end) - timecode_to_seconds(card.start))
@@ -546,6 +549,7 @@ def _generate_sync(
             card,
             cancel_check=cancel_check,
             settings=project.settings,
+            reference_image=reference_image,
         )
         card.image_output = str(img_path)
         card.route = "image"
@@ -590,6 +594,7 @@ def _generate_sync(
                 card,
                 cancel_check=cancel_check,
                 settings=project.settings,
+                reference_image=reference_image,
             )
             card.image_output = str(img_path)
         if card.video_model:
@@ -613,6 +618,7 @@ def _generate_sync(
             card,
             cancel_check=cancel_check,
             settings=project.settings,
+            reference_image=reference_image,
         )
         card.image_output = str(img_path)
         card.status = "image_ready"
@@ -1030,7 +1036,8 @@ def _required_material_workflows(
     settings,
 ) -> list[str]:
     required: set[str] = set()
-    for card in _load_asset_board(pdir):
+    cards = _load_asset_board(pdir)
+    for card in cards:
         data = card.__dict__
         visual_type = str(card.visual_type or "").lower()
         if (
@@ -1047,6 +1054,12 @@ def _required_material_workflows(
             # video operations. Preflight must validate the workflow that will
             # actually run, regardless of the manual LTX draft preference.
             required.add("ltx")
+    reference_status = comfy_generation.reference_workflow_status(settings)
+    if (
+        reference_status.get("enabled")
+        and canonical_references.reference_plan([card.__dict__ for card in cards])
+    ):
+        required.add("reference")
     return sorted(required)
 
 

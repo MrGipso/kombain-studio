@@ -195,7 +195,8 @@ async def update_settings(data: dict[str, Any]):
                     "stock_variable_rhythm",
                 }
                 asset_inputs = {
-                    "comfy_url", "comfy_krea_workflow", "comfy_ideogram_workflow",
+                    "comfy_url", "comfy_krea_workflow", "comfy_reference_workflow",
+                    "reference_conditioning_mode", "comfy_ideogram_workflow",
                     "comfy_ltx_workflow", "comfy_ltx_draft_workflow",
                     "pexels_api_key", "pixabay_api_key", "stock_score_threshold",
                     "stock_floor", "stock_retry_queries", "stock_max_seconds",

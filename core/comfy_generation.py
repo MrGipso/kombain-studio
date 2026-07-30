@@ -13,6 +13,7 @@ desktop API, which falls back to the current global settings.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -52,6 +53,9 @@ COMFY_LTX_WORKFLOW = DEFAULT_COMFY_LTX_WORKFLOW
 MAX_LTX_DURATION = 15
 MAX_ACE_DURATION = 120
 LTX_RESOLUTIONS = {"1920x1088": (1920, 1088), "1280x704": (1280, 704)}
+REFERENCE_NODE_TITLE = "ENGINE_REFERENCE_IMAGE"
+REFERENCE_PROMPT_TITLE = "ENGINE_PROMPT"
+REFERENCE_OUTPUT_TITLE = "ENGINE_OUTPUT"
 
 
 def _effective_settings(settings: object | None) -> object:
@@ -99,6 +103,115 @@ def _read_workflow(path: Path, *, label: str = "Workflow") -> dict:
     workflow = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(workflow, dict):
         raise ValueError(f"{label} root must be an object: {path}")
+    return workflow
+
+
+def _reference_contract_nodes(workflow: dict) -> tuple[dict, dict, dict, str]:
+    """Resolve explicit engine markers in a reference API workflow."""
+
+    marked: dict[str, list[dict]] = {
+        REFERENCE_NODE_TITLE: [],
+        REFERENCE_PROMPT_TITLE: [],
+        REFERENCE_OUTPUT_TITLE: [],
+    }
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        meta = node.get("_meta", {})
+        title = str(meta.get("title", "") if isinstance(meta, dict) else "").strip()
+        if title in marked:
+            marked[title].append(node)
+    invalid = [title for title, nodes in marked.items() if len(nodes) != 1]
+    if invalid:
+        raise ValueError(
+            "Reference workflow must contain exactly one node titled "
+            + ", ".join(invalid)
+        )
+    reference_node = marked[REFERENCE_NODE_TITLE][0]
+    prompt_node = marked[REFERENCE_PROMPT_TITLE][0]
+    output_node = marked[REFERENCE_OUTPUT_TITLE][0]
+    reference_inputs = reference_node.get("inputs")
+    prompt_inputs = prompt_node.get("inputs")
+    output_inputs = output_node.get("inputs")
+    if not isinstance(reference_inputs, dict) or "image" not in reference_inputs:
+        raise ValueError(f"{REFERENCE_NODE_TITLE} must expose inputs.image")
+    if not isinstance(prompt_inputs, dict):
+        raise ValueError(f"{REFERENCE_PROMPT_TITLE} has no inputs object")
+    prompt_keys = [key for key in ("text", "value", "prompt") if key in prompt_inputs]
+    if len(prompt_keys) != 1:
+        raise ValueError(
+            f"{REFERENCE_PROMPT_TITLE} must expose exactly one of text/value/prompt"
+        )
+    if not isinstance(output_inputs, dict) or "filename_prefix" not in output_inputs:
+        raise ValueError(f"{REFERENCE_OUTPUT_TITLE} must expose inputs.filename_prefix")
+    return reference_node, prompt_node, output_node, prompt_keys[0]
+
+
+def reference_workflow_status(settings: object | None = None) -> dict[str, Any]:
+    """Validate the static reference-workflow contract without contacting ComfyUI."""
+
+    effective = _effective_settings(settings)
+    mode = str(
+        _setting(effective, "reference_conditioning_mode", "auto") or "auto"
+    ).strip().lower()
+    configured = str(
+        _setting(effective, "comfy_reference_workflow", "") or ""
+    ).strip()
+    result: dict[str, Any] = {
+        "mode": mode,
+        "configured": bool(configured),
+        "enabled": False,
+        "ok": True,
+        "path": configured,
+    }
+    if mode == "off":
+        return result
+    if not configured:
+        if mode == "required":
+            result["ok"] = False
+            result["error"] = "Reference workflow is required but not configured"
+        return result
+    path = Path(configured).expanduser()
+    try:
+        workflow = _read_workflow(path, label="Reference workflow")
+        _reference_contract_nodes(workflow)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        result["ok"] = False
+        result["error"] = str(exc)
+        return result
+    result["enabled"] = True
+    result["path"] = str(path)
+    result["workflow_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def prepare_reference_image_workflow(
+    prompt: str,
+    reference_image_name: str,
+    shot_index: int,
+    *,
+    settings: object | None = None,
+) -> dict:
+    """Bind one canonical image to a marker-based API workflow."""
+
+    status = reference_workflow_status(settings)
+    if not status.get("ok") or not status.get("enabled"):
+        raise RuntimeError(
+            str(status.get("error") or "Reference workflow is not configured")
+        )
+    workflow = _read_workflow(
+        Path(str(status["path"])),
+        label="Reference workflow",
+    )
+    reference_node, prompt_node, output_node, prompt_key = _reference_contract_nodes(
+        workflow
+    )
+    reference_node["inputs"]["image"] = reference_image_name
+    prompt_node["inputs"][prompt_key] = prompt
+    output_node["inputs"]["filename_prefix"] = (
+        f"content_pipeline/shot_{shot_index:03d}_reference"
+    )
+    set_workflow_seed_values(workflow)
     return workflow
 
 
@@ -235,6 +348,7 @@ def generate_comfy_image(
     *,
     cancel_check: Callable[[], bool] | None = None,
     settings: object | None = None,
+    reference_image: Path | None = None,
 ) -> Path:
     model = card.image_model or "krea2_turbo"
     prompt = continuity.compile_generation_prompt(
@@ -245,12 +359,34 @@ def generate_comfy_image(
     )
     if not prompt:
         raise ValueError("Image prompt is empty")
-    workflow = prepare_image_workflow(
-        model,
-        prompt,
-        card.shot_index,
-        settings=settings,
-    )
+    reference_status = reference_workflow_status(settings)
+    if reference_image is not None and reference_status.get("enabled"):
+        # Validate the local workflow before mutating ComfyUI's input directory.
+        _read_workflow(Path(str(reference_status["path"])), label="Reference workflow")
+        digest = hashlib.sha256(Path(reference_image).read_bytes()).hexdigest()[:12]
+        uploaded = comfy_upload_image(
+            base_url,
+            Path(reference_image),
+            f"canonical_{digest}",
+        )
+        workflow = prepare_reference_image_workflow(
+            prompt,
+            uploaded,
+            card.shot_index,
+            settings=settings,
+        )
+        model = "reference"
+    elif reference_image is not None and not reference_status.get("ok"):
+        raise RuntimeError(
+            str(reference_status.get("error") or "Reference workflow unavailable")
+        )
+    else:
+        workflow = prepare_image_workflow(
+            model,
+            prompt,
+            card.shot_index,
+            settings=settings,
+        )
     prompt_id = comfy_queue_prompt(base_url, workflow)
     history = comfy_wait_for_history(base_url, prompt_id, cancel_check=cancel_check)
     outputs = comfy_collect_outputs(history, ("images",))
@@ -464,6 +600,9 @@ __all__ = [
     "LTX_RESOLUTIONS",
     "MAX_ACE_DURATION",
     "MAX_LTX_DURATION",
+    "REFERENCE_NODE_TITLE",
+    "REFERENCE_OUTPUT_TITLE",
+    "REFERENCE_PROMPT_TITLE",
     "configured_workflow_path",
     "generate_comfy_image",
     "generate_comfy_ltx_video",
@@ -473,7 +612,9 @@ __all__ = [
     "prepare_image_workflow",
     "prepare_ltx_workflow",
     "prepare_music_workflow",
+    "prepare_reference_image_workflow",
     "project_video_style_id",
+    "reference_workflow_status",
     "set_workflow_seed_values",
     "style_negative_for_clip",
 ]

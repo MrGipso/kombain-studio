@@ -43,6 +43,12 @@ class Settings:
     comfy_watchdog_max_restarts: Annotated[int, Field(ge=1, le=10)] = 3
     comfy_watchdog_restart_window_seconds: Annotated[int, Field(ge=60, le=86400)] = 1800
     comfy_krea_workflow: str = ""
+    # Optional API-format image workflow used for continuity groups.  The
+    # workflow contract is marker-based (ENGINE_REFERENCE_IMAGE,
+    # ENGINE_PROMPT, ENGINE_OUTPUT), so the engine never guesses which
+    # LoadImage/text/save node should be mutated.
+    comfy_reference_workflow: str = ""
+    reference_conditioning_mode: Literal["off", "auto", "required"] = "auto"
     comfy_ideogram_workflow: str = ""
     comfy_ltx_workflow: str = ""
     comfy_ace_workflow: str = ""

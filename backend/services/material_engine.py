@@ -17,6 +17,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from backend.services import jobs
 from core import board as board_store
+from core import canonical_references
+from core import comfy_generation
 from core import kenburns
 from core import media_observations
 from core.config import load_settings
@@ -68,6 +70,8 @@ _SYSTEMIC_PROVIDER_MARKERS = (
     "missing_node_type",
     "workflow file not found",
     "model file not found",
+    "canonical reference unavailable",
+    "reference workflow",
 )
 
 
@@ -282,6 +286,26 @@ def _card_run_state(run: dict[str, Any], operation: dict[str, Any]) -> dict[str,
     )
 
 
+def _reference_snapshot_matches_current(plan: dict[str, Any]) -> bool:
+    """Prevent resume with a different conditioning workflow or policy."""
+
+    if int(plan.get("schema_version", 0) or 0) < 3:
+        return True
+    frozen = plan.get("reference_conditioning", {})
+    if not isinstance(frozen, dict):
+        return False
+    current = comfy_generation.reference_workflow_status(load_settings())
+    if str(frozen.get("mode", "auto")) != str(current.get("mode", "auto")):
+        return False
+    if bool(frozen.get("enabled")) != bool(current.get("enabled")):
+        return False
+    if frozen.get("enabled"):
+        return str(frozen.get("workflow_sha256", "")) == str(
+            current.get("workflow_sha256", "")
+        )
+    return True
+
+
 def run_unattended_materials(
     project_dir: Path | str,
     project_id: str,
@@ -307,6 +331,7 @@ def run_unattended_materials(
         and existing.get("status") in {"queued", "running", "interrupted"}
         and existing.get("plan_hash") == frozen_plan.get("plan_hash")
         and material_plan_matches_project(root, frozen_plan)
+        and _reference_snapshot_matches_current(frozen_plan)
         and policy.auto_resume
     )
     if resumable:
@@ -325,6 +350,12 @@ def run_unattended_materials(
     try:
         cards = board_store.load_asset_board(root)
         operations = [dict(operation) for operation in frozen_plan["operations"]]
+        for operation in operations:
+            operation.setdefault(
+                "operation_id",
+                f"{operation.get('phase', 'other')}:{operation.get('card_id', '')}",
+            )
+            operation.setdefault("depends_on", [])
         summary = run.setdefault("summary", {})
         summary["cards_total"] = len(cards)
         summary["operations_total"] = len(operations)
@@ -333,6 +364,10 @@ def run_unattended_materials(
         summary.setdefault("fallbacks", 0)
         summary.setdefault("failures", 0)
         completed = 0
+        completed_operation_ids: set[str] = set()
+        reference_conditioning_enabled = bool(
+            frozen_plan.get("reference_conditioning", {}).get("enabled")
+        )
 
         # Fallback rendering uses the same configured binary as the ordinary
         # generator/export path.
@@ -340,6 +375,16 @@ def run_unattended_materials(
 
         for operation in operations:
             jobs.check(cancel_event)
+            missing_dependencies = [
+                operation_id
+                for operation_id in operation.get("depends_on", [])
+                if operation_id not in completed_operation_ids
+            ]
+            if missing_dependencies:
+                raise MaterialSystemicProviderError(
+                    "Нарушен замороженный граф операций; не завершены зависимости: "
+                    + ", ".join(missing_dependencies)
+                )
             card_index, card = _resolve_card(root, operation["card_id"])
             operation["card_index"] = card_index
             card_state = _card_run_state(run, operation)
@@ -369,8 +414,17 @@ def run_unattended_materials(
                     card_state["error"] = f"Повреждён промежуточный файл: {exc}"
                     save_material_run(root, run)
                 else:
+                    if operation.get("reference_role") == "anchor":
+                        canonical_references.register_reference(
+                            root,
+                            reference_frame_id=operation["reference_frame_id"],
+                            anchor_card_id=card.card_id,
+                            anchor_shot_index=card.shot_index,
+                            image_path=card.image_output,
+                        )
                     card_state["status"] = "ready"
                     completed += 1
+                    completed_operation_ids.add(operation["operation_id"])
                     summary["operations_completed"] = completed
                     save_material_run(root, run)
                     jobs.update_progress(
@@ -397,6 +451,51 @@ def run_unattended_materials(
                 if previous_attempts >= attempts
                 else None
             )
+            reference_image: Path | None = None
+            if (
+                reference_conditioning_enabled
+                and operation.get("reference_role") == "dependent"
+            ):
+                reference_image = canonical_references.resolve_reference(
+                    root,
+                    operation["reference_frame_id"],
+                    expected_anchor_card_id=operation["reference_anchor_card_id"],
+                )
+                if reference_image is None:
+                    # Recover the registry deterministically after a process
+                    # crash that happened between board save and registry save.
+                    _, anchor_card = _resolve_card(
+                        root,
+                        operation["reference_anchor_card_id"],
+                    )
+                    anchor_run_state = run.get("cards", {}).get(
+                        operation["reference_anchor_card_id"],
+                        {},
+                    )
+                    if (
+                        not anchor_run_state.get("fallback")
+                        and anchor_card.image_output
+                        and Path(anchor_card.image_output).is_file()
+                    ):
+                        canonical_references.register_reference(
+                            root,
+                            reference_frame_id=operation["reference_frame_id"],
+                            anchor_card_id=anchor_card.card_id,
+                            anchor_shot_index=anchor_card.shot_index,
+                            image_path=anchor_card.image_output,
+                        )
+                        reference_image = canonical_references.resolve_reference(
+                            root,
+                            operation["reference_frame_id"],
+                            expected_anchor_card_id=operation[
+                                "reference_anchor_card_id"
+                            ],
+                        )
+                if reference_image is None:
+                    raise MaterialSystemicProviderError(
+                        "Canonical reference unavailable for "
+                        f"{operation['reference_frame_id']}"
+                    )
             for attempt in range(previous_attempts + 1, attempts + 1):
                 jobs.check(cancel_event)
                 if (
@@ -472,6 +571,7 @@ def run_unattended_materials(
                         operation["phase"] == "videos",
                         cancel_check=lambda: jobs.check(cancel_event),
                         defer_qa=True,
+                        reference_image=reference_image,
                     )
                     result_card = result.get("card") if isinstance(result, dict) else None
                     if isinstance(result_card, dict):
@@ -485,6 +585,14 @@ def run_unattended_materials(
                         enabled=policy.technical_validation,
                     )
                     error = None
+                    if operation.get("reference_role") == "anchor":
+                        canonical_references.register_reference(
+                            root,
+                            reference_frame_id=operation["reference_frame_id"],
+                            anchor_card_id=card.card_id,
+                            anchor_shot_index=card.shot_index,
+                            image_path=card.image_output,
+                        )
                     card_state["status"] = "ready"
                     card_state["error"] = ""
                     break
@@ -524,6 +632,7 @@ def run_unattended_materials(
                 summary["fallbacks"] = int(summary.get("fallbacks", 0)) + 1
 
             completed += 1
+            completed_operation_ids.add(operation["operation_id"])
             summary["operations_completed"] = completed
             save_material_run(root, run)
             jobs.update_progress(

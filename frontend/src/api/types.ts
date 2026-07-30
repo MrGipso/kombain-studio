@@ -470,6 +470,8 @@ export interface Settings {
   comfy_watchdog_max_restarts: number
   comfy_watchdog_restart_window_seconds: number
   comfy_krea_workflow: string
+  comfy_reference_workflow: string
+  reference_conditioning_mode: 'off' | 'auto' | 'required'
   comfy_ideogram_workflow: string
   comfy_ltx_workflow: string
   comfy_ace_workflow: string

@@ -12,6 +12,7 @@ from core import continuity
 from core import production as production_core
 from core.models import AssetCard
 from core.project import content_hash
+from core.config import Settings
 from core.production import (
     ProductionPolicy,
     annotate_shot_segments,
@@ -278,6 +279,28 @@ def test_context_aware_preflight_accepts_fresh_causal_storyboard(tmp_path):
     request = snapshot["asset_requests"][0]
     assert "Storyboard continuity constraints:" in request["compiled_image_prompt"]
     assert "initial visible state:" in request["compiled_video_prompt"]
+
+
+def test_required_reference_workflow_blocks_before_material_run(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    _project(root, repeated=True)
+    _add_context_bible(root)
+    monkeypatch.setattr(
+        "core.config.load_settings",
+        lambda: Settings(
+            comfy_reference_workflow=str(tmp_path / "missing-reference.json"),
+            reference_conditioning_mode="required",
+        ),
+    )
+
+    result = preflight_material_plan(root)
+
+    assert not result.allowed
+    assert "reference_workflow_unavailable" in {
+        issue.code for issue in result.issues
+    }
 
 
 def test_context_preflight_blocks_stale_bible_and_group_conflict(tmp_path):
@@ -584,6 +607,71 @@ def test_unattended_video_uses_full_quality_workflow(tmp_path):
 
     assert result["status"] == "succeeded"
     assert force_full_by_mode == {"image": False, "video": True}
+
+
+def test_unattended_continuity_group_passes_one_anchor_to_every_dependent(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    _project(root, repeated=True)
+    _add_context_bible(root)
+    workflow = tmp_path / "reference.json"
+    _write_json(
+        workflow,
+        {
+            "load": {
+                "class_type": "LoadImage",
+                "inputs": {"image": "old.png"},
+                "_meta": {"title": "ENGINE_REFERENCE_IMAGE"},
+            },
+            "prompt": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "old"},
+                "_meta": {"title": "ENGINE_PROMPT"},
+            },
+            "save": {
+                "class_type": "SaveImage",
+                "inputs": {"filename_prefix": "old"},
+                "_meta": {"title": "ENGINE_OUTPUT"},
+            },
+        },
+    )
+    configured = Settings(
+        comfy_reference_workflow=str(workflow),
+        reference_conditioning_mode="required",
+    )
+    monkeypatch.setattr("core.config.load_settings", lambda: configured)
+    references_by_shot = {}
+
+    def generate(project_dir, card_index, mode, *_args, **kwargs):
+        cards = board_store.load_asset_board(project_dir)
+        card = cards[card_index]
+        if mode == "image":
+            references_by_shot[card.shot_index] = kwargs.get("reference_image")
+            output = project_dir / "assets" / "images" / f"shot-{card.shot_index}.png"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (32, 32), "navy").save(output)
+            card.image_output = str(output)
+        else:
+            output = project_dir / "assets" / "videos" / f"shot-{card.shot_index}.mp4"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"video")
+            card.video_output = str(output)
+        card.status = "generated"
+        board_store.write_asset_board(project_dir, cards)
+        return {"card": card.__dict__}
+
+    result = material_engine.run_unattended_materials(
+        root,
+        root.name,
+        ProductionPolicy(technical_validation=False),
+        threading.Event(),
+        generate,
+    )
+
+    assert result["status"] == "succeeded"
+    assert references_by_shot[1] is None
+    assert references_by_shot[2] == root / "assets" / "images" / "shot-1.png"
 
 
 def test_corrupt_crash_output_is_regenerated_instead_of_skipped(

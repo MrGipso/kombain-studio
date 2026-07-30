@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from core import continuity
+from core import canonical_references, continuity
 from core.project import atomic_write_text, content_hash
 
 
@@ -25,7 +25,8 @@ MATERIAL_RUN_FILE = ".material_run.json"
 MATERIAL_RUN_BACKUP_FILE = ".material_run.backup.json"
 MATERIAL_PLAN_FILE = ".material_plan.json"
 MATERIAL_RUN_SCHEMA_VERSION = 1
-MATERIAL_PLAN_SCHEMA_VERSION = 2
+MATERIAL_PLAN_SCHEMA_VERSION = 3
+MATERIAL_PLAN_SUPPORTED_SCHEMA_VERSIONS = {1, 2, MATERIAL_PLAN_SCHEMA_VERSION}
 MATERIAL_PLAN_CARD_FIELDS = (
     "card_id",
     "shot_index",
@@ -346,16 +347,17 @@ def build_material_operations(
         kind: str,
         phase: str,
     ) -> None:
-        operations.append(
-            {
-                "card_index": card_index,
-                "card_id": str(card.get("card_id", "") or ""),
-                "shot_index": int(card.get("shot_index", 0) or 0),
-                "mode": mode,
-                "kind": kind,
-                "phase": phase,
-            }
-        )
+        operation = {
+            "card_index": card_index,
+            "card_id": str(card.get("card_id", "") or ""),
+            "shot_index": int(card.get("shot_index", 0) or 0),
+            "mode": mode,
+            "kind": kind,
+            "phase": phase,
+        }
+        operation["operation_id"] = f"{phase}:{operation['card_id']}"
+        operation["depends_on"] = []
+        operations.append(operation)
 
     for index, card in active:
         visual_type = str(card.get("visual_type", "") or "").lower()
@@ -392,6 +394,45 @@ def build_material_operations(
         ):
             continue
         add(index, card, "route", "video", "other")
+
+    assignments = canonical_references.build_reference_assignments(cards)
+    image_operation_by_card = {
+        operation["card_id"]: operation
+        for operation in operations
+        if operation["phase"] == "images"
+    }
+    for operation in operations:
+        assignment = assignments.get(operation["card_id"])
+        if operation["phase"] == "images" and assignment:
+            operation.update(assignment)
+            anchor_operation = image_operation_by_card.get(
+                assignment["reference_anchor_card_id"]
+            )
+            if (
+                assignment["reference_role"] == "dependent"
+                and anchor_operation is not None
+            ):
+                operation["depends_on"].append(anchor_operation["operation_id"])
+        elif operation["phase"] in {"kenburns", "videos"}:
+            image_operation = image_operation_by_card.get(operation["card_id"])
+            if image_operation is not None:
+                operation["depends_on"].append(image_operation["operation_id"])
+
+    phase_order = {
+        "sources": 0,
+        "images": 1,
+        "kenburns": 2,
+        "videos": 3,
+        "other": 4,
+    }
+    operations.sort(
+        key=lambda operation: (
+            phase_order.get(operation["phase"], 99),
+            0 if operation.get("reference_role") == "anchor" else 1,
+            int(operation.get("shot_index", 0) or 0),
+            operation["operation_id"],
+        )
+    )
     return operations
 
 
@@ -1234,6 +1275,46 @@ def preflight_material_plan(project_dir: Path | str) -> MaterialPreflight:
             )
         )
 
+    canonical_plan = canonical_references.reference_plan(cards)
+    if canonical_plan:
+        # Static validation only: no prompt is queued and ComfyUI is not
+        # contacted during preflight.
+        from core.comfy_generation import reference_workflow_status
+        from core.config import load_settings
+
+        reference_status = reference_workflow_status(load_settings())
+        if not reference_status.get("ok"):
+            issues.append(
+                PreflightIssue(
+                    code="reference_workflow_unavailable",
+                    level="blocker",
+                    message=(
+                        "Визуальный reference обязателен, но reference-workflow "
+                        f"не готов: {reference_status.get('error', 'unknown error')}"
+                    ),
+                    details={
+                        "mode": reference_status.get("mode"),
+                        "groups": len(canonical_plan),
+                    },
+                )
+            )
+        elif not reference_status.get("enabled"):
+            issues.append(
+                PreflightIssue(
+                    code="reference_conditioning_text_only",
+                    level="warning",
+                    message=(
+                        "Связанные кадры используют Context Bible только текстом. "
+                        "Для передачи одного эталона изображения всем кадрам "
+                        "группы настройте marker-based reference-workflow."
+                    ),
+                    details={
+                        "mode": reference_status.get("mode"),
+                        "groups": len(canonical_plan),
+                    },
+                )
+            )
+
     excluded = sum(
         str(card.get("status", "") or "").lower() == "skipped" for card in cards
     )
@@ -1279,6 +1360,10 @@ def freeze_material_plan(
     }
     anchor_requirements = _shot_anchor_requirements(shots, segments)
     context_bible = continuity.load_context_bible(root)
+    from core.comfy_generation import reference_workflow_status
+    from core.config import load_settings
+
+    reference_status = reference_workflow_status(load_settings())
     visual_concepts: list[VisualConcept] = []
     for shot in shots:
         scene_index = int(shot.get("scene_index", 0) or 0)
@@ -1365,6 +1450,12 @@ def freeze_material_plan(
         "scenes": scenes,
         "shots": shots,
         "context_bible": context_bible,
+        "reference_plan": canonical_references.reference_plan(cards),
+        "reference_conditioning": {
+            key: reference_status.get(key)
+            for key in ("mode", "enabled", "workflow_sha256")
+            if reference_status.get(key) not in (None, "")
+        },
         "visual_concepts": [
             {
                 key: value
@@ -1420,7 +1511,7 @@ def load_material_plan(project_dir: Path | str) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     schema_version = int(data.get("schema_version", 0) or 0)
-    if schema_version not in {1, MATERIAL_PLAN_SCHEMA_VERSION}:
+    if schema_version not in MATERIAL_PLAN_SUPPORTED_SCHEMA_VERSIONS:
         return None
     scenes = data.get("scenes")
     shots = data.get("shots")
