@@ -4,7 +4,7 @@ import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
 import { FinalToggle } from '../components/FinalToggle'
 import { excludeImpact, hasMedia, isExcluded, isIncluded, LONG_SLOT_WARNING_SECONDS, tcToSec } from '../lib/cards'
-import type { AssetCard, AssetVariant, AssetVariantHistory } from '../api/types'
+import type { AssetCard, AssetVariant, AssetVariantHistory, ComfyWatchdogStatus, MaterialPreflight, MaterialRunState } from '../api/types'
 
 interface Context {
   projectId: string
@@ -57,12 +57,13 @@ const ROUTE_LABELS: Record<string, string> = {
 // answering a click with a red error — having nothing left to do is a normal
 // state, not a failure.
 function BatchButton({
-  label, targets, busy, blocked, onClick, hint, primary = false, danger = false,
+  label, targets, busy, blocked, blockedHint, onClick, hint, primary = false, danger = false,
 }: {
   label: string
   targets: number
   busy: boolean
   blocked: boolean
+  blockedHint?: string
   onClick: () => void
   hint: string
   primary?: boolean
@@ -76,7 +77,7 @@ function BatchButton({
       ? 'bg-indigo-600 text-white hover:bg-indigo-500 focus-visible:ring-indigo-400'
       : 'border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 focus-visible:ring-indigo-500'
   const title = blocked
-    ? 'Сначала сохраните изменённые карточки.'
+    ? blockedHint || 'Сначала сохраните изменённые карточки.'
     : empty
       ? `${hint}\n\nСейчас подходящих кадров нет.`
       : `${hint}\n\nБудет обработано: ${targets}.`
@@ -189,6 +190,10 @@ function isWeakQa(card: AssetCard): boolean {
   return typeof score === 'number' && score >= 0 && score < 0.45
 }
 
+function isActiveMaterialStatus(status?: string): boolean {
+  return status === 'queued' || status === 'running' || status === 'interrupted'
+}
+
 // Planned on-screen length of a shot, from its timeline slot.
 function cardSeconds(card: AssetCard): number {
   return Math.max(0, tcToSec(card.timeline_end || card.end) - tcToSec(card.timeline_start || card.start))
@@ -233,6 +238,7 @@ function activityLabel(value: string) {
   if (value === 'batch-image') return 'Пакетная генерация картинок'
   if (value === 'batch-video') return 'Пакетная генерация видео'
   if (value === 'batch-exclude') return 'Пакетное исключение из финала'
+  if (value === 'Автономная сборка материалов') return 'Автономная сборка материалов'
   return 'Операция проекта'
 }
 
@@ -260,12 +266,17 @@ export default function AssetBoard() {
   const [localBusy, setLocalBusyState] = useState<string | null>(null)
   const [mediaVersion, setMediaVersion] = useState(0)
   const [stockProgress, setStockProgress] = useState<{ label: string; done: number; total: number } | null>(null)
+  const [materialRun, setMaterialRun] = useState<MaterialRunState | null>(null)
+  const [materialPreflight, setMaterialPreflight] = useState<MaterialPreflight | null>(null)
+  const [comfyWatchdog, setComfyWatchdog] = useState<ComfyWatchdogStatus | null>(null)
   const [cancelRequested, setCancelRequested] = useState(false)
   const [variantHistory, setVariantHistory] = useState<AssetVariantHistory | null>(null)
   const [variantsLoading, setVariantsLoading] = useState(false)
   const [variantsError, setVariantsError] = useState<string | null>(null)
   const [selectingVariant, setSelectingVariant] = useState<string | null>(null)
   const cancelBatchRef = useRef(false)
+  const materialRunStatusRef = useRef<string>('not_started')
+  const materialRunLoadedRef = useRef(false)
   const boardRequestRef = useRef(0)
   const variantRequestRef = useRef(0)
   const hasLoadedBoardRef = useRef(false)
@@ -507,6 +518,79 @@ export default function AssetBoard() {
     }, 4000)
     return () => clearInterval(id)
   }, [anyGenerating, busy, load])
+
+  // Unlike the legacy browser-owned batch loop, an unattended run lives on
+  // the server. Navigation/reload is safe; this page merely reconnects to its
+  // checkpoint and refreshes the board while work continues.
+  useEffect(() => {
+    let active = true
+    const refresh = async () => {
+      try {
+        const state = await api.getMaterialRun(projectId)
+        if (!active) return
+        setMaterialRun(state)
+        const previous = materialRunStatusRef.current
+        const hadLoaded = materialRunLoadedRef.current
+        materialRunLoadedRef.current = true
+        materialRunStatusRef.current = state.status
+        if (hadLoaded && state.status === 'succeeded' && previous !== 'succeeded') {
+          toast.success(`Все материалы готовы${state.summary?.fallbacks ? ` · резервных кадров: ${state.summary.fallbacks}` : ''}`)
+        } else if (hadLoaded && state.status === 'failed' && previous !== 'failed') {
+          toast.error(state.error || 'Автономная сборка материалов остановилась с ошибкой')
+        }
+        if (state.status === 'running' || state.status === 'queued') {
+          await load()
+          setMediaVersion((value) => value + 1)
+        } else if (previous === 'running' || previous === 'queued') {
+          // Also covers very short jobs which finish before ProjectLayout sees
+          // the durable job record and would otherwise leave its busy banner on.
+          setBusy(null)
+          await load()
+          setMediaVersion((value) => value + 1)
+        }
+      } catch {
+        // The durable project-job poll in ProjectLayout remains the fallback.
+      }
+    }
+    void refresh()
+    const id = window.setInterval(refresh, 3000)
+    return () => {
+      active = false
+      window.clearInterval(id)
+    }
+  }, [load, projectId, setBusy, toast])
+
+  useEffect(() => {
+    let active = true
+    const refresh = async () => {
+      try {
+        const state = await api.getComfyWatchdog()
+        if (active) setComfyWatchdog(state)
+      } catch {
+        if (active) setComfyWatchdog(null)
+      }
+    }
+    void refresh()
+    const id = window.setInterval(refresh, 5000)
+    return () => {
+      active = false
+      window.clearInterval(id)
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    api.getMaterialPreflight(projectId)
+      .then((result) => {
+        if (active) setMaterialPreflight(result)
+      })
+      .catch(() => {
+        if (active) setMaterialPreflight(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [cards.length, projectId])
 
   const visibleIndexes = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -803,7 +887,7 @@ export default function AssetBoard() {
     }
   }
 
-  const runGenerateCard = async (index: number, mode: 'route' | 'image' | 'video', skipStock = false, forceFull = false, deferQa = false): Promise<AssetCard | null> => {
+  const runGenerateCard = async (index: number, mode: 'route' | 'image' | 'video', skipStock = false, forceFull = false, deferQa = true): Promise<AssetCard | null> => {
     patchCardAt(index, { status: 'generating' }) // optimistic, so the UI reflects work immediately
     try {
       const result = await api.generateCard(projectId, index, cards[index].card_id, mode, skipStock, forceFull, deferQa)
@@ -921,6 +1005,26 @@ export default function AssetBoard() {
     toast.info('Останавливаю очередь после текущей карточки')
   }
 
+  const requestCancelWork = async () => {
+    if (!isActiveMaterialStatus(materialRun?.status)) {
+      requestCancelBatch()
+      return
+    }
+    setCancelRequested(true)
+    try {
+      const result = await api.cancelJob(projectId)
+      if (result.cancelled) {
+        toast.info('Отмена запрошена — prompt будет удалён или остановлен в ComfyUI')
+      } else {
+        setCancelRequested(false)
+        toast.info('Активная серверная задача уже не выполняется')
+      }
+    } catch (error) {
+      setCancelRequested(false)
+      toast.error((error as Error).message)
+    }
+  }
+
   const regeneratePrompt = async (index: number, target: 'image_prompt' | 'video_prompt') => {
     setLocalBusy(`prompt-${target}-${index}`)
     try {
@@ -936,38 +1040,54 @@ export default function AssetBoard() {
     }
   }
 
-  // ai_qa_timing=after_queue: очередь генерирует без встроенного QA, а vision-
-  // модель загружается один раз в финальной фазе (нет свопа VRAM с Krea/LTX).
-  const resolveDeferQa = async (): Promise<boolean> => {
-    try {
-      const s = await api.getSettings()
-      return Boolean(s.ai_frame_qa) && s.ai_qa_timing === 'after_queue'
-    } catch {
-      return false // настройки недоступны — QA остаётся встроенным
+  const startUnattendedMaterials = async () => {
+    if (hasUnsavedChanges) {
+      toast.error('Сначала сохраните изменённые карточки')
+      return
     }
-  }
-
-  const runCardQaPass = async (targets: Array<[number, string]>) => {
-    if (!targets.length) return
-    const label = 'AI-проверка (vision)'
-    setStockProgress({ label, done: 0, total: targets.length })
-    let done = 0
-    for (const [index, cardId] of targets) {
-      if (cancelBatchRef.current) return
-      try {
-        const res = await api.runCardQa(projectId, index, cardId)
-        if (res.card) updateCardAt(index, res.card)
-      } catch {
-        // QA-сбой не должен ронять очередь: карточка уже сгенерирована.
-      }
-      done++
-      setStockProgress({ label, done, total: targets.length })
+    try {
+      const result = await api.startMaterialRun(projectId)
+      setBusy('Автономная сборка материалов')
+      setMaterialRun({
+        schema_version: 1,
+        project_id: projectId,
+        status: 'running',
+        policy: result.policy,
+        summary: {
+          cards_total: result.preflight.cards,
+          cards_ready: result.preflight.ready_cards,
+          operations_total: result.preflight.pending_images + result.preflight.pending_videos,
+          operations_completed: 0,
+          retries: 0,
+          fallbacks: 0,
+          failures: 0,
+        },
+      })
+      materialRunLoadedRef.current = true
+      materialRunStatusRef.current = 'running'
+      const warnings = result.preflight.warnings
+      toast.success(
+        warnings
+          ? `Автономная сборка запущена · предупреждений плана: ${warnings}`
+          : 'Автономная сборка запущена — страницу можно закрыть',
+      )
+    } catch (error) {
+      const detail = api.isApiError(error, 409) && error.detail && typeof error.detail === 'object'
+        ? error.detail as { issues?: Array<{ level?: string; message?: string }> }
+        : null
+      const blockers = detail?.issues
+        ?.filter((issue) => issue.level === 'blocker')
+        .map((issue) => issue.message)
+        .filter(Boolean)
+      toast.error(blockers?.length ? blockers.join(' ') : (error as Error).message)
     }
   }
 
   const batchGenerate = async (mode: 'route' | 'image' | 'video') => {
     const candidates = checkedIndexes.length ? checkedIndexes : visibleIndexes
-    const deferQa = await resolveDeferQa()
+    // Generation from this interface never invokes the legacy vision-QA pass.
+    // Technical file validation remains part of the unattended engine.
+    const deferQa = true
     if (mode !== 'route') {
       const targets = candidates.filter((index) => {
         const card = cards[index]
@@ -982,16 +1102,14 @@ export default function AssetBoard() {
       let ok = 0
       let fail = 0
       let done = 0
-      const generated: Array<[number, string]> = []
       for (const index of targets) {
         if (cancelBatchRef.current) break
         const card = await runGenerateCard(index, mode, false, false, deferQa)
-        if (card) { ok++; generated.push([index, card.card_id]) }
+        if (card) ok++
         else fail++
         done++
         setStockProgress({ label, done, total: targets.length })
       }
-      if (deferQa && !cancelBatchRef.current) await runCardQaPass(generated)
       const stopped = cancelBatchRef.current
       finishBatch()
       if (stopped) toast.info(`${label}: остановлено после ${done} из ${targets.length}`)
@@ -1091,16 +1209,6 @@ export default function AssetBoard() {
         eligible.filter((i) => vt(i) === 'ai_image_then_i2v' && live[i].image_output && !live[i].video_output),
         (i) => runGenerateCard(i, 'video', false, false, deferQa),
       )
-    }
-
-    // 5) Отложенный QA: vision-модель грузится один раз на всю пачку.
-    if (!stopped && deferQa) {
-      await runCardQaPass(
-        eligible
-          .filter((i) => live[i] && (live[i].image_output || live[i].video_output))
-          .map((i) => [i, live[i].card_id] as [number, string]),
-      )
-      stopped = cancelBatchRef.current
     }
 
     finishBatch()
@@ -1312,6 +1420,32 @@ export default function AssetBoard() {
     return () => window.removeEventListener('beforeunload', warnBeforeUnload)
   }, [hasUnsavedChanges, isBatchBusy])
   const currentActivityLabel = stockProgress?.label || (busy ? activityLabel(busy) : '')
+  const unattendedActive = isActiveMaterialStatus(materialRun?.status)
+  const unattendedRunning = materialRun?.status === 'running' || materialRun?.status === 'queued'
+  const unattendedWaiting = materialRun?.status === 'interrupted'
+  const unattendedCompleted = materialRun?.summary?.operations_completed || 0
+  const unattendedTotal = materialRun?.summary?.operations_total || 0
+  const unattendedPercent = Math.round((unattendedCompleted / Math.max(1, unattendedTotal)) * 100)
+  const watchdogLabel = !comfyWatchdog
+    ? 'watchdog: нет связи'
+    : comfyWatchdog.status === 'healthy'
+      ? 'ComfyUI под защитой'
+      : comfyWatchdog.status === 'restarting'
+        ? 'ComfyUI перезапускается'
+        : comfyWatchdog.status === 'degraded'
+          ? `ComfyUI: сбой ${comfyWatchdog.consecutive_failures}`
+          : comfyWatchdog.status === 'disabled'
+            ? 'watchdog выключен'
+            : `watchdog: ${comfyWatchdog.status}`
+  const watchdogTone = comfyWatchdog?.status === 'healthy'
+    ? 'bg-emerald-950 text-emerald-300 ring-emerald-800/70'
+    : comfyWatchdog?.status === 'restarting'
+      ? 'bg-sky-950 text-sky-300 ring-sky-800/70 motion-safe:animate-pulse'
+      : comfyWatchdog?.status === 'disabled'
+        ? 'bg-slate-800 text-slate-400 ring-slate-700'
+        : comfyWatchdog?.status === 'degraded'
+          ? 'bg-amber-950 text-amber-300 ring-amber-800/70'
+          : 'bg-rose-950 text-rose-300 ring-rose-800/70'
   const bulkScopeLabel = checkedIndexes.length
     ? `${checkedIndexes.length} выбранных`
     : `${visibleIndexes.length} видимых`
@@ -1339,7 +1473,7 @@ export default function AssetBoard() {
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-400">Визуальное производство</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white sm:text-3xl">Материалы</h1>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
-            Подготовьте изображения, видео и источники для каждого кадра, затем выберите версии для финального монтажа.
+            Проверьте план кадров один раз и запустите автономную сборку. Очередь продолжит работу после ухода со страницы и восстановится после перезапуска.
           </p>
         </div>
         {busy ? (
@@ -1388,23 +1522,73 @@ export default function AssetBoard() {
         ))}
       </section>
 
+      {materialPreflight && materialPreflight.issues.length > 0 && (
+        <section aria-labelledby="preflight-title" className={`rounded-xl border p-4 ${
+          materialPreflight.blockers
+            ? 'border-rose-800/70 bg-rose-950/25'
+            : 'border-amber-800/70 bg-amber-950/20'
+        }`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 id="preflight-title" className="text-sm font-semibold text-white">
+                Проверка плана перед производством
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Это проверка смысла и целостности плана, а не QA сгенерированных файлов.
+              </p>
+            </div>
+            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+              materialPreflight.blockers
+                ? 'bg-rose-950 text-rose-300'
+                : 'bg-amber-950 text-amber-300'
+            }`}>
+              {materialPreflight.blockers
+                ? `Нужно исправить: ${materialPreflight.blockers}`
+                : `Предупреждений: ${materialPreflight.warnings}`}
+            </span>
+          </div>
+          <ul className="mt-3 space-y-1.5 text-xs">
+            {materialPreflight.issues.map((issue, index) => (
+              <li key={`${issue.code}-${issue.scene_index || 0}-${issue.shot_index || 0}-${index}`} className={issue.level === 'blocker' ? 'text-rose-300' : 'text-amber-200'}>
+                <span className="mr-2 font-mono text-[10px] uppercase opacity-70">
+                  {issue.level === 'blocker' ? 'стоп' : 'проверьте'}
+                </span>
+                {issue.message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section aria-labelledby="bulk-title" className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-lg shadow-slate-950/20">
         <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-indigo-500" />
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 id="bulk-title" className="text-sm font-semibold text-white">Пакетная обработка</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id="bulk-title" className="text-sm font-semibold text-white">Автономное производство</h2>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${watchdogTone}`}
+                title={comfyWatchdog
+                  ? `${comfyWatchdog.message}${comfyWatchdog.last_error ? ` · ${comfyWatchdog.last_error}` : ''} · перезапусков ${comfyWatchdog.restart_count_window}/${comfyWatchdog.max_restarts}`
+                  : 'Статус watchdog недоступен'}
+              >
+                {watchdogLabel}
+              </span>
+            </div>
             <p id="bulk-scope" className="mt-1 text-xs text-slate-400">
               Область действия: <span className="font-semibold text-indigo-300">{bulkScopeLabel}</span>
             </p>
             {hasUnsavedChanges && <p id="bulk-dirty" role="status" className="mt-1 text-xs text-amber-300">Сначала сохраните все изменённые карточки ({dirtyCardIds.size}).</p>}
           </div>
-          {isBatchBusy && (
+          {(isBatchBusy || unattendedActive) && (
             <button
               type="button"
-              onClick={requestCancelBatch}
+              onClick={() => void requestCancelWork()}
               disabled={cancelRequested}
               className="min-h-10 rounded-lg border border-rose-800 bg-rose-950 px-3 py-2 text-sm font-semibold text-rose-200 transition-colors hover:bg-rose-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-45"
-              title="Остановить очередь после текущей карточки. Уже запущенная операция завершится сама."
+              title={unattendedActive
+                ? 'Отменить серверную очередь и удалить либо прервать её prompt в ComfyUI.'
+                : 'Остановить локальную очередь после текущей карточки.'}
             >
               {cancelRequested ? 'Останавливаю…' : 'Остановить очередь'}
             </button>
@@ -1415,7 +1599,7 @@ export default function AssetBoard() {
           <div>
             <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-indigo-400">Собрать всё</p>
             <div className="flex flex-wrap gap-2">
-              <BatchButton primary label="Собрать материалы" targets={batchTargets.route} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={() => batchGenerate('route')} hint="Полная очередь по маршрутам: сток, картинки, зумы и LTX-видео. Готовые кадры не перезаписываются." />
+              <BatchButton primary label="Создать все материалы" targets={batchTargets.route} busy={Boolean(busy)} blocked={hasUnsavedChanges || Boolean(materialPreflight?.blockers)} blockedHint={materialPreflight?.blockers ? 'Сначала устраните блокирующие замечания проверки плана.' : undefined} onClick={() => void startUnattendedMaterials()} hint="Серверная автономная очередь: две попытки на материал, затем безопасный Ken Burns. Страницу можно закрыть; готовые кадры не перезаписываются." />
               <BatchButton label="Заполнить через ИИ" targets={batchTargets.route} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={batchFillGaps} hint="То же самое, но сток пропускается: кадры без видео создаются через ИИ. Найденный сток не трогается." />
             </div>
           </div>
@@ -1448,6 +1632,41 @@ export default function AssetBoard() {
             </div>
             <div role="progressbar" aria-label={stockProgress.label} aria-valuemin={0} aria-valuemax={stockProgress.total} aria-valuenow={stockProgress.done} aria-valuetext={`${stockProgress.done} из ${stockProgress.total}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
               <div className="h-full rounded-full bg-teal-500 transition-[width]" style={{ width: `${batchProgressPercent}%` }} />
+            </div>
+          </div>
+        )}
+        {!stockProgress && materialRun && materialRun.status !== 'not_started' && (
+          <div role="status" aria-live="polite" className={`mt-4 rounded-xl border px-3 py-3 ${
+            materialRun.status === 'failed'
+              ? 'border-rose-800/60 bg-rose-950/35'
+              : materialRun.status === 'succeeded'
+                ? 'border-emerald-800/60 bg-emerald-950/35'
+                : unattendedWaiting
+                  ? 'border-amber-800/60 bg-amber-950/30'
+                  : 'border-sky-800/60 bg-sky-950/35'
+          }`}>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="font-semibold text-slate-200">
+                {unattendedRunning
+                  ? `Кадр ${materialRun.current?.shot_index || '—'} · ${materialRun.current?.phase || 'подготовка'}`
+                  : unattendedWaiting
+                    ? `Ожидание восстановления ComfyUI · кадр ${materialRun.current?.shot_index || '—'}`
+                  : materialRun.status === 'succeeded'
+                    ? 'Все материалы готовы'
+                    : materialRun.status === 'failed'
+                      ? 'Сборка остановлена'
+                      : 'Сборка прервана'}
+              </span>
+              <span className="font-mono text-xs text-slate-400">{unattendedPercent}%</span>
+              <span className="w-full text-xs text-slate-500">
+                Операций: {unattendedCompleted}/{unattendedTotal}
+                {' · '}повторов: {materialRun.summary?.retries || 0}
+                {' · '}резервных кадров: {materialRun.summary?.fallbacks || 0}
+              </span>
+              {materialRun.error && <span className="w-full text-xs text-rose-300">{materialRun.error}</span>}
+            </div>
+            <div role="progressbar" aria-label="Автономная сборка материалов" aria-valuemin={0} aria-valuemax={100} aria-valuenow={unattendedPercent} className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-sky-500 transition-[width]" style={{ width: `${unattendedPercent}%` }} />
             </div>
           </div>
         )}

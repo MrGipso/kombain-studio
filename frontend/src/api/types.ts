@@ -188,6 +188,126 @@ export interface Shot {
   sfx_query?: string
   reference_query?: string
   reference_source?: string
+  segment_ids?: number[]
+  visual_concept_id?: string
+  purpose: string
+  continuity_mode: string
+  continuity_group_id: string
+  location_id: string
+  subject_ids: string[]
+  state_before: string
+  action: string
+  state_after: string
+  shot_size: string
+  camera_angle: string
+  screen_direction: string
+  reference_frame_id: string
+  transition_in: string
+  transition_out: string
+  change_from_previous: string
+}
+
+export interface ContextBible {
+  schema_version: number
+  source_hash: string
+  context_hash: string
+  scenes: Array<{
+    scene_index: number
+    story_thread: string
+    continuity_mode: string
+    location_id: string
+    subject_ids: string[]
+    entry_state: string
+    scene_event: string
+    exit_state: string
+    transition_out: string
+  }>
+  entities: Array<{
+    id: string
+    description: string
+    appearance_anchor: string
+    scene_indices: number[]
+  }>
+  locations: Array<{
+    id: string
+    description: string
+    scene_indices: number[]
+  }>
+  continuity_groups: Array<{
+    id: string
+    mode: string
+    location_id: string
+    subject_ids: string[]
+    shot_indices: number[]
+  }>
+  shots: Array<Record<string, unknown>>
+}
+
+export interface MaterialPreflightIssue {
+  code: string
+  message: string
+  level: 'blocker' | 'warning'
+  scene_index?: number | null
+  shot_index?: number | null
+  details?: Record<string, unknown>
+}
+
+export interface MaterialPreflight {
+  allowed: boolean
+  plan_hash: string
+  scenes: number
+  shots: number
+  cards: number
+  segments: number
+  pending_images: number
+  pending_videos: number
+  ready_cards: number
+  excluded_cards: number
+  required_services: string[]
+  blockers: number
+  warnings: number
+  issues: MaterialPreflightIssue[]
+}
+
+export interface MaterialRunPolicy {
+  mode: 'unattended'
+  max_image_attempts: number
+  max_video_attempts: number
+  fallback: 'kenburns'
+  skip_ready: boolean
+  auto_resume: boolean
+  technical_validation: boolean
+}
+
+export interface MaterialRunState {
+  schema_version: number
+  run_id?: string
+  project_id: string
+  plan_hash?: string
+  status: 'not_started' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | string
+  policy?: MaterialRunPolicy
+  created_at?: string
+  updated_at?: string
+  started_at?: string | null
+  finished_at?: string | null
+  current?: {
+    phase?: string
+    card_id?: string
+    card_index?: number
+    shot_index?: number
+    mode?: string
+    attempt?: number
+  }
+  summary?: {
+    cards_total?: number
+    cards_ready?: number
+    operations_total?: number
+    operations_completed?: number
+    retries?: number
+    fallbacks?: number
+    failures?: number
+  }
+  error?: string
 }
 
 export interface AssetCard {
@@ -240,6 +360,21 @@ export interface AssetCard {
   reference_url?: string
   reference_output?: string
   reference_credit?: string
+  purpose?: string
+  continuity_mode?: string
+  continuity_group_id?: string
+  location_id?: string
+  subject_ids?: string[]
+  state_before?: string
+  action?: string
+  state_after?: string
+  shot_size?: string
+  camera_angle?: string
+  screen_direction?: string
+  reference_frame_id?: string
+  transition_in?: string
+  transition_out?: string
+  change_from_previous?: string
 }
 
 export type AssetQARecommendation = 'accept' | 'needs_review' | 'retry_image' | 'retry_video'
@@ -325,6 +460,15 @@ export interface Settings {
   lm_embed_model: string
   lm_context: string
   comfy_url: string
+  comfy_watchdog_enabled: boolean
+  comfy_install_dir: string
+  comfy_watchdog_listen_address: string
+  comfy_watchdog_sage_attention: boolean
+  comfy_watchdog_poll_seconds: number
+  comfy_watchdog_failure_threshold: number
+  comfy_watchdog_startup_timeout_seconds: number
+  comfy_watchdog_max_restarts: number
+  comfy_watchdog_restart_window_seconds: number
   comfy_krea_workflow: string
   comfy_ideogram_workflow: string
   comfy_ltx_workflow: string
@@ -374,6 +518,26 @@ export interface Settings {
   ai_qa_mode: 'shadow' | 'review'
   ai_qa_timing: 'per_card' | 'after_queue'
   ai_qa_threshold: number
+}
+
+export interface ComfyWatchdogStatus {
+  schema_version: number
+  enabled: boolean
+  status: 'stopped' | 'disabled' | 'healthy' | 'degraded' | 'restarting' | 'restart_limit' | 'misconfigured' | 'error' | string
+  healthy: boolean
+  comfy_url: string
+  listen_address: string
+  consecutive_failures: number
+  restart_count_window: number
+  max_restarts: number
+  managed_pid: number | null
+  last_check_at: string | null
+  last_healthy_at: string | null
+  last_restart_at: string | null
+  last_recovery_at: string | null
+  last_error: string
+  message: string
+  resumed_projects: string[]
 }
 
 export interface ScriptBeat {

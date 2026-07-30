@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from core.config import load_settings
 from core.project import CURRENT_MANIFEST_SCHEMA_VERSION, CURRENT_PROJECT_SCHEMA_VERSION
 from core.version import __version__
+from backend.services.comfy_watchdog import watchdog_status
 
 
 router = APIRouter()
@@ -79,3 +80,10 @@ async def build_info() -> BuildInfoResponse:
         manifest_schema=CURRENT_MANIFEST_SCHEMA_VERSION,
         runtime_mode="local-single-process",
     )
+
+
+@router.get("/system/comfy-watchdog")
+async def comfy_watchdog_state() -> dict:
+    """Current bounded supervisor state; this endpoint never mutates ComfyUI."""
+
+    return watchdog_status()

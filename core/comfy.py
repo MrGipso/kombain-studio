@@ -138,6 +138,56 @@ def comfy_queue_prompt(base_url: str, workflow: dict) -> str:
     return prompt_id
 
 
+def _queue_contains_prompt(queue: dict, key: str, prompt_id: str) -> bool:
+    entries = queue.get(key, [])
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if isinstance(entry, (list, tuple)) and len(entry) > 1:
+            if str(entry[1]) == prompt_id:
+                return True
+        elif isinstance(entry, dict) and str(entry.get("prompt_id", "")) == prompt_id:
+            return True
+    return False
+
+
+def comfy_cancel_prompt(base_url: str, prompt_id: str) -> dict:
+    """Cancel only the named ComfyUI prompt, without interrupting another client.
+
+    Pending prompts are removed through ``/queue``. ``/interrupt`` is process-
+    wide in ComfyUI, so it is used only after the live queue proves that this
+    exact prompt is currently running. Transport failures are reported to the
+    caller but never mask the local cancellation request.
+    """
+
+    base = comfy_base_url(base_url)
+    result = {
+        "prompt_id": str(prompt_id),
+        "deleted": False,
+        "interrupted": False,
+        "error": "",
+    }
+    try:
+        queue = comfy_request_json(f"{base}/queue", timeout=5)
+        if _queue_contains_prompt(queue, "queue_pending", prompt_id):
+            comfy_request_json(
+                f"{base}/queue",
+                {"delete": [prompt_id]},
+                timeout=5,
+            )
+            result["deleted"] = True
+            # The prompt may have moved from pending to running between the
+            # queue read and delete request. Re-read before deciding whether a
+            # process-wide interrupt is safe.
+            queue = comfy_request_json(f"{base}/queue", timeout=5)
+        if _queue_contains_prompt(queue, "queue_running", prompt_id):
+            comfy_request_json(f"{base}/interrupt", {}, timeout=5)
+            result["interrupted"] = True
+    except Exception as exc:
+        result["error"] = str(exc)
+    return result
+
+
 def comfy_wait_for_history(
     base_url: str,
     prompt_id: str,
@@ -157,8 +207,17 @@ def comfy_wait_for_history(
     history_url = f"{comfy_base_url(base_url)}/history/{urllib.parse.quote(prompt_id)}"
     last_error = ""
     while time.time() < deadline:
-        if cancel_check is not None and cancel_check():
-            raise ComfyCancelledError(f"ComfyUI generation cancelled: {prompt_id}")
+        if cancel_check is not None:
+            try:
+                cancelled = bool(cancel_check())
+            except BaseException:
+                comfy_cancel_prompt(base_url, prompt_id)
+                raise
+            if cancelled:
+                comfy_cancel_prompt(base_url, prompt_id)
+                raise ComfyCancelledError(
+                    f"ComfyUI generation cancelled: {prompt_id}"
+                )
         try:
             result = comfy_request_json(history_url, timeout=20)
             item = result.get(prompt_id)
@@ -280,6 +339,9 @@ class ComfyClient:
     def queue_prompt(self, workflow: dict) -> str:
         return comfy_queue_prompt(self.base_url, workflow)
 
+    def cancel_prompt(self, prompt_id: str) -> dict:
+        return comfy_cancel_prompt(self.base_url, prompt_id)
+
     def wait_for_history(
         self,
         prompt_id: str,
@@ -316,6 +378,7 @@ __all__ = [
     "DEFAULT_WORKFLOW_PATHS",
     "DEFAULT_COMFY_URL",
     "comfy_base_url",
+    "comfy_cancel_prompt",
     "comfy_collect_outputs",
     "comfy_download_file",
     "comfy_download_output",

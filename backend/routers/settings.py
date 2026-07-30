@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ipaddress
 from typing import Any
 from dataclasses import asdict
 
@@ -55,6 +56,46 @@ def _validate_binary_path(key: str, value: Any, output_base: Path | str) -> None
         raise HTTPException(400, f"Путь для {key} не может находиться внутри каталога проектов")
 
 
+def _validate_comfy_install_dir(value: Any, output_base: Path | str) -> None:
+    text = str(value or "").strip()
+    if not text:
+        return
+    root = Path(text).expanduser()
+    if not root.is_absolute():
+        raise HTTPException(400, "Каталог portable ComfyUI должен быть абсолютным")
+    try:
+        resolved = root.resolve(strict=True)
+    except (OSError, ValueError):
+        raise HTTPException(400, "Каталог portable ComfyUI не найден")
+    if not resolved.is_dir():
+        raise HTTPException(400, "Путь portable ComfyUI не является каталогом")
+    if is_within(resolved, Path(output_base or "projects")):
+        raise HTTPException(
+            400,
+            "Portable ComfyUI не может находиться внутри каталога проектов",
+        )
+    required = (
+        resolved / "python_embeded" / "python.exe",
+        resolved / "ComfyUI" / "main.py",
+    )
+    if not all(path.is_file() for path in required):
+        raise HTTPException(
+            400,
+            "В каталоге не найдены python_embeded/python.exe и ComfyUI/main.py",
+        )
+
+
+def _validate_comfy_listen_address(value: Any) -> None:
+    text = str(value or "127.0.0.1").strip()
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        raise HTTPException(
+            400,
+            "Адрес ComfyUI --listen должен быть одним IP-адресом",
+        )
+
+
 @router.get("/settings")
 async def get_settings():
     s = load_settings()
@@ -97,6 +138,13 @@ async def update_settings(data: dict[str, Any]):
                     candidate.get(key),
                     candidate.get("output_base", ""),
                 )
+            _validate_comfy_install_dir(
+                candidate.get("comfy_install_dir"),
+                candidate.get("output_base", ""),
+            )
+            _validate_comfy_listen_address(
+                candidate.get("comfy_watchdog_listen_address"),
+            )
             try:
                 validated = TypeAdapter(Settings).validate_python(candidate)
             except ValidationError as exc:

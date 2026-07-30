@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from core.config import load_settings
+from core import continuity
 from core.board import write_asset_board
 from core.models import AssetCard
 from core.project import open_project, safe_project_path
@@ -33,6 +34,24 @@ async def get_shots(project_id: str):
 
     shots_data = project.read_json("shot_list") or []
     return shots_data
+
+
+@router.get("/{project_id:str}/context-bible")
+async def get_context_bible(project_id: str):
+    try:
+        path = safe_project_path(project_id, load_settings().output_base)
+    except ValueError:
+        raise HTTPException(404, "Project not found")
+    project = open_project(path, load_settings())
+    if not project:
+        raise HTTPException(404, "Project not found")
+    bible = continuity.load_context_bible(project.dir)
+    if bible is None:
+        raise HTTPException(
+            404,
+            "Context Bible ещё не создана; заново выполните анализ кадров.",
+        )
+    return bible
 
 
 @router.post("/{project_id:str}/generate-shots")

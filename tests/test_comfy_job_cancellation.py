@@ -24,14 +24,20 @@ def _raise_cancelled() -> bool:
     raise _CancelledInPoll("stop")
 
 
-def test_history_poll_propagates_job_cancelled_without_an_http_request(monkeypatch):
-    monkeypatch.setattr(
-        comfy,
-        "comfy_request_json",
-        lambda *_args, **_kwargs: pytest.fail(
-            "cancelled history polling must not make another HTTP request"
-        ),
-    )
+def test_history_poll_propagates_job_cancelled_and_interrupts_owned_prompt(
+    monkeypatch,
+):
+    calls = []
+
+    def request(url, payload=None, timeout=30):
+        calls.append((url, payload, timeout))
+        if url.endswith("/queue") and payload is None:
+            return {"queue_running": [[1, "prompt-id", {}, {}, []]], "queue_pending": []}
+        if url.endswith("/interrupt"):
+            return {}
+        pytest.fail(f"unexpected Comfy request: {url} {payload}")
+
+    monkeypatch.setattr(comfy, "comfy_request_json", request)
 
     def check_job() -> bool:
         raise jobs.JobCancelled("Задача отменена пользователем")
@@ -40,6 +46,42 @@ def test_history_poll_propagates_job_cancelled_without_an_http_request(monkeypat
         comfy.comfy_wait_for_history(
             "http://comfy", "prompt-id", cancel_check=check_job
         )
+    assert [call[0] for call in calls] == [
+        "http://comfy/queue",
+        "http://comfy/interrupt",
+    ]
+
+
+def test_cancel_pending_prompt_deletes_only_the_named_queue_item(monkeypatch):
+    calls = []
+
+    def request(url, payload=None, timeout=30):
+        calls.append((url, payload, timeout))
+        if url.endswith("/queue") and payload is None and len(calls) == 1:
+            return {
+                "queue_running": [[1, "someone-else", {}, {}, []]],
+                "queue_pending": [[2, "prompt-id", {}, {}, []]],
+            }
+        if url.endswith("/queue") and payload == {"delete": ["prompt-id"]}:
+            return {}
+        if url.endswith("/queue") and payload is None:
+            return {
+                "queue_running": [[1, "someone-else", {}, {}, []]],
+                "queue_pending": [],
+            }
+        pytest.fail(f"unexpected Comfy request: {url} {payload}")
+
+    monkeypatch.setattr(comfy, "comfy_request_json", request)
+
+    result = comfy.comfy_cancel_prompt("http://comfy", "prompt-id")
+
+    assert result == {
+        "prompt_id": "prompt-id",
+        "deleted": True,
+        "interrupted": False,
+        "error": "",
+    }
+    assert not any(url.endswith("/interrupt") for url, _payload, _timeout in calls)
 
 
 def test_image_generator_forwards_cancel_check_to_history(monkeypatch, tmp_path):

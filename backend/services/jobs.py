@@ -28,7 +28,7 @@ import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 JOBS_DB_ENV = "PIPELINE_JOBS_DB"
@@ -54,6 +54,7 @@ _running: dict[str, str] = {}  # project_id -> human-readable job name
 _resource_running: dict[str, tuple[str, str, str]] = {}
 # lease group -> (project_id, name, durable resource subtype)
 _event_jobs: dict[threading.Event, str] = {}  # active cancel event -> durable job id
+_background_threads: dict[str, threading.Thread] = {}
 _initialized_db_path: Path | None = None
 
 _GPU_LEASE_RESOURCES = frozenset({"gpu", "llm", "comfy", "stock", "tts"})
@@ -578,3 +579,67 @@ def job_history(project_id: str | None = None, limit: int = 100) -> list[dict[st
         "ORDER BY created_at DESC, id DESC LIMIT ?",
         (project_id, limit),
     )
+
+
+def start_background_project_job(
+    project_id: str,
+    name: str,
+    worker: Callable[[threading.Event], Any],
+    *,
+    resource: str | None = None,
+    start_timeout: float = 5.0,
+) -> str:
+    """Start a durable project job without tying it to an HTTP connection.
+
+    The worker acquires the ordinary :class:`project_job` guard in its own
+    thread.  The caller waits only until that guard is acquired (or rejected),
+    so a successful return guarantees that the durable job row already exists
+    and can be reconnected to by the UI.
+
+    Threads are daemonized deliberately: project-specific checkpoints must be
+    the recovery authority after an application/process restart.  Keeping a
+    half-shutdown Python process alive is less reliable than resuming the next
+    idempotent unit of work on the following launch.
+    """
+
+    started = threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        guard = project_job(project_id, name, resource=resource)
+        job_id = ""
+        try:
+            with guard as cancel_event:
+                job_id = guard.job_id
+                outcome["job_id"] = job_id
+                with _meta:
+                    _background_threads[job_id] = threading.current_thread()
+                started.set()
+                worker(cancel_event)
+        except BaseException as exc:
+            # Once the guard was acquired, project_job already persisted the
+            # worker failure. It is an asynchronous job outcome, not a failure
+            # of this start call (even if the worker failed very quickly).
+            if not job_id:
+                outcome["error"] = exc
+            started.set()
+        finally:
+            if job_id:
+                with _meta:
+                    _background_threads.pop(job_id, None)
+
+    thread = threading.Thread(
+        target=run,
+        name=f"pipeline-job-{str(project_id)[:32]}",
+        daemon=True,
+    )
+    thread.start()
+    if not started.wait(timeout=max(0.1, float(start_timeout))):
+        raise RuntimeError(f"Задача «{name}» не смогла запуститься вовремя")
+    error = outcome.get("error")
+    if error is not None:
+        raise error
+    job_id = str(outcome.get("job_id", "") or "")
+    if not job_id:
+        raise RuntimeError(f"Задача «{name}» не создала запись состояния")
+    return job_id

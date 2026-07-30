@@ -1,5 +1,7 @@
 import importlib
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -221,3 +223,60 @@ def test_update_progress_validates_fraction(jobs):
 
     # Unknown/finished events are intentionally harmless for late callbacks.
     jobs.update_progress(event, 0.5, "late")
+
+
+def test_background_project_job_is_durable_before_return_and_finishes(jobs):
+    release = threading.Event()
+    completed = threading.Event()
+
+    def worker(cancel_event):
+        jobs.update_progress(cancel_event, 0.5, "background checkpoint")
+        release.wait(timeout=2)
+        completed.set()
+
+    job_id = jobs.start_background_project_job(
+        "project-a",
+        "Unattended materials",
+        worker,
+        resource="comfy",
+    )
+    record = jobs.job_record(job_id)
+    assert record is not None
+    assert record["status"] == "running"
+    deadline = time.monotonic() + 1
+    while record["message"] != "background checkpoint" and time.monotonic() < deadline:
+        time.sleep(0.01)
+        record = jobs.job_record(job_id)
+        assert record is not None
+    assert record["message"] == "background checkpoint"
+    assert jobs.running_job("project-a") == "Unattended materials"
+
+    release.set()
+    assert completed.wait(timeout=2)
+    for _ in range(100):
+        record = jobs.job_record(job_id)
+        if record and record["status"] == "succeeded":
+            break
+        threading.Event().wait(0.01)
+    assert record["status"] == "succeeded"
+
+
+def test_background_project_job_reports_fast_worker_failure_in_durable_record(jobs):
+    def worker(_cancel_event):
+        raise RuntimeError("provider failed immediately")
+
+    job_id = jobs.start_background_project_job(
+        "project-a",
+        "Unattended materials",
+        worker,
+        resource="comfy",
+    )
+    deadline = time.monotonic() + 1
+    record = jobs.job_record(job_id)
+    while record and record["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+        record = jobs.job_record(job_id)
+
+    assert record is not None
+    assert record["status"] == "failed"
+    assert "provider failed immediately" in record["error"]

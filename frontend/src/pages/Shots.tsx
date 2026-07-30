@@ -146,6 +146,16 @@ export default function Shots() {
     { key: 'image_prompt', label: 'Image prompt', multiline: true },
     { key: 'video_prompt', label: 'Video prompt', multiline: true },
   ]
+  const continuityGroups = new Set(shots.map((shot) => shot.continuity_group_id).filter(Boolean))
+  const locations = new Set(shots.map((shot) => shot.location_id).filter(Boolean))
+  const subjects = new Set(shots.flatMap((shot) => shot.subject_ids || []))
+  const continuityModeLabel = (mode: string) => ({
+    independent: 'Независимый B-roll',
+    same_location: 'Одна локация',
+    continuous_action: 'Непрерывное действие',
+    recurring_subject: 'Повторяющийся субъект',
+    evidence_sequence: 'Цепочка доказательств',
+  }[mode] || mode || 'Не задано')
 
   return (
     <div className="p-8 space-y-6">
@@ -254,7 +264,46 @@ export default function Shots() {
       )}
 
       {shots.length > 0 && (
-        <div className="grid grid-cols-[1fr_400px] gap-6">
+        <>
+          <section className="rounded-xl border border-indigo-900/60 bg-indigo-950/20 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-indigo-400">Storyboard Context</p>
+                <h2 className="mt-1 text-base font-semibold text-white">Причинная раскадровка</h2>
+                <p className="mt-1 text-xs text-slate-400">Каждый кадр хранит состояние до, действие, состояние после и связь с соседними кадрами.</p>
+              </div>
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="rounded-full bg-slate-900 px-2.5 py-1 text-slate-300 ring-1 ring-slate-700">групп: {continuityGroups.size}</span>
+                <span className="rounded-full bg-slate-900 px-2.5 py-1 text-slate-300 ring-1 ring-slate-700">локаций: {locations.size}</span>
+                <span className="rounded-full bg-slate-900 px-2.5 py-1 text-slate-300 ring-1 ring-slate-700">субъектов: {subjects.size}</span>
+              </div>
+            </div>
+            <div className="mt-4 flex gap-2 overflow-x-auto pb-2" aria-label="Кинолента раскадровки">
+              {shots.map((shot) => (
+                <button
+                  type="button"
+                  key={`strip-${shot.index}`}
+                  onClick={() => setSelected(shot)}
+                  className={`min-w-44 rounded-lg border p-3 text-left transition-colors ${
+                    selected?.index === shot.index
+                      ? 'border-indigo-500 bg-indigo-950/60'
+                      : 'border-slate-700 bg-slate-900 hover:border-slate-600'
+                  }`}
+                >
+                  <span className="flex items-center justify-between gap-2 text-[10px]">
+                    <span className="font-mono text-slate-500">#{shot.index} · S{shot.scene_index}</span>
+                    <span className="rounded bg-slate-800 px-1.5 py-0.5 text-indigo-300">{shot.shot_size || '—'}</span>
+                  </span>
+                  <span className="mt-2 block line-clamp-2 text-xs font-medium text-slate-200">{shot.purpose || shot.description || 'Без функции'}</span>
+                  <span className="mt-2 block truncate text-[10px] text-slate-500" title={shot.continuity_group_id}>
+                    {shot.continuity_group_id || 'нет continuity-группы'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_440px]">
           {/* Shot table */}
           <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
             <div className="overflow-auto max-h-[65vh]">
@@ -265,6 +314,7 @@ export default function Shots() {
                     <th className="text-left px-3 py-2 w-14">Сцена</th>
                     <th className="text-left px-3 py-2 w-36">Время</th>
                     <th className="text-left px-3 py-2 w-28">Тип</th>
+                    <th className="text-left px-3 py-2">Контекст</th>
                     <th className="text-left px-3 py-2">Модель</th>
                   </tr>
                 </thead>
@@ -285,6 +335,10 @@ export default function Shots() {
                       <td className="px-3 py-2">
                         <span className="text-xs bg-slate-700 px-2 py-0.5 rounded text-slate-300">{shot.visual_type}</span>
                       </td>
+                      <td className="px-3 py-2">
+                        <span className="block max-w-48 truncate text-xs text-slate-300">{shot.purpose || '—'}</span>
+                        <span className="mt-0.5 block max-w-48 truncate text-[10px] text-slate-600">{continuityModeLabel(shot.continuity_mode)}</span>
+                      </td>
                       <td className="px-3 py-2 text-slate-500 text-xs">{shot.image_model || shot.video_model || '-'}</td>
                     </tr>
                   ))}
@@ -298,8 +352,31 @@ export default function Shots() {
             <div className="bg-slate-900 rounded-xl p-5 border border-slate-800 space-y-3 overflow-auto max-h-[65vh]">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-lg font-semibold text-white">Кадр {selected.index} <span className="text-sm text-slate-500 font-normal">(Сцена {selected.scene_index})</span></h2>
-                <span className="rounded bg-slate-800 px-2 py-1 text-[11px] text-slate-400 border border-slate-700">только просмотр · правка на Asset Board</span>
+                <span className="rounded bg-slate-800 px-2 py-1 text-[11px] text-slate-400 border border-slate-700">контекст заморожен до «Материал»</span>
               </div>
+              <section className="rounded-xl border border-indigo-900/60 bg-indigo-950/20 p-3">
+                <div className="flex flex-wrap gap-1.5 text-[10px]">
+                  <span className="rounded bg-indigo-950 px-2 py-1 text-indigo-300 ring-1 ring-indigo-800">{continuityModeLabel(selected.continuity_mode)}</span>
+                  <span className="rounded bg-slate-800 px-2 py-1 text-slate-300">{selected.shot_size || 'размер не задан'}</span>
+                  <span className="rounded bg-slate-800 px-2 py-1 text-slate-300">{selected.camera_angle || 'ракурс не задан'}</span>
+                  <span className="rounded bg-slate-800 px-2 py-1 text-slate-300">{selected.screen_direction || 'направление не задано'}</span>
+                </div>
+                <dl className="mt-3 space-y-2 text-xs">
+                  <div><dt className="text-slate-500">Зачем этот кадр</dt><dd className="mt-0.5 text-slate-200">{selected.purpose || '—'}</dd></div>
+                  <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr] items-stretch gap-1">
+                    <div className="rounded bg-slate-900 p-2"><dt className="text-slate-600">До</dt><dd className="mt-1 text-slate-300">{selected.state_before || '—'}</dd></div>
+                    <span className="self-center text-indigo-500">→</span>
+                    <div className="rounded bg-indigo-950/50 p-2"><dt className="text-indigo-500">Действие</dt><dd className="mt-1 text-indigo-200">{selected.action || '—'}</dd></div>
+                    <span className="self-center text-indigo-500">→</span>
+                    <div className="rounded bg-slate-900 p-2"><dt className="text-slate-600">После</dt><dd className="mt-1 text-slate-300">{selected.state_after || '—'}</dd></div>
+                  </div>
+                  <div><dt className="text-slate-500">Изменение от прошлого кадра</dt><dd className="mt-0.5 text-slate-300">{selected.change_from_previous || '—'}</dd></div>
+                  <div><dt className="text-slate-500">Группа / локация</dt><dd className="mt-0.5 break-all font-mono text-[10px] text-slate-400">{selected.continuity_group_id || '—'} · {selected.location_id || '—'}</dd></div>
+                  <div><dt className="text-slate-500">Субъекты</dt><dd className="mt-1 flex flex-wrap gap-1">{(selected.subject_ids || []).length ? selected.subject_ids.map((id) => <span key={id} className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{id}</span>) : <span className="text-slate-600">—</span>}</dd></div>
+                  <div><dt className="text-slate-500">Переход</dt><dd className="mt-0.5 text-slate-300">{selected.transition_in || '—'} → {selected.transition_out || '—'}</dd></div>
+                  {selected.reference_frame_id && <div><dt className="text-slate-500">Эталон</dt><dd className="mt-0.5 font-mono text-[10px] text-emerald-300">{selected.reference_frame_id}</dd></div>}
+                </dl>
+              </section>
               <div className="space-y-2.5">
                 {shotFields.map(({ key, label, multiline }) => (
                   <div key={key}>
@@ -317,6 +394,7 @@ export default function Shots() {
             </div>
           )}
         </div>
+        </>
       )}
 
       {/* Logs */}

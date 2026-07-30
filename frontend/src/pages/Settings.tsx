@@ -67,6 +67,7 @@ export default function Settings() {
     { key: 'lm_embed_model', label: 'LM Studio Embedding Model (сегментация сцен)' },
     { key: 'lm_context', label: 'Context Length' },
     { key: 'comfy_url', label: 'ComfyUI URL' },
+    { key: 'comfy_install_dir', label: 'Portable ComfyUI — каталог установки' },
     { key: 'comfy_krea_workflow', label: 'Krea Workflow Path' },
     { key: 'comfy_ideogram_workflow', label: 'Ideogram Workflow Path' },
     { key: 'comfy_ltx_workflow', label: 'LTX Workflow Path' },
@@ -94,7 +95,7 @@ export default function Settings() {
     {
       title: 'Пути и инструменты',
       description: 'Локальные workflow, Whisper, FFmpeg и папка для результатов.',
-      keys: ['comfy_krea_workflow', 'comfy_ideogram_workflow', 'comfy_ltx_workflow', 'comfy_ltx_draft_workflow', 'comfy_ace_workflow', 'whisper_cli', 'whisper_model', 'ffmpeg', 'whisper_language', 'omnivoice_cli', 'omnivoice_model', 'output_base'],
+      keys: ['comfy_install_dir', 'comfy_krea_workflow', 'comfy_ideogram_workflow', 'comfy_ltx_workflow', 'comfy_ltx_draft_workflow', 'comfy_ace_workflow', 'whisper_cli', 'whisper_model', 'ffmpeg', 'whisper_language', 'omnivoice_cli', 'omnivoice_model', 'output_base'],
     },
     {
       title: 'Источники стоков',
@@ -156,7 +157,7 @@ export default function Settings() {
                   const isSecret = SECRET_FIELDS.has(key)
                   const isSet = isSecret && secretIsSet(key)
                   return (
-                    <div key={key} className={String(key).includes('workflow') || key === 'output_base' ? 'md:col-span-2' : ''}>
+                    <div key={key} className={String(key).includes('workflow') || key === 'output_base' || key === 'comfy_install_dir' ? 'md:col-span-2' : ''}>
                       <label className="mb-1.5 block text-xs font-medium text-slate-500">
                         {label}{isSet ? ' · ключ сохранён' : ''}
                       </label>
@@ -233,6 +234,74 @@ export default function Settings() {
               </span>
             </label>
             <p className="text-xs leading-5 text-amber-700">Cookies помогают при проверке «я не робот» и возрастных ограничениях, но не обходят активный лимит IP. Для браузерных cookies должна быть выполнена авторизация на YouTube.</p>
+          </section>
+
+          <section className="space-y-4 border-b border-slate-800 pb-8">
+            <div>
+              <h2 className="text-base font-semibold text-white">Watchdog ComfyUI</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Следит за API, перезапускает только настроенную portable-установку и продолжает незавершённые очереди после восстановления.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-950/30 p-3">
+                <input
+                  type="checkbox"
+                  checked={settings.comfy_watchdog_enabled}
+                  onChange={(e) => setSettings({ ...settings, comfy_watchdog_enabled: e.target.checked })}
+                  className="mt-0.5 h-4 w-4"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-slate-300">Автоматически восстанавливать ComfyUI</span>
+                  <span className="mt-1 block text-xs leading-5 text-slate-500">Три неудачные проверки подряд, затем ограниченный перезапуск.</span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-950/30 p-3">
+                <input
+                  type="checkbox"
+                  checked={settings.comfy_watchdog_sage_attention}
+                  onChange={(e) => setSettings({ ...settings, comfy_watchdog_sage_attention: e.target.checked })}
+                  className="mt-0.5 h-4 w-4"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-slate-300">Запускать с SageAttention</span>
+                  <span className="mt-1 block text-xs leading-5 text-slate-500">Передаёт ComfyUI параметр --use-sage-attention.</span>
+                </span>
+              </label>
+              <label className="md:col-span-2">
+                <span className="mb-1.5 block text-xs font-medium text-slate-500">Адрес --listen</span>
+                <input
+                  type="text"
+                  value={settings.comfy_watchdog_listen_address}
+                  onChange={(e) => setSettings({ ...settings, comfy_watchdog_listen_address: e.target.value })}
+                  placeholder="0.0.0.0"
+                  className="min-h-10 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 font-mono text-sm text-white focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+                <span className="mt-1 block text-xs leading-5 text-slate-500">Для доступа и с этого ПК, и через ZeroTier используйте 0.0.0.0; доступ с других сетей должен отсекать Windows Firewall.</span>
+              </label>
+              {([
+                ['comfy_watchdog_poll_seconds', 'Интервал проверки, сек', 2, 60],
+                ['comfy_watchdog_failure_threshold', 'Ошибок до перезапуска', 2, 12],
+                ['comfy_watchdog_startup_timeout_seconds', 'Ожидание запуска, сек', 30, 900],
+                ['comfy_watchdog_max_restarts', 'Максимум перезапусков', 1, 10],
+                ['comfy_watchdog_restart_window_seconds', 'Окно лимита, сек', 60, 86400],
+              ] as const).map(([key, label, min, max]) => (
+                <label key={key}>
+                  <span className="mb-1.5 block text-xs font-medium text-slate-500">{label}</span>
+                  <input
+                    type="number"
+                    min={min}
+                    max={max}
+                    value={settings[key]}
+                    onChange={(e) => setSettings({ ...settings, [key]: Number(e.target.value) })}
+                    className="min-h-10 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 font-mono text-sm text-white focus:border-indigo-500 focus:outline-none"
+                  />
+                </label>
+              ))}
+            </div>
+            <p className="text-xs leading-5 text-amber-700">
+              Watchdog не чинит ошибки workflow, нехватку VRAM и несовместимые custom nodes. При повторяющемся падении он остановится на лимите, чтобы не устроить бесконечный цикл.
+            </p>
           </section>
 
           <section className="space-y-4 border-b border-slate-800 pb-8">
@@ -405,55 +474,12 @@ export default function Settings() {
                 <span className="text-sm text-slate-300">Нормализация громкости музыки</span>
               </label>
             </div>
-            <div className="flex flex-wrap items-center gap-6">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={settings.ai_frame_qa}
-                  onChange={(e) => setSettings({ ...settings, ai_frame_qa: e.target.checked })}
-                  className="w-4 h-4"
-                />
-                <span className="text-sm text-slate-300">QA кадров и видео (Vision Model + FFmpeg, без автоперегенерации)</span>
-              </label>
-            </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">Режим QA</label>
-                <select
-                  value={settings.ai_qa_mode || 'shadow'}
-                  onChange={(e) => setSettings({ ...settings, ai_qa_mode: e.target.value as 'shadow' | 'review' })}
-                  disabled={!settings.ai_frame_qa}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm disabled:opacity-40"
-                >
-                  <option value="shadow">shadow — только отчёт</option>
-                  <option value="review">review — отметить needs_review</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">Когда проверять</label>
-                <select
-                  value={settings.ai_qa_timing || 'per_card'}
-                  onChange={(e) => setSettings({ ...settings, ai_qa_timing: e.target.value as 'per_card' | 'after_queue' })}
-                  disabled={!settings.ai_frame_qa}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm disabled:opacity-40"
-                >
-                  <option value="per_card">между генерациями</option>
-                  <option value="after_queue">после всей очереди (без свопа VRAM)</option>
-                </select>
-              </div>
               <div>
                 <label className="block text-xs text-slate-500 mb-1">Зерно (0 = выкл, 4-10 норм)</label>
                 <input
                   value={String(settings.export_grain ?? '')}
                   onChange={(e) => setSettings({ ...settings, export_grain: e.target.value as unknown as number })}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">Порог policy score (0..1)</label>
-                <input
-                  value={String(settings.ai_qa_threshold ?? '')}
-                  onChange={(e) => setSettings({ ...settings, ai_qa_threshold: e.target.value as unknown as number })}
                   className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm font-mono"
                 />
               </div>

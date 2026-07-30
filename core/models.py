@@ -65,6 +65,28 @@ class Shot:
     # Reference-insert route: entity to resolve and preferred source.
     reference_query: str = ""
     reference_source: str = "wikipedia"
+    # Deterministic semantic ownership.  The LLM proposes the visual concept;
+    # the scheduler maps it onto immutable transcript segment IDs.
+    segment_ids: list[int] = field(default_factory=list)
+    visual_concept_id: str = ""
+    # Structured story/continuity contract. These fields describe why the shot
+    # exists and what must remain stable around it; provider prompts are merely
+    # one rendering of this contract.
+    purpose: str = ""
+    continuity_mode: str = "independent"
+    continuity_group_id: str = ""
+    location_id: str = ""
+    subject_ids: list[str] = field(default_factory=list)
+    state_before: str = ""
+    action: str = ""
+    state_after: str = ""
+    shot_size: str = ""
+    camera_angle: str = ""
+    screen_direction: str = ""
+    reference_frame_id: str = ""
+    transition_in: str = ""
+    transition_out: str = ""
+    change_from_previous: str = ""
 
 
 @dataclass
@@ -132,6 +154,21 @@ class AssetCard:
     # Hash of the media-defining shot fields.  It prevents a regenerated shot
     # from inheriting outputs merely because it reused the same list index.
     plan_fingerprint: str = ""
+    purpose: str = ""
+    continuity_mode: str = "independent"
+    continuity_group_id: str = ""
+    location_id: str = ""
+    subject_ids: list[str] = field(default_factory=list)
+    state_before: str = ""
+    action: str = ""
+    state_after: str = ""
+    shot_size: str = ""
+    camera_angle: str = ""
+    screen_direction: str = ""
+    reference_frame_id: str = ""
+    transition_in: str = ""
+    transition_out: str = ""
+    change_from_previous: str = ""
     # Stable identity survives board reordering and shot insertions.  Indices are
     # presentation/order metadata and must not be used as provenance keys.
     card_id: str = field(default_factory=lambda: str(uuid.uuid4()))

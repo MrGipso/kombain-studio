@@ -87,6 +87,21 @@ _MEDIA_PLAN_FIELDS = (
     "fallback",
     "reference_query",
     "reference_source",
+    "purpose",
+    "continuity_mode",
+    "continuity_group_id",
+    "location_id",
+    "subject_ids",
+    "state_before",
+    "action",
+    "state_after",
+    "shot_size",
+    "camera_angle",
+    "screen_direction",
+    "reference_frame_id",
+    "transition_in",
+    "transition_out",
+    "change_from_previous",
 )
 
 
@@ -597,6 +612,21 @@ def build_asset_board(
             reference_output=old.reference_output if old else "",
             reference_credit=old.reference_credit if old else "",
             plan_fingerprint=plan_fingerprint,
+            purpose=shot.purpose,
+            continuity_mode=shot.continuity_mode,
+            continuity_group_id=shot.continuity_group_id,
+            location_id=shot.location_id,
+            subject_ids=list(shot.subject_ids),
+            state_before=shot.state_before,
+            action=shot.action,
+            state_after=shot.state_after,
+            shot_size=shot.shot_size,
+            camera_angle=shot.camera_angle,
+            screen_direction=shot.screen_direction,
+            reference_frame_id=shot.reference_frame_id,
+            transition_in=shot.transition_in,
+            transition_out=shot.transition_out,
+            change_from_previous=shot.change_from_previous,
         )
         cards.append(sync_asset_card_route(card))
 

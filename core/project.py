@@ -85,6 +85,7 @@ _STAGE_ARTIFACT_PATTERNS: dict[str, tuple[str, ...]] = {
     "scenes": ("02_scenes.json",),
     "shots": (
         "03_edit_plan.csv",
+        "03_context_bible.json",
         "03_global_visual_plan.json",
         "04_shot_list.json",
         "04_asset_requests.csv",
@@ -189,6 +190,7 @@ PROJECT_FILES = {
     "whisper_raw": "01_whisper_raw.json",
     "scenes": "02_scenes.json",
     "edit_plan": "03_edit_plan.csv",
+    "context_bible": "03_context_bible.json",
     "shot_list": "04_shot_list.json",
     "asset_requests": "04_asset_requests.csv",
     "subtitles_whisper": "04_subtitles_whisper.srt",

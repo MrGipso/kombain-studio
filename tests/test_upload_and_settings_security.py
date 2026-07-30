@@ -72,6 +72,21 @@ def test_settings_accept_read_only_secret_flags(tmp_path, monkeypatch):
     assert len(saved) == 1
 
 
+def test_settings_reject_invalid_watchdog_install_and_listen(tmp_path):
+    with pytest.raises(HTTPException) as missing:
+        settings_router._validate_comfy_install_dir(
+            tmp_path / "missing",
+            tmp_path / "projects",
+        )
+    assert missing.value.status_code == 400
+
+    with pytest.raises(HTTPException) as multiple_addresses:
+        settings_router._validate_comfy_listen_address(
+            "127.0.0.1,192.168.191.57",
+        )
+    assert multiple_addresses.value.status_code == 400
+
+
 @pytest.mark.parametrize(
     "patch",
     [

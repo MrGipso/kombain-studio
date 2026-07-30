@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from core import lm
+from core import continuity, lm
 from core.models import (
     Scene,
     Shot,
@@ -82,6 +82,13 @@ class GlobalVisualPlanItem:
     palette: str
     transition: str
     avoid: str
+    story_thread: str = ""
+    continuity_mode: str = "independent"
+    location_id: str = ""
+    subject_ids: str = ""
+    entry_state: str = ""
+    scene_event: str = ""
+    exit_state: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -94,6 +101,13 @@ class GlobalVisualPlanItem:
             "palette": self.palette,
             "transition": self.transition,
             "avoid": self.avoid,
+            "story_thread": self.story_thread,
+            "continuity_mode": self.continuity_mode,
+            "location_id": self.location_id,
+            "subject_ids": self.subject_ids,
+            "entry_state": self.entry_state,
+            "scene_event": self.scene_event,
+            "exit_state": self.exit_state,
         }
 
     def prompt_block(self) -> str:
@@ -105,7 +119,14 @@ class GlobalVisualPlanItem:
             f"Развитие планов: {self.shot_progression}\n"
             f"Палитра/свет: {self.palette}\n"
             f"Монтажный переход: {self.transition}\n"
-            f"Не повторять: {self.avoid}"
+            f"Не повторять: {self.avoid}\n"
+            f"Сюжетная линия: {self.story_thread}\n"
+            f"Тип непрерывности: {self.continuity_mode}\n"
+            f"ID локации: {self.location_id}\n"
+            f"ID субъектов: {self.subject_ids}\n"
+            f"Состояние на входе: {self.entry_state}\n"
+            f"Событие сцены: {self.scene_event}\n"
+            f"Состояние на выходе: {self.exit_state}"
         )
 
 
@@ -191,6 +212,13 @@ _GLOBAL_PLAN_FIELDS = (
     "palette",
     "transition",
     "avoid",
+    "story_thread",
+    "continuity_mode",
+    "location_id",
+    "subject_ids",
+    "entry_state",
+    "scene_event",
+    "exit_state",
 )
 _VISUAL_FAMILY_ALIASES = {
     "archive": "archive_document",
@@ -265,6 +293,13 @@ def parse_global_visual_plan(
             "palette": "Натуральный документальный свет и цвет локации",
             "transition": "Смысловой монтажный стык со следующей сценой",
             "avoid": "Не повторять визуальные мотивы соседних сцен",
+            "story_thread": "Основная линия повествования",
+            "continuity_mode": "independent",
+            "location_id": "",
+            "subject_ids": "",
+            "entry_state": "Исходное состояние сцены",
+            "scene_event": "Смысловое событие сцены",
+            "exit_state": "Состояние после раскрытия сцены",
         }
         if isinstance(value, str):
             text = value
@@ -299,8 +334,18 @@ def parse_global_visual_plan(
                     raw_value = source_scene.title
                 elif field == "location":
                     raw_value = (source_scene.visual_direction or source_scene.title)[:300]
+                elif field == "story_thread":
+                    raw_value = source_scene.title
+                elif field == "scene_event":
+                    raw_value = (
+                        source_scene.visual_direction
+                        or source_scene.voice_text
+                        or source_scene.title
+                    )[:300]
             value = plan_text(raw_value, field)
-            if not value or len(value) > 320:
+            if field not in {"location_id", "subject_ids"} and not value:
+                raise ValueError(f"поле {field} пустое")
+            if len(value) > 320:
                 raise ValueError(f"поле {field} пустое или длиннее 320 символов")
             values[field] = value
         family_key = (
@@ -318,6 +363,20 @@ def parse_global_visual_plan(
             raise ValueError(
                 f"неизвестное visual_family: {values['visual_family']}"
             )
+        values["continuity_mode"] = continuity.normalize_continuity_mode(
+            values["continuity_mode"]
+        )
+        if not values["location_id"]:
+            values["location_id"] = continuity.stable_context_id(
+                values["location"],
+                "location",
+            )
+        values["subject_ids"] = ", ".join(
+            continuity.normalize_subject_ids(
+                values["subject_ids"],
+                values["primary_subject"],
+            )
+        )
         items.append(GlobalVisualPlanItem(scene_index=scene_index, **values))
 
     actual = [item.scene_index for item in items]
@@ -417,6 +476,34 @@ def audit_global_visual_plan(plan: list[GlobalVisualPlanItem]) -> list[str]:
                 "одно визуальное семейство и локацию"
             )
 
+    location_descriptions: dict[str, set[str]] = {}
+    location_ids_by_description: dict[str, set[str]] = {}
+    subject_ids_by_name: dict[str, set[str]] = {}
+    for item in plan:
+        location_key = " ".join(item.location.casefold().split())
+        location_id = item.location_id.casefold()
+        location_descriptions.setdefault(location_id, set()).add(location_key)
+        location_ids_by_description.setdefault(location_key, set()).add(location_id)
+        subject_key = " ".join(item.primary_subject.casefold().split())
+        subject_ids_by_name.setdefault(subject_key, set()).update(
+            continuity.normalize_subject_ids(item.subject_ids)
+        )
+    for location_id, descriptions in location_descriptions.items():
+        if location_id and len(descriptions) > 1:
+            violations.append(
+                f"location_id {location_id} назначен разным локациям"
+            )
+    for description, ids in location_ids_by_description.items():
+        if description and len(ids) > 1:
+            violations.append(
+                f"одна локация «{description}» получила разные location_id"
+            )
+    for subject, ids in subject_ids_by_name.items():
+        if subject and len(ids) > 1:
+            violations.append(
+                f"один субъект «{subject}» получил разные subject_ids"
+            )
+
     # The creative target in the prompt is 20%.  A 25% validation ceiling keeps
     # a single borderline scene from discarding an otherwise diverse 45-scene
     # plan, while still rejecting the 40–60% cliché concentration seen in the
@@ -488,10 +575,16 @@ def build_global_visual_plan_prompt(
         "Верни ТОЛЬКО JSON-массив, ровно один объект на каждую входную сцену, "
         "в исходном порядке. Поля каждого объекта:\n"
         "scene_index, narrative_role, visual_family, location, primary_subject, "
-        "shot_progression, palette, transition, avoid.\n"
+        "shot_progression, palette, transition, avoid, story_thread, "
+        "continuity_mode, location_id, subject_ids, entry_state, scene_event, exit_state.\n"
         "scene_index — целое число; ВСЕ остальные поля — короткие JSON-строки, "
         "не массивы и не вложенные объекты.\n"
         f"visual_family — строго одно из: {', '.join(GLOBAL_VISUAL_FAMILIES)}.\n\n"
+        "continuity_mode — строго одно из: independent, same_location, "
+        "continuous_action, recurring_subject, evidence_sequence.\n"
+        "location_id и subject_ids — устойчивые короткие slug-ID. Повторяющиеся "
+        "локации и субъекты во всём фильме обязаны получать одинаковые ID; "
+        "subject_ids остаётся одной строкой с ID через запятую.\n\n"
         "ПРОФЕССИОНАЛЬНЫЕ ПРАВИЛА:\n"
         "- Каждая сцена получает одну главную визуальную функцию и физически снимаемую идею.\n"
         "- Распредели по фильму разные локации, субъекты и визуальные семейства; "
@@ -504,6 +597,8 @@ def build_global_visual_plan_prompt(
         "или другую осмысленную последовательность, а не список случайных кадров.\n"
         "- transition связывает конец текущей сцены со следующей через движение, форму, "
         "звук или смысловой контраст.\n"
+        "- entry_state → scene_event → exit_state описывают, что реально меняется "
+        "внутри сцены. Не начинай одно и то же действие заново в соседних сценах.\n"
         "- avoid перечисляет конкретные мотивы из соседних сцен, которые нельзя повторять.\n"
         "- Экранные надписи не придумывай: numeric_overlay уже содержит единственный "
         "разрешённый числовой акцент либо пустую строку.\n"
@@ -907,6 +1002,31 @@ def parse_shots(raw_shots: list[dict], offset: int = 0) -> list[Shot]:
                     str(raw.get("reference_source", "wikipedia")).strip()
                     or "wikipedia"
                 ),
+                purpose=str(raw.get("purpose", "")).strip(),
+                continuity_mode=continuity.normalize_continuity_mode(
+                    raw.get("continuity_mode")
+                ),
+                continuity_group_id=str(
+                    raw.get("continuity_group_id", "")
+                ).strip(),
+                location_id=str(raw.get("location_id", "")).strip(),
+                subject_ids=continuity.normalize_subject_ids(
+                    raw.get("subject_ids")
+                ),
+                state_before=str(raw.get("state_before", "")).strip(),
+                action=str(raw.get("action", "")).strip(),
+                state_after=str(raw.get("state_after", "")).strip(),
+                shot_size=str(raw.get("shot_size", "")).strip(),
+                camera_angle=str(raw.get("camera_angle", "")).strip(),
+                screen_direction=str(raw.get("screen_direction", "")).strip(),
+                reference_frame_id=str(
+                    raw.get("reference_frame_id", "")
+                ).strip(),
+                transition_in=str(raw.get("transition_in", "")).strip(),
+                transition_out=str(raw.get("transition_out", "")).strip(),
+                change_from_previous=str(
+                    raw.get("change_from_previous", "")
+                ).strip(),
             )
         )
     return parsed
@@ -953,6 +1073,10 @@ def continuation_shot(
         video_prompt=motion,
         motion=motion,
         screen_text="",
+        purpose="Продолжить действие с новой крупностью или ракурсом",
+        state_before=shot.state_after or shot.state_before,
+        state_after="Действие продолжается после смены ракурса",
+        change_from_previous=f"Новый ракурс: {angle}",
     )
     return Shot(**data)
 
@@ -1325,7 +1449,10 @@ def build_shot_instructions(
         "Верни только валидный JSON-массив. Каждый объект должен иметь поля: "
         "scene_index, start, end, visual_type, description, asset_query, image_model, video_model, "
         "image_prompt, video_prompt, screen_text, motion, priority, fallback, sfx_query, "
-        "sfx_accent_query, reference_query, reference_source.\n\n"
+        "sfx_accent_query, reference_query, reference_source, purpose, continuity_mode, "
+        "continuity_group_id, location_id, subject_ids, state_before, action, state_after, "
+        "shot_size, camera_angle, screen_direction, reference_frame_id, transition_in, "
+        "transition_out, change_from_previous.\n\n"
         f"{route_block}"
         f"{reference_block}"
         f"Настройка пользователя: {image_preference}.\n\n"
@@ -1413,6 +1540,23 @@ def build_shot_instructions(
         "- Любые схемы, маршруты, карты и технические объяснения показывай как реалистичный AI-видеоряд.\n"
         "- Не выдумывай факты, работай только с текстом сегментов.\n"
         "- Таймкод кадра: start = первого сегмента в группе, end = последнего.\n"
+        "\nПРАВИЛА КОНТЕКСТА И НЕПРЕРЫВНОСТИ:\n"
+        "- purpose объясняет монтажную функцию кадра, а не повторяет description.\n"
+        "- continuity_mode: independent | same_location | continuous_action | "
+        "recurring_subject | evidence_sequence. Не связывай случайный B-roll в "
+        "continuous_action.\n"
+        "- Кадры одной непрерывной локации/действия получают одинаковый "
+        "continuity_group_id, location_id и subject_ids.\n"
+        "- subject_ids — JSON-массив устойчивых ID из глобальной стратегии сцены.\n"
+        "- state_before → action → state_after обязаны образовывать причинную цепочку: "
+        "следующий кадр не начинает действие заново и не возвращает исчезнувший предмет.\n"
+        "- shot_size: wide | medium | close | detail. camera_angle: eye_level | "
+        "high | low | overhead | side. screen_direction: left_to_right | "
+        "right_to_left | toward_camera | away_from_camera | neutral.\n"
+        "- change_from_previous прямо указывает, чем новый кадр продвигает историю "
+        "или меняет крупность/ракурс. Для первого кадра опиши установление контекста.\n"
+        "- reference_frame_id заполняй только для повторяющегося персонажа, объекта "
+        "или локации, которым понадобится единый эталон; иначе пустая строка.\n"
     )
 
 
@@ -2043,6 +2187,7 @@ def call_lm_studio_for_shots(
         log_callback=log_callback,
     )
     repair_shot_prompts(shots)
+    continuity.apply_storyboard_context(shots, global_visual_plan)
     # Sound follows the location, not the cut: one ambience per scene,
     # event-like queries dropped (the export's room tone covers the rest).
     consolidate_sfx_queries(shots, log_callback=log_callback)

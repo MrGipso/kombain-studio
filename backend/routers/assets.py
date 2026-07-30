@@ -20,11 +20,13 @@ from core import reference as reference_lib
 from core import asset_variants
 from core import asset_qa
 from core import asset_qa_store
+from core import comfy as comfy_client
 from core import comfy_generation
 from core import lm as lm_client
+from core import production
 from core.models import AssetCard as CoreAssetCard, timecode_to_seconds
 from core.style_presets import compose_image_prompt, compose_video_prompt
-from backend.services import jobs
+from backend.services import jobs, material_engine
 
 from backend.models.schemas import (
     AssetCard as AssetCardSchema,
@@ -68,6 +70,16 @@ USER_MEDIA_PATH_FIELDS: tuple[str, ...] = (
 
 class RegeneratePromptRequest(BaseModel):
     target: Literal["image_prompt", "video_prompt"] = "image_prompt"
+
+
+class MaterialRunRequest(BaseModel):
+    mode: Literal["unattended"] = "unattended"
+    max_image_attempts: int = 2
+    max_video_attempts: int = 2
+    fallback: Literal["kenburns"] = "kenburns"
+    skip_ready: bool = True
+    auto_resume: bool = True
+    technical_validation: bool = True
 
 
 
@@ -977,6 +989,225 @@ async def get_asset_board(project_id: str, response: Response):
     # writing image_output/video_output) and refuse a stale full-board save.
     _set_board_revision_headers(response, pdir)
     return [c.__dict__ for c in cards]
+
+
+def _start_material_run(
+    pdir: Path,
+    policy: production.ProductionPolicy,
+) -> str:
+    def worker(cancel_event) -> None:
+        material_engine.run_unattended_materials(
+            pdir,
+            pdir.name,
+            policy,
+            cancel_event,
+            _generate_sync,
+            service_check=lambda service: (
+                _comfy_available(timeout=2.0) if service == "comfy" else True
+            ),
+        )
+
+    return jobs.start_background_project_job(
+        pdir.name,
+        "Автономная сборка материалов",
+        worker,
+        resource="comfy",
+    )
+
+
+def _comfy_available(settings=None, *, timeout: float = 3.0) -> bool:
+    settings = settings or load_settings()
+    try:
+        base = (settings.comfy_url or "http://127.0.0.1:8188").rstrip("/")
+        with urllib.request.urlopen(f"{base}/object_info", timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _required_material_workflows(
+    pdir: Path,
+    settings,
+) -> list[str]:
+    required: set[str] = set()
+    for card in _load_asset_board(pdir):
+        data = card.__dict__
+        visual_type = str(card.visual_type or "").lower()
+        if (
+            visual_type in {"ai_image", "still_kenburns", "ai_image_then_i2v"}
+            and production.card_needs_image(data)
+        ):
+            image_model = str(card.image_model or "").lower()
+            required.add("ideogram" if "ideogram" in image_model else "krea")
+        if (
+            visual_type == "ai_image_then_i2v"
+            and production.card_needs_video(data)
+        ):
+            # The unattended Material action always passes force_full=True for
+            # video operations. Preflight must validate the workflow that will
+            # actually run, regardless of the manual LTX draft preference.
+            required.add("ltx")
+    return sorted(required)
+
+
+def _material_workflow_preflight(pdir: Path, settings=None) -> dict[str, Any]:
+    """Validate only workflows the pending material graph will actually use."""
+
+    settings = settings or load_settings()
+    required = _required_material_workflows(pdir, settings)
+    if not required:
+        return {"ok": True, "required_workflows": [], "workflows": {}}
+    base = settings.comfy_url or "http://127.0.0.1:8188"
+    try:
+        object_info = comfy_client.comfy_request_json(
+            f"{comfy_client.comfy_base_url(base)}/object_info",
+            timeout=10,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"ComfyUI недоступен: {exc}",
+            "required_workflows": required,
+            "workflows": {},
+        }
+    paths = comfy_client.configured_workflow_paths(settings)
+    workflows: dict[str, Any] = {}
+    for name in required:
+        path = paths[name]
+        if not path.is_file():
+            workflows[name] = {
+                "ok": False,
+                "path": str(path),
+                "error": "workflow file not found",
+            }
+            continue
+        try:
+            workflow = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(workflow, dict):
+                raise ValueError("workflow root must be an object")
+            workflows[name] = {
+                "path": str(path),
+                **comfy_client.validate_workflow_compatibility(
+                    workflow,
+                    object_info,
+                ),
+            }
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            workflows[name] = {
+                "ok": False,
+                "path": str(path),
+                "error": str(exc),
+            }
+    ok = all(item.get("ok") for item in workflows.values())
+    return {
+        "ok": ok,
+        "message": (
+            ""
+            if ok
+            else "Требуемые workflow ComfyUI отсутствуют или несовместимы."
+        ),
+        "required_workflows": required,
+        "workflows": workflows,
+    }
+
+
+def resume_interrupted_material_runs() -> list[str]:
+    """Resume crash-checkpointed unattended runs during application startup."""
+
+    settings = load_settings()
+    root = Path(settings.output_base or "projects").expanduser().resolve()
+    resumed: list[str] = []
+    if not root.is_dir():
+        return resumed
+    # Do not burn both attempts and replace every pending shot with a fallback
+    # while the desktop is still bringing an external ComfyUI process online.
+    if not _comfy_available(settings):
+        return resumed
+    for pdir in root.iterdir():
+        if not pdir.is_dir():
+            continue
+        state = production.load_material_run(pdir)
+        if not state or state.get("status") not in {"queued", "running", "interrupted"}:
+            continue
+        try:
+            policy = production.ProductionPolicy.from_dict(state.get("policy"))
+            if not policy.auto_resume:
+                continue
+            if not _material_workflow_preflight(pdir, settings).get("ok"):
+                continue
+            _start_material_run(pdir, policy)
+            resumed.append(pdir.name)
+        except (ValueError, jobs.ProjectBusy, RuntimeError):
+            # A busy GPU or malformed legacy checkpoint must not prevent the
+            # desktop application from starting. The run remains resumable via
+            # the same Material button.
+            continue
+    return resumed
+
+
+@router.get("/{project_id:str}/materials/preflight")
+async def get_material_preflight(project_id: str):
+    pdir = _resolve_project(project_id)
+    return production.preflight_material_plan(pdir).to_dict()
+
+
+@router.get("/{project_id:str}/materials/run")
+async def get_material_run(project_id: str):
+    pdir = _resolve_project(project_id)
+    state = production.load_material_run(pdir)
+    return state or {
+        "schema_version": production.MATERIAL_RUN_SCHEMA_VERSION,
+        "status": "not_started",
+        "project_id": pdir.name,
+    }
+
+
+@router.post("/{project_id:str}/materials/run", status_code=202)
+async def start_material_run(project_id: str, request: MaterialRunRequest):
+    pdir = _resolve_project(project_id)
+    try:
+        policy = production.ProductionPolicy.from_dict(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    preflight = production.preflight_material_plan(pdir)
+    if not preflight.allowed:
+        raise HTTPException(409, preflight.to_dict())
+    if "comfy" in preflight.required_services and not _comfy_available():
+        raise HTTPException(
+            503,
+            {
+                "message": (
+                    "ComfyUI недоступен. Запустите ComfyUI и повторите; "
+                    "движок не станет заменять всю очередь резервными кадрами."
+                ),
+                "service": "comfy",
+                "preflight": preflight.to_dict(),
+            },
+        )
+    if "comfy" in preflight.required_services:
+        workflow_preflight = _material_workflow_preflight(pdir)
+        if not workflow_preflight.get("ok"):
+            raise HTTPException(
+                503,
+                {
+                    "message": workflow_preflight.get("message"),
+                    "service": "comfy",
+                    "workflow_preflight": workflow_preflight,
+                    "preflight": preflight.to_dict(),
+                },
+            )
+    try:
+        job_id = _start_material_run(pdir, policy)
+    except jobs.ProjectBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "preflight": preflight.to_dict(),
+        "policy": request.model_dump(),
+    }
 
 
 @router.get("/{project_id:str}/asset-board/qa")

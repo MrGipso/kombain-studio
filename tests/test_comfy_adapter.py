@@ -103,14 +103,16 @@ def test_wait_timeout_keeps_last_transport_error(monkeypatch):
 
 
 def test_wait_supports_cooperative_cancellation(monkeypatch):
+    cancelled = []
     monkeypatch.setattr(
         comfy,
-        "comfy_request_json",
-        lambda *args, **kwargs: pytest.fail("cancelled wait must not make a request"),
+        "comfy_cancel_prompt",
+        lambda base_url, prompt_id: cancelled.append((base_url, prompt_id)),
     )
 
     with pytest.raises(comfy.ComfyCancelledError, match="prompt-9"):
         comfy.comfy_wait_for_history("http://comfy", "prompt-9", cancel_check=lambda: True)
+    assert cancelled == [("http://comfy", "prompt-9")]
 
 
 def test_collect_outputs_flattens_selected_kinds_in_node_order():

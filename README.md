@@ -25,9 +25,16 @@ launchers and `main.py` open the current interface.
 External services are not installed or started automatically. Configure their
 URLs and executable paths on the Settings page after the first launch.
 
-Generated-media QA is documented in [`docs/ASSET_QA.md`](docs/ASSET_QA.md).
-Its default `shadow` mode records hash-bound observations without changing
-render status or triggering automatic retries.
+The primary **Создать все материалы** action is a server-owned unattended run:
+it freezes the approved plan, skips ready media, validates generated files,
+retries each failed provider operation once, then fills the slot with a
+Ken Burns or still fallback. The browser may be closed and a checkpoint is
+resumed on the next application start. See
+[`docs/UNATTENDED_MATERIALS.md`](docs/UNATTENDED_MATERIALS.md).
+
+Legacy generated-media QA remains API-compatible and is documented in
+[`docs/ASSET_QA.md`](docs/ASSET_QA.md), but it is not invoked by generation
+from the current interface and cannot block the unattended queue.
 
 > Licensing: the optional Woosh model weights are non-commercial. See
 > `docs/THIRD_PARTY.md` before distributing or monetizing generated work.
@@ -166,6 +173,12 @@ The principal stages are:
 6. timeline, music, and SFX
 7. validation
 8. draft or master export
+
+Shot planning also compiles `03_context_bible.json`: a versioned map of story
+threads, recurring subjects, locations, continuity groups and per-shot
+`before → action → after` state. The Material preflight freezes and validates
+that context before any expensive generation. See
+[`docs/CONTEXT_STORYBOARD.md`](docs/CONTEXT_STORYBOARD.md).
 
 Draft exports are intended for iteration. Master exports apply stricter quality
 gates and should contain only reviewed, final media. Every successful Master

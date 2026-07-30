@@ -4,6 +4,7 @@ import inspect
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -423,6 +424,32 @@ def test_global_visual_plan_parser_and_audit_accept_diverse_complete_plan():
 
     assert [item.scene_index for item in parsed] == [1, 2, 3, 4, 5]
     assert planning.audit_global_visual_plan(parsed) == []
+
+
+def test_global_visual_plan_audit_rejects_unstable_context_ids():
+    first = _scene()
+    second = Scene(**{**vars(first), "index": 2, "title": "Second scene"})
+    scenes = [first, second]
+    plan = _global_plan(scenes)
+    plan[0] = replace(
+        plan[0],
+        location="Один кабинет",
+        location_id="location-office-a",
+        primary_subject="Алекс",
+        subject_ids="subject-alex",
+    )
+    plan[1] = replace(
+        plan[1],
+        location="Один кабинет",
+        location_id="location-office-b",
+        primary_subject="Алекс",
+        subject_ids="subject-other",
+    )
+
+    violations = planning.audit_global_visual_plan(plan)
+
+    assert any("разные location_id" in item for item in violations)
+    assert any("разные subject_ids" in item for item in violations)
 
 
 def test_global_visual_plan_audit_rejects_monotonous_video_language():

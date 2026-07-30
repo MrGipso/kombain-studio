@@ -9,12 +9,13 @@ backend/   FastAPI
              sfx, music, export, media, settings, diagnostics)
   services/  jobs (durable-реестр задач, SQLite, локи проект+ресурс),
              runlog (JSONL-журнал строк лога в <проект>/logs/),
-             sse_manager, pipeline_orch (оркестрация этапов)
+             sse_manager, pipeline_orch (оркестрация этапов),
+             material_engine (unattended retry/checkpoint/fallback)
 core/      чистая логика без UI: project (стейт этапов, атомарная запись),
            board, scenes, shot_planning/shots, transcribe, lm,
            comfy/comfy_generation, script_align, style_presets, stock,
            reference, kenburns, export(+profiles), media_qc, sfx,
-           asset_variants, validation, models
+           asset_variants, validation, production (план/preflight), models
 plugins/   тонкие адаптеры анализаторов, транскрайберов и генераторов к core
 launch.py  нативное окно над тем же FastAPI/React runtime
 ui/, content_pipeline_qt.py, content_pipeline_gui.py

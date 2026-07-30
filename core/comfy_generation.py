@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from core import continuity
 from core.comfy import (
     DEFAULT_WORKFLOW_PATHS,
     comfy_collect_outputs,
@@ -236,7 +237,12 @@ def generate_comfy_image(
     settings: object | None = None,
 ) -> Path:
     model = card.image_model or "krea2_turbo"
-    prompt = card.image_prompt.strip()
+    prompt = continuity.compile_generation_prompt(
+        card.image_prompt,
+        card,
+        target="image",
+        context_bible=continuity.load_context_bible(project_dir),
+    )
     if not prompt:
         raise ValueError("Image prompt is empty")
     workflow = prepare_image_workflow(
@@ -271,7 +277,12 @@ def generate_comfy_ltx_video(
 ) -> Path:
     if not card.image_output or not Path(card.image_output).exists():
         raise FileNotFoundError("Для LTX сначала нужна готовая картинка в image_output.")
-    prompt = card.video_prompt.strip() or card.image_prompt.strip()
+    prompt = continuity.compile_generation_prompt(
+        card.video_prompt.strip() or card.image_prompt.strip(),
+        card,
+        target="video",
+        context_bible=continuity.load_context_bible(project_dir),
+    )
     if not prompt:
         raise ValueError("Video prompt is empty")
     duration = max(

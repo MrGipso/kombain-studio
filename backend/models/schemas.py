@@ -65,6 +65,23 @@ class Shot(BaseModel):
     sfx_accent_query: str = ""
     reference_query: str = ""
     reference_source: str = "wikipedia"
+    segment_ids: list[int] = Field(default_factory=list)
+    visual_concept_id: str = ""
+    purpose: str = ""
+    continuity_mode: str = "independent"
+    continuity_group_id: str = ""
+    location_id: str = ""
+    subject_ids: list[str] = Field(default_factory=list)
+    state_before: str = ""
+    action: str = ""
+    state_after: str = ""
+    shot_size: str = ""
+    camera_angle: str = ""
+    screen_direction: str = ""
+    reference_frame_id: str = ""
+    transition_in: str = ""
+    transition_out: str = ""
+    change_from_previous: str = ""
 
 
 class AssetCard(BaseModel):
@@ -124,6 +141,21 @@ class AssetCard(BaseModel):
     reference_output: str = ""
     reference_credit: str = ""
     plan_fingerprint: str = ""
+    purpose: str = ""
+    continuity_mode: str = "independent"
+    continuity_group_id: str = ""
+    location_id: str = ""
+    subject_ids: list[str] = Field(default_factory=list)
+    state_before: str = ""
+    action: str = ""
+    state_after: str = ""
+    shot_size: str = ""
+    camera_angle: str = ""
+    screen_direction: str = ""
+    reference_frame_id: str = ""
+    transition_in: str = ""
+    transition_out: str = ""
+    change_from_previous: str = ""
     card_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -189,6 +221,15 @@ class Settings(BaseModel):
     lm_embed_model: str = "text-embedding-nomic-embed-text-v1.5"
     lm_context: str = "32768"
     comfy_url: str = "http://127.0.0.1:8188"
+    comfy_watchdog_enabled: bool = False
+    comfy_install_dir: str = ""
+    comfy_watchdog_listen_address: str = "127.0.0.1"
+    comfy_watchdog_sage_attention: bool = True
+    comfy_watchdog_poll_seconds: float = 5.0
+    comfy_watchdog_failure_threshold: int = 3
+    comfy_watchdog_startup_timeout_seconds: int = 180
+    comfy_watchdog_max_restarts: int = 3
+    comfy_watchdog_restart_window_seconds: int = 1800
     comfy_krea_workflow: str = ""
     comfy_ideogram_workflow: str = ""
     comfy_ltx_workflow: str = ""

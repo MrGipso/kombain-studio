@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core import board as board_store
+from core import continuity
 from core import lm as lm_client
 from core import scenes as scene_tools
 from core import shot_planning as shot_planner
@@ -320,6 +321,33 @@ def run_shot_generation(
         pipeline_scenes,
         log_callback=log,
     )
+    continuity.apply_storyboard_context(shots, global_visual_plan)
+
+    # The LLM may suggest visual timing, but transcript segments remain the
+    # immutable semantic authority. Persist their 1-based IDs so later engine
+    # stages can prove coverage without re-interpreting prose.
+    from core import production as production_contracts
+
+    annotated = production_contracts.annotate_shot_segments(
+        [shot.__dict__ for shot in shots],
+        pipeline_segments,
+    )
+    for shot, item in zip(shots, annotated):
+        shot.segment_ids = list(item["segment_ids"])
+        shot.visual_concept_id = str(item["visual_concept_id"])
+
+    context_bible = continuity.build_context_bible(
+        pipeline_scenes,
+        global_visual_plan,
+        shots,
+        character_description=character_description,
+    )
+    context_path = continuity.write_context_bible(project_dir, context_bible)
+    log(
+        "Контекстная библия сохранена: "
+        f"{context_path} · групп непрерывности "
+        f"{len(context_bible['continuity_groups'])}"
+    )
 
     log("Building asset board...")
     cards = board_store.build_asset_board(project_dir, shots=shots)
@@ -332,6 +360,24 @@ def run_shot_generation(
                   "screen_text": s.screen_text, "motion": s.motion,
                   "priority": s.priority, "fallback": s.fallback,
                   "sfx_query": getattr(s, "sfx_query", ""),
-                  "sfx_accent_query": getattr(s, "sfx_accent_query", "")} for s in shots]
+                  "sfx_accent_query": getattr(s, "sfx_accent_query", ""),
+                  "segment_ids": getattr(s, "segment_ids", []),
+                  "visual_concept_id": getattr(s, "visual_concept_id", ""),
+                  "purpose": getattr(s, "purpose", ""),
+                  "continuity_mode": getattr(s, "continuity_mode", "independent"),
+                  "continuity_group_id": getattr(s, "continuity_group_id", ""),
+                  "location_id": getattr(s, "location_id", ""),
+                  "subject_ids": getattr(s, "subject_ids", []),
+                  "state_before": getattr(s, "state_before", ""),
+                  "action": getattr(s, "action", ""),
+                  "state_after": getattr(s, "state_after", ""),
+                  "shot_size": getattr(s, "shot_size", ""),
+                  "camera_angle": getattr(s, "camera_angle", ""),
+                  "screen_direction": getattr(s, "screen_direction", ""),
+                  "reference_frame_id": getattr(s, "reference_frame_id", ""),
+                  "transition_in": getattr(s, "transition_in", ""),
+                  "transition_out": getattr(s, "transition_out", ""),
+                  "change_from_previous": getattr(s, "change_from_previous", "")}
+                 for s in shots]
 
     return shots_out, _to_cards(cards)

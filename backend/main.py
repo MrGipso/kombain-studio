@@ -16,7 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from backend.routers import projects, transcription, scenes, shots, assets, export_router, settings, media, diagnostics, music, sfx, script, system, voice
 from core.config import DEFAULT_SETTINGS_PATH, load_settings
 from core.version import __version__
-from backend.services import runtime_locks
+from backend.services import comfy_watchdog, runtime_locks
 
 
 @asynccontextmanager
@@ -53,8 +53,28 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(previous)
         raise
     try:
+        comfy_watchdog.start_watchdog(
+            resume_callback=assets.resume_interrupted_material_runs
+        )
+        # A material run owns its own crash checkpoint.  Resume it only after
+        # the API is live and external local services had a short startup
+        # window; the resume helper itself remains passive when ComfyUI is not
+        # reachable yet.
+        import threading
+        import time
+
+        def resume_materials_after_startup() -> None:
+            time.sleep(2.0)
+            assets.resume_interrupted_material_runs()
+
+        threading.Thread(
+            target=resume_materials_after_startup,
+            name="resume-material-runs",
+            daemon=True,
+        ).start()
         yield
     finally:
+        comfy_watchdog.stop_watchdog()
         runtime_locks.release()
         loop.set_exception_handler(previous)
 

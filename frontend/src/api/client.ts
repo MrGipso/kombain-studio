@@ -1,4 +1,4 @@
-import type { ProjectInfo, ProjectDetail, ProjectState, ProjectJobs, ProjectRunLogs, AssetCard, AssetQASummary, AssetVariantHistory, AssetVariantSelection, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle, MusicState, SfxState, SfxItem, ScriptState, ExportMode, ExportProfileCatalog, ExportProfileName, MasterManifestInfo, Scene, VoicePlan, VoiceProfile, YoutubeInspection, TranscriptionSource } from './types'
+import type { ProjectInfo, ProjectDetail, ProjectState, ProjectJobs, ProjectRunLogs, AssetCard, AssetQASummary, AssetVariantHistory, AssetVariantSelection, Settings, Preset, ValidationReport, TimelineMedia, VideoStyle, MusicState, SfxState, SfxItem, ScriptState, ExportMode, ExportProfileCatalog, ExportProfileName, MasterManifestInfo, Scene, VoicePlan, VoiceProfile, YoutubeInspection, TranscriptionSource, MaterialPreflight, MaterialRunPolicy, MaterialRunState, ComfyWatchdogStatus, ContextBible } from './types'
 
 const BASE = '/api'
 
@@ -112,6 +112,8 @@ export const exportScenes = (id: string) =>
 
 // Shots
 export const getShots = (id: string) => r(`/projects/${encodeURIComponent(id)}/shots`)
+export const getContextBible = (id: string) =>
+  r<ContextBible>(`/projects/${encodeURIComponent(id)}/context-bible`)
 
 // Asset Board.
 // Optimistic concurrency: board mutations send the latest accepted ETag as
@@ -196,6 +198,30 @@ export const runCardQa = (id: string, cardIndex: number, cardId: string) =>
       headers: cardOperationHeaders(id, cardId),
     }, (response) => rememberBoardWriteRevision(id, response),
   )
+export const getMaterialPreflight = (id: string) =>
+  r<MaterialPreflight>(`/projects/${encodeURIComponent(id)}/materials/preflight`)
+export const getMaterialRun = (id: string) =>
+  r<MaterialRunState>(`/projects/${encodeURIComponent(id)}/materials/run`)
+export const startMaterialRun = (
+  id: string,
+  policy: Partial<MaterialRunPolicy> = {},
+) =>
+  r<{ ok: boolean; job_id: string; preflight: MaterialPreflight; policy: MaterialRunPolicy }>(
+    `/projects/${encodeURIComponent(id)}/materials/run`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: 'unattended',
+        max_image_attempts: 2,
+        max_video_attempts: 2,
+        fallback: 'kenburns',
+        skip_ready: true,
+        auto_resume: true,
+        technical_validation: true,
+        ...policy,
+      }),
+    },
+  )
 export const resolveStock = (id: string, cardIndex: number, cardId: string) =>
   r<{ ok: boolean; card?: AssetCard; message?: string; source?: string; score?: number }>(
     `/projects/${encodeURIComponent(id)}/asset-board/${cardIndex}/stock`, {
@@ -243,6 +269,8 @@ export const updateProjectSettings = (id: string, data: Partial<ProjectStyleSett
 export const getSettings = () => r<Settings>('/settings')
 export const updateSettings = (data: Partial<Settings>) =>
   r('/settings', { method: 'PUT', body: JSON.stringify(data) })
+export const getComfyWatchdog = () =>
+  r<ComfyWatchdogStatus>('/system/comfy-watchdog')
 export const getPresets = () => r<Preset[]>('/presets')
 
 // Diagnostics — test external dependencies

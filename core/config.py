@@ -30,6 +30,18 @@ class Settings:
     lm_embed_model: str = "text-embedding-nomic-embed-text-v1.5"
     lm_context: str = "32768"
     comfy_url: str = "http://127.0.0.1:8188"
+    # Optional ComfyUI process supervisor. It targets the portable layout and
+    # never executes an arbitrary shell command: executable and main.py are
+    # resolved below this directory.
+    comfy_watchdog_enabled: bool = False
+    comfy_install_dir: str = ""
+    comfy_watchdog_listen_address: str = "127.0.0.1"
+    comfy_watchdog_sage_attention: bool = True
+    comfy_watchdog_poll_seconds: Annotated[float, Field(ge=2.0, le=60.0)] = 5.0
+    comfy_watchdog_failure_threshold: Annotated[int, Field(ge=2, le=12)] = 3
+    comfy_watchdog_startup_timeout_seconds: Annotated[int, Field(ge=30, le=900)] = 180
+    comfy_watchdog_max_restarts: Annotated[int, Field(ge=1, le=10)] = 3
+    comfy_watchdog_restart_window_seconds: Annotated[int, Field(ge=60, le=86400)] = 1800
     comfy_krea_workflow: str = ""
     comfy_ideogram_workflow: str = ""
     comfy_ltx_workflow: str = ""
