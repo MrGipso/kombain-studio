@@ -1025,7 +1025,12 @@ def _comfy_available(settings=None, *, timeout: float = 3.0) -> bool:
     settings = settings or load_settings()
     try:
         base = (settings.comfy_url or "http://127.0.0.1:8188").rstrip("/")
-        with urllib.request.urlopen(f"{base}/object_info", timeout=timeout):
+        # This check runs before every unattended operation, so it must remain
+        # cheap.  On large custom-node installations /object_info can be
+        # several megabytes and exceed this timeout even while ComfyUI is
+        # healthy.  Workflow compatibility is validated separately before the
+        # material job starts.
+        with urllib.request.urlopen(f"{base}/system_stats", timeout=timeout):
             return True
     except Exception:
         return False

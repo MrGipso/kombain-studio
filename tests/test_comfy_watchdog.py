@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import backend.services.comfy_watchdog as comfy_watchdog_module
 from backend.services.comfy_watchdog import ComfyWatchdog, _build_command
 from core.config import Settings
 
@@ -105,6 +107,53 @@ def test_failure_threshold_starts_one_restart(tmp_path, monkeypatch):
 
     assert state["status"] == "restarting"
     assert len(restarts) == 1
+
+
+def test_restart_replaces_matching_orphan_before_launch(tmp_path, monkeypatch):
+    settings = _settings(
+        tmp_path,
+        comfy_watchdog_failure_threshold=2,
+        comfy_watchdog_startup_timeout_seconds=60,
+    )
+    watchdog = ComfyWatchdog(
+        settings_loader=lambda: settings,
+        health_probe=lambda *_args: False,
+        monotonic=lambda: 100.0,
+    )
+    events = []
+    fake_process = SimpleNamespace(pid=4567, poll=lambda: None)
+
+    monkeypatch.setattr(
+        watchdog,
+        "_discover_managed_pids",
+        lambda executable: events.append(("discover", executable)) or [1234],
+    )
+    monkeypatch.setattr(
+        watchdog,
+        "_terminate_pid",
+        lambda pid: events.append(("terminate", pid)),
+    )
+
+    def fake_popen(command, **kwargs):
+        events.append(("launch", command, kwargs))
+        return fake_process
+
+    monkeypatch.setattr(comfy_watchdog_module.subprocess, "Popen", fake_popen)
+
+    assert watchdog.check_once()["status"] == "degraded"
+    state = watchdog.check_once()
+
+    assert [event[0] for event in events] == ["discover", "terminate", "launch"]
+    assert events[1] == ("terminate", 1234)
+    assert events[2][1][0].endswith("python.exe")
+    assert "ComfyUI/main.py" in events[2][1]
+    assert state["status"] == "restarting"
+    assert state["managed_pid"] == 4567
+    assert state["consecutive_failures"] == 0
+    assert state["restart_count_window"] == 1
+    assert watchdog._startup_deadline == 160.0
+    for stream in watchdog._process_streams or ():
+        stream.close()
 
 
 def test_restart_limit_stops_a_crash_loop(tmp_path, monkeypatch):

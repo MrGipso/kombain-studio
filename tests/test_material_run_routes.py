@@ -7,6 +7,29 @@ from fastapi.testclient import TestClient
 from backend.routers import assets as assets_router
 
 
+def test_comfy_availability_uses_lightweight_health_endpoint(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(url, *, timeout):
+        requests.append((url, timeout))
+        return Response()
+
+    monkeypatch.setattr(assets_router.urllib.request, "urlopen", fake_urlopen)
+
+    assert assets_router._comfy_available(
+        SimpleNamespace(comfy_url="http://127.0.0.1:8188/"),
+        timeout=2.0,
+    )
+    assert requests == [("http://127.0.0.1:8188/system_stats", 2.0)]
+
+
 def _write(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 

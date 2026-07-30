@@ -393,6 +393,7 @@ class ComfyWatchdog:
         self._startup_deadline = now + startup_timeout
         self._update(
             restart_count_window=len(self._restart_times),
+            consecutive_failures=0,
             managed_pid=process.pid,
             last_restart_at=_utc_now(),
             last_error="",
