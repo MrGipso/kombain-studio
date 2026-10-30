@@ -16,7 +16,7 @@ from core.project import atomic_write_text, content_hash
 
 _GLOBAL_VISUAL_PLAN_CACHE_VERSION = 1
 _GLOBAL_VISUAL_PLAN_CACHE = ".global_visual_plan_cache.json"
-_SHOT_STAGE_SETTING_KEYS = (
+SHOT_STAGE_SETTING_KEYS = (
     "lm_model",
     "lm_context",
     "video_style",
@@ -33,7 +33,7 @@ _SHOT_STAGE_SETTING_KEYS = (
 )
 _LEGACY_SHOT_STAGE_SETTING_KEYS = tuple(
     key
-    for key in _SHOT_STAGE_SETTING_KEYS
+    for key in SHOT_STAGE_SETTING_KEYS
     if key not in {"stock_variable_rhythm", "reference_enable", "reference_density"}
 )
 
@@ -66,12 +66,18 @@ def _global_visual_plan_cache_key(
     })
 
 
-def _shot_stage_input_hash(
+def shot_stage_input_hash(
     scenes_data: list[dict[str, Any]],
     settings: dict[str, Any],
     *,
-    setting_keys: tuple[str, ...] = _SHOT_STAGE_SETTING_KEYS,
+    setting_keys: tuple[str, ...] = SHOT_STAGE_SETTING_KEYS,
 ) -> str:
+    """Input identity of the shots stage.
+
+    The shots route stores it in the scene checkpoint and the stage manifest,
+    and the global-plan cache compares against it, so all of them must use
+    this one definition.
+    """
     return content_hash({
         "scenes": scenes_data,
         "settings": {
@@ -94,8 +100,8 @@ def _legacy_plan_matches_completed_stage(
     if stage.get("status") != "completed":
         return False
     known_hashes = {
-        _shot_stage_input_hash(scenes_data, settings),
-        _shot_stage_input_hash(
+        shot_stage_input_hash(scenes_data, settings),
+        shot_stage_input_hash(
             scenes_data,
             settings,
             setting_keys=_LEGACY_SHOT_STAGE_SETTING_KEYS,
@@ -150,15 +156,6 @@ def _load_cached_global_visual_plan(
     return [item.as_dict() for item in parsed]
 
 
-def _lm_unload_delay_seconds(settings: dict) -> int | None:
-    if not settings.get("lm_auto_unload", True):
-        return None
-    try:
-        return max(0, int(str(settings.get("lm_unload_delay", "0")).strip() or "0"))
-    except ValueError:
-        return 60
-
-
 def _ensure_lm_context(
     settings: dict,
     log: Callable[[str], None],
@@ -184,7 +181,7 @@ def _ensure_lm_context(
 
 
 def _maybe_unload_lm(settings: dict, reason: str, log: Callable[[str], None], model: str | None = None):
-    delay = _lm_unload_delay_seconds(settings)
+    delay = lm_client.unload_delay_seconds(settings)
     if delay is None:
         log("LM Studio auto-unload disabled")
         return
@@ -216,8 +213,7 @@ def run_scene_analysis(
 
     base_url = settings.get("lm_url", "http://127.0.0.1:1234/v1")
     model = settings.get("lm_model", "local-model")
-    ttl_seconds = _lm_unload_delay_seconds(settings)
-    ttl = ttl_seconds if ttl_seconds and ttl_seconds > 0 else None
+    ttl = lm_client.ttl_seconds(settings)
 
     style_anchor = settings.get("style_anchor", "")
     character_description = settings.get("character_description", "")
@@ -366,8 +362,7 @@ def run_shot_generation(
     image_pref = settings.get("image_model_preference", "Auto")
     base_url = settings.get("lm_url", "http://127.0.0.1:1234/v1")
     model = settings.get("lm_model", "local-model")
-    ttl_seconds = _lm_unload_delay_seconds(settings)
-    ttl = ttl_seconds if ttl_seconds and ttl_seconds > 0 else None
+    ttl = lm_client.ttl_seconds(settings)
 
     style_anchor = settings.get("style_anchor", "")
     character_description = settings.get("character_description", "")

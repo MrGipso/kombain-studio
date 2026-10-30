@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 from backend.routers import shots as shots_router
-from backend.services import jobs
+from backend.services import jobs, pipeline_orch
 from core.config import Settings
 from core.project import create_project
 
@@ -50,3 +50,10 @@ def test_shot_worker_reads_scenes_after_acquiring_project_lock(
 
     assert captured["scenes"] == [{"index": 1, "title": "current"}]
     assert '"event": "done"' in payload
+    # The global-plan cache recognises a completed stage by this exact hash,
+    # so the route must record the orchestrator's definition of it.
+    expected_hash = pipeline_orch.shot_stage_input_hash(
+        captured["scenes"],
+        captured["settings"],
+    )
+    assert project.stage_state("shots")["input_hash"] == expected_hash

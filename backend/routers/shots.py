@@ -13,7 +13,7 @@ from core.board import write_asset_board
 from core.models import AssetCard
 from core.project import open_project, safe_project_path
 
-from backend.services.pipeline_orch import run_shot_generation
+from backend.services.pipeline_orch import run_shot_generation, shot_stage_input_hash
 from backend.services.sse_manager import SSEManager
 from backend.services import jobs, runlog
 
@@ -85,20 +85,10 @@ async def generate_shots(project_id: str):
                     settings_dict = current_project.effective_settings()
                     total_scenes = len(scenes_data)
                     try:
-                        stage_settings = {
-                            key: settings_dict.get(key)
-                            for key in (
-                                "lm_model", "lm_context", "video_style", "style_anchor",
-                                "character_description", "shot_mode", "route_priority",
-                                "stock_mode", "stock_cut_seconds", "stock_variable_rhythm",
-                                "image_model_preference", "reference_enable",
-                                "reference_density",
-                            )
-                        }
-                        stage_input_hash = current_project.content_hash({
-                            "scenes": scenes_data,
-                            "settings": stage_settings,
-                        })
+                        stage_input_hash = shot_stage_input_hash(
+                            scenes_data,
+                            settings_dict,
+                        )
                         partial_path = current_project.dir / "04_shot_list.partial.json"
                         checkpoint_path = (
                             current_project.dir / ".shot_generation_checkpoint.json"
