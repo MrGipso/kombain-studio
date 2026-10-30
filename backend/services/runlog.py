@@ -365,7 +365,13 @@ def tee(
             fields=fields,
         )
         if log:
-            log(message)
+            # Rendering a progress line is observational and must never abort
+            # the production job (for example, a legacy Windows console may
+            # reject a Unicode arrow even though the durable UTF-8 log is fine).
+            try:
+                log(message)
+            except Exception:
+                pass
 
     # Useful to status/SSE adapters without changing the callable contract.
     setattr(wrapped, "run_id", correlated_run_id)

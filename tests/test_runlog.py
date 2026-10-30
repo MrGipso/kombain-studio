@@ -72,6 +72,17 @@ def test_tee_uses_one_run_id_for_the_whole_legacy_stream(tmp_path):
     assert [record["event"] for record in records] == ["progress", "progress"]
 
 
+def test_tee_does_not_abort_job_when_progress_sink_cannot_render_unicode(tmp_path):
+    def broken_console(_message: str) -> None:
+        raise UnicodeEncodeError("cp1251", "→", 0, 1, "unsupported")
+
+    callback = runlog.tee(tmp_path, "Storyboard", broken_console)
+
+    callback("Общий план → деталь")
+
+    assert _records(tmp_path)[0]["msg"] == "Общий план → деталь"
+
+
 def test_lifecycle_records_start_result_and_error_without_hiding_exception(tmp_path):
     with runlog.run(
         tmp_path,
