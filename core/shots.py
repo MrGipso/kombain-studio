@@ -1,14 +1,13 @@
 """Deterministic post-processing of the LLM-generated shot list.
 
-Strangler slice #2 out of content_pipeline_gui.py (see docs/DEVELOPMENT.md).
 The philosophy of this module: the LLM proposes, code enforces. Textual route
 biases and framing rules in the prompt are advisory at best — models
 "alternate" routes by shot COUNT while expensive AI shots stay long, and they
 repeat framings across scene boundaries. These passes make the guarantees
 real, deterministically and idempotently.
 
-All functions are duck-typed over shot objects (attribute access only), so the
-monolith's Shot dataclass and core.models.Shot both work.
+All functions are duck-typed over shot objects (attribute access only), so
+core.models.Shot and lightweight test doubles both work.
 """
 
 from __future__ import annotations

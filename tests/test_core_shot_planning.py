@@ -134,8 +134,7 @@ core.config.load_settings = fail_load
 real_import = builtins.__import__
 def guarded(name, *args, **kwargs):
     blocked = (
-        name == 'content_pipeline_gui'
-        or name == 'backend'
+        name == 'backend'
         or name.startswith('backend.')
         or name == 'tkinter'
         or name.startswith('tkinter.')
@@ -939,11 +938,3 @@ def test_request_propagates_exhausted_schema_repair(monkeypatch):
     with pytest.raises(planning.lm.StructuredOutputError):
         planning.request_lm_shots("http://lm.test/v1", "model", "prompt")
 
-
-def test_desktop_reexports_canonical_shot_planner():
-    desktop = pytest.importorskip("content_pipeline_gui")
-
-    assert desktop.call_lm_studio_for_shots is planning.call_lm_studio_for_shots
-    assert desktop.build_heuristic_shots is planning.build_heuristic_shots
-    assert desktop.retile_shots_contiguous is planning.retile_shots_contiguous
-    assert desktop.normalize_shot_routes is planning.normalize_shot_routes

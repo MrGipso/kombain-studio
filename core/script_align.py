@@ -157,8 +157,8 @@ def scenes_from_script(
 ) -> list[Any] | None:
     """Build edit-sized Scene objects inside authored transcript chapters.
 
-    `scene_cls` is the caller's Scene dataclass (the monolith and core each have
-    one). Authored beats define immutable chapter ranges; long chapters are
+    `scene_cls` is the Scene dataclass to instantiate (normally
+    core.models.Scene). Authored beats define immutable chapter ranges; long chapters are
     partitioned on real transcript boundaries so they cannot become multi-
     minute editing scenes. Returns None when the script is absent or alignment
     fails — the caller then falls back to embedding segmentation.

@@ -151,22 +151,13 @@ def test_music_outputs_never_collide_within_the_same_second(monkeypatch, tmp_pat
     assert first.name.startswith("track_20260712_120000_")
 
 
-def test_desktop_module_reexports_canonical_generation_functions():
-    import content_pipeline_gui as desktop
-
-    assert desktop.generate_comfy_image is generation.generate_comfy_image
-    assert desktop.generate_comfy_ltx_video is generation.generate_comfy_ltx_video
-    assert desktop.generate_comfy_music is generation.generate_comfy_music
-    assert desktop.prepare_ltx_workflow is generation.prepare_ltx_workflow
-
-
-def test_web_generation_routers_import_without_gui_or_tkinter():
+def test_web_generation_routers_import_without_tkinter():
     root = Path(__file__).resolve().parents[1]
     script = """
 import builtins
 real_import = builtins.__import__
 def guarded(name, *args, **kwargs):
-    if name == 'content_pipeline_gui' or name.startswith('tkinter'):
+    if name.startswith('tkinter'):
         raise AssertionError(f'headless backend imported {name}')
     return real_import(name, *args, **kwargs)
 builtins.__import__ = guarded

@@ -9,7 +9,6 @@ from typing import Any
 
 from core.config import Settings
 from core.files import replace_with_retry
-from core.locale import Locale, load_locale
 from core.models import slugify
 
 
@@ -262,7 +261,6 @@ class Project:
     name: str
     dir: Path
     settings: Settings = field(default_factory=Settings)
-    locale: Locale | None = None
     preset: str = "universal"
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -746,15 +744,6 @@ class Project:
         atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2))
         self.metadata.clear()
         self.metadata.update(meta)
-
-    def load_locale(self, lang: str | None = None) -> Locale:
-        lang = lang or self.settings.whisper_language or "ru"
-        presets_dir = Path(__file__).resolve().parent.parent / "presets"
-        preset_path = presets_dir / self.preset
-        if not preset_path.exists():
-            preset_path = presets_dir / "documentary"
-        self.locale = load_locale(preset_path, lang)
-        return self.locale
 
 
 class ProjectExists(Exception):

@@ -1,7 +1,6 @@
 import pytest
 
-import content_pipeline_gui as pipeline
-from core import export
+from core import export, process as process_module
 
 
 class Cancelled(Exception):
@@ -38,12 +37,12 @@ def _cancel(_message):
     raise Cancelled("stop")
 
 
-def test_pipeline_callback_cancellation_terminates_child(monkeypatch):
+def test_log_callback_cancellation_terminates_child(monkeypatch):
     process = FakeProcess()
-    monkeypatch.setattr(pipeline.subprocess, "Popen", lambda *a, **k: process)
+    monkeypatch.setattr(process_module.subprocess, "Popen", lambda *a, **k: process)
 
     with pytest.raises(Cancelled):
-        pipeline.run_process(["tool", "arg"], _cancel)
+        process_module.run_streaming_process(["tool", "arg"], _cancel)
 
     assert process.terminated is True
     assert process.closed is True

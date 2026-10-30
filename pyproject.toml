@@ -6,8 +6,7 @@ requires-python = ">=3.12"  # supported and tested project baseline
 
 # Web server (backend/) runtime dependencies.
 # The supported application is headless and does not require Tk or Qt.
-# Historical UI sources remain isolated for migration reference. External
-# tools are NOT Python packages: whisper.cpp,
+# External tools are NOT Python packages: whisper.cpp,
 # ffmpeg, LM Studio and ComfyUI must be installed/run separately.
 dependencies = [
     "fastapi>=0.110",
@@ -22,10 +21,8 @@ dependencies = [
 # Native LM Studio structured-output transport. The core client keeps an
 # OpenAI-compatible HTTP fallback, so headless installs do not require it.
 local-ai = ["lmstudio>=1.5,<2"]
-# Isolated historical PySide code; not used by any supported launcher.
-desktop = ["PySide6>=6.6"]
 # Native window around the web application (launch.py). Uses the system webview,
-# so it needs no browser, no Node and no Qt. Unrelated to the `desktop` extra.
+# so it needs no browser, no Node and no Qt.
 desktop-app = ["pywebview>=5.0"]
 # Reference-insert route (Wikipedia / arXiv screenshots). Optional: without it
 # the route still works, falling back to a clean card rendered from the page's

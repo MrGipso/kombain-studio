@@ -549,7 +549,7 @@ def test_script_scene_analysis_preserves_transport_and_builds_timeline(
     assert "# Heading" not in payload["messages"][1]["content"]
 
 
-def test_core_scenes_imports_without_gui_backend_or_tkinter():
+def test_core_scenes_imports_without_backend_or_tkinter():
     root = Path(__file__).resolve().parents[1]
     script = r"""
 import builtins
@@ -557,13 +557,12 @@ import sys
 
 real_import = builtins.__import__
 def guarded(name, *args, **kwargs):
-    if name == "content_pipeline_gui" or name == "backend" or name.startswith("backend.") or name.startswith("tkinter"):
+    if name == "backend" or name.startswith("backend.") or name.startswith("tkinter"):
         raise AssertionError(f"core.scenes imported forbidden dependency: {name}")
     return real_import(name, *args, **kwargs)
 
 builtins.__import__ = guarded
 import core.scenes
-assert "content_pipeline_gui" not in sys.modules
 assert "tkinter" not in sys.modules
 assert not any(name == "backend" or name.startswith("backend.") for name in sys.modules)
 """
@@ -577,16 +576,6 @@ assert not any(name == "backend" or name.startswith("backend.") for name in sys.
     )
 
     assert result.returncode == 0, result.stderr
-
-
-def test_desktop_reexports_canonical_scene_analysis():
-    desktop = pytest.importorskip("content_pipeline_gui")
-
-    assert desktop.build_scenes_from_segments is scenes.build_scenes_from_segments
-    assert desktop.build_scenes_by_embedding is scenes.build_scenes_by_embedding
-    assert desktop.call_lm_studio is scenes.call_lm_studio
-    assert desktop.enrich_scenes_with_lm is scenes.enrich_scenes_with_lm
-    assert desktop.call_lm_studio_for_segments is scenes.call_lm_studio_for_segments
 
 
 def _chapter_segments(count: int, seconds: int = 10) -> list[TranscriptSegment]:

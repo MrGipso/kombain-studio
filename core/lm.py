@@ -1,12 +1,10 @@
 """LM Studio (OpenAI-compatible) client — the single home for chat calls.
 
-First strangler slice out of content_pipeline_gui.py: the monolith, the script
-router and the assets router each grew their own copy of "POST /chat/completions,
-add TTL, strip markdown fences, dig JSON out of the reply". New code imports
-this module; the monolith's copies migrate over incrementally so the web
-backend stays independent of the desktop application.
+Every caller that needs "POST /chat/completions, add TTL, strip markdown
+fences, dig JSON out of the reply" imports this module instead of growing its
+own copy.
 
-No imports from the monolith — this module must stay dependency-light.
+This module must stay dependency-light: no imports from ``backend``.
 """
 
 from __future__ import annotations

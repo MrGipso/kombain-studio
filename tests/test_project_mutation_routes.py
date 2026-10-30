@@ -7,9 +7,9 @@ from contextlib import contextmanager
 import pytest
 from fastapi import HTTPException, UploadFile
 
-import content_pipeline_gui as cpg
 from backend.routers import media, music, sfx
 from backend.services import jobs
+from core import board as board_store
 from core.config import Settings
 from core.models import AssetCard
 from core.project import create_project
@@ -47,7 +47,7 @@ def _card() -> AssetCard:
 def _project(tmp_path):
     settings = Settings(output_base=str(tmp_path))
     project = create_project("Locked routes", tmp_path, settings=settings)
-    cpg.write_asset_board(project.dir, [_card()])
+    board_store.write_asset_board(project.dir, [_card()])
     return project, settings
 
 

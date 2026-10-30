@@ -5,7 +5,7 @@ registry, perceptual-hash when Pillow is available, else exact source+id),
 scores the survivors with a local vision model via LM Studio, trims the winner
 to a short cut with ffmpeg, and drops it into the project's assets/videos.
 
-Pure logic, no UI and no dependency on the desktop monolith. Pillow is optional
+Pure logic, no UI and no dependency on the web backend. Pillow is optional
 — without it, deduplication falls back to exact clip identity.
 """
 

@@ -2,13 +2,13 @@
 
 This module is the application layer above :mod:`core.comfy`: it prepares the
 repository workflows for one asset and stores the generated output in the
-project.  It deliberately has no dependency on the desktop/Tk application so
-web workers can import it in headless environments.
+project.  It deliberately has no UI dependency so web workers can import it
+in headless environments.
 
 Callers that already opened a project should pass its ``Settings`` snapshot.
 That keeps workflow selection, LTX draft/resolution and FFmpeg normalization
-stable for the complete job.  The optional argument preserves the legacy
-desktop API, which falls back to the current global settings.
+stable for the complete job.  When the argument is omitted the current global
+settings are used.
 """
 
 from __future__ import annotations
@@ -44,11 +44,6 @@ DEFAULT_COMFY_IDEOGRAM_WORKFLOW = DEFAULT_WORKFLOW_PATHS["ideogram"]
 DEFAULT_COMFY_LTX_WORKFLOW = DEFAULT_WORKFLOW_PATHS["ltx"]
 DEFAULT_COMFY_LTX_DRAFT_WORKFLOW = DEFAULT_WORKFLOW_PATHS["ltx_draft"]
 DEFAULT_COMFY_ACE_WORKFLOW = DEFAULT_WORKFLOW_PATHS["music"]
-
-# Historical names remain public for desktop extensions.
-COMFY_KREA_WORKFLOW = DEFAULT_COMFY_KREA_WORKFLOW
-COMFY_IDEOGRAM_WORKFLOW = DEFAULT_COMFY_IDEOGRAM_WORKFLOW
-COMFY_LTX_WORKFLOW = DEFAULT_COMFY_LTX_WORKFLOW
 
 MAX_LTX_DURATION = 15
 MAX_ACE_DURATION = 120
@@ -589,9 +584,6 @@ def generate_comfy_music(
 
 
 __all__ = [
-    "COMFY_IDEOGRAM_WORKFLOW",
-    "COMFY_KREA_WORKFLOW",
-    "COMFY_LTX_WORKFLOW",
     "DEFAULT_COMFY_ACE_WORKFLOW",
     "DEFAULT_COMFY_IDEOGRAM_WORKFLOW",
     "DEFAULT_COMFY_KREA_WORKFLOW",

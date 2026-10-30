@@ -26,7 +26,6 @@ from core.models import (
     make_screen_text,
     normalize_numeric_screen_text,
     seconds_to_timecode,
-    split_into_blocks,
 )
 from core.style_presets import (
     DEFAULT_VIDEO_STYLE,
@@ -176,27 +175,6 @@ def close_scene_timeline_gaps(
             current.end = following.start
     return scenes
 
-
-def build_heuristic_scenes(script_text: str) -> list[Scene]:
-    scenes: list[Scene] = []
-    cursor = 0
-    for index, block in enumerate(split_into_blocks(script_text), start=1):
-        duration = estimate_duration_seconds(block)
-        scenes.append(
-            Scene(
-                index=index,
-                start=seconds_to_timecode(cursor),
-                end=seconds_to_timecode(cursor + duration),
-                title=make_title(block, index),
-                voice_text=block,
-                visual_direction=heuristic_visual_direction(block),
-                screen_text=make_screen_text(block),
-                music_note=heuristic_music_note(block),
-                retention_note=heuristic_retention_note(block),
-            )
-        )
-        cursor += duration
-    return scenes
 
 
 def build_scenes_from_segments(

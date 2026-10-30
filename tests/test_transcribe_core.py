@@ -256,10 +256,3 @@ def test_cancel_check_terminates_child_even_when_it_emits_no_output(
     assert child.terminated is True
     assert child.stdout.closed is True
 
-
-def test_gui_exports_core_transcription_functions():
-    pipeline = pytest.importorskip("content_pipeline_gui")
-
-    assert pipeline.transcribe_with_whisper_cpp is transcribe.transcribe_with_whisper_cpp
-    assert pipeline.parse_whisper_json is transcribe.parse_whisper_json
-    assert pipeline.normalize_timestamp is transcribe.normalize_timestamp

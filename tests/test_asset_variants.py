@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-import content_pipeline_gui as cpg
 from backend.routers import assets as assets_router
 from core import asset_variants
+from core import board as board_store
 from core.config import Settings
 from core.models import AssetCard
 from core.project import content_hash, create_project
@@ -171,7 +171,7 @@ def test_asset_variant_api_lists_and_selects_snapshot(tmp_path, monkeypatch):
     first_file.write_bytes(b"first")
     second_file.write_bytes(b"second")
     card = _card(video_output=str(first_file), approved=True, status="approved")
-    cpg.write_asset_board(project.dir, [card])
+    board_store.write_asset_board(project.dir, [card])
     first = asset_variants.record_card_outputs(
         project.dir,
         card_index=0,
@@ -193,7 +193,7 @@ def test_asset_variant_api_lists_and_selects_snapshot(tmp_path, monkeypatch):
         output_fields=["video_output"],
         force=True,
     )[0]
-    cpg.write_asset_board(project.dir, [card])
+    board_store.write_asset_board(project.dir, [card])
     monkeypatch.setattr(assets_router, "_resolve_project", lambda _project_id: project.dir)
 
     payload = asyncio.run(assets_router.get_card_variants(project.dir.name, 0))
@@ -207,7 +207,7 @@ def test_asset_variant_api_lists_and_selects_snapshot(tmp_path, monkeypatch):
     assert selected["variant"]["selected"] is True
     assert selected["card"]["video_output"] == first["file_path"]
     assert selected["card"]["approved"] is False
-    assert cpg.load_asset_board(project.dir)[0].video_output == first["file_path"]
+    assert board_store.load_asset_board(project.dir)[0].video_output == first["file_path"]
 
 
 def test_manual_card_media_update_is_recorded(tmp_path, monkeypatch):
@@ -215,7 +215,7 @@ def test_manual_card_media_update_is_recorded(tmp_path, monkeypatch):
     card = _card()
     assigned = project.assets_images_dir / "manual.png"
     assigned.write_bytes(b"manual image")
-    cpg.write_asset_board(project.dir, [card])
+    board_store.write_asset_board(project.dir, [card])
     monkeypatch.setattr(assets_router, "_resolve_project", lambda _project_id: project.dir)
 
     updated = asyncio.run(
@@ -243,13 +243,13 @@ def test_legacy_board_card_id_is_stable_and_persisted_on_next_write(tmp_path):
     board_path = project / "06_asset_board.json"
     board_path.write_text(json.dumps([legacy]), encoding="utf-8")
 
-    first = cpg.load_asset_board(project)
-    second = cpg.load_asset_board(project)
+    first = board_store.load_asset_board(project)
+    second = board_store.load_asset_board(project)
     assert first[0].card_id == second[0].card_id
     uuid.UUID(first[0].card_id)
     assert "card_id" not in json.loads(board_path.read_text(encoding="utf-8"))[0]
 
-    cpg.write_asset_board(project, first)
+    board_store.write_asset_board(project, first)
     stored = json.loads(board_path.read_text(encoding="utf-8"))
     assert stored[0]["card_id"] == first[0].card_id
 
@@ -262,7 +262,7 @@ def test_variant_api_tracks_card_id_after_reorder_and_insert(tmp_path, monkeypat
     second_file.write_bytes(b"second card")
     first_card = _card(shot_index=1, video_output=str(first_file))
     second_card = _card(shot_index=2, video_output=str(second_file))
-    cpg.write_asset_board(project.dir, [first_card, second_card])
+    board_store.write_asset_board(project.dir, [first_card, second_card])
     first_variant = asset_variants.record_card_outputs(
         project.dir,
         card_index=0,
@@ -283,7 +283,7 @@ def test_variant_api_tracks_card_id_after_reorder_and_insert(tmp_path, monkeypat
     )[0]
 
     inserted = _card(shot_index=99)
-    cpg.write_asset_board(project.dir, [inserted, second_card, first_card])
+    board_store.write_asset_board(project.dir, [inserted, second_card, first_card])
     monkeypatch.setattr(assets_router, "_resolve_project", lambda _project_id: project.dir)
 
     second_history = asyncio.run(assets_router.get_card_variants(project.dir.name, 1))
@@ -338,9 +338,9 @@ def test_schema_v1_manifest_migrates_non_destructively_before_reorder(tmp_path):
         json.dumps(legacy_manifest), encoding="utf-8"
     )
 
-    loaded = cpg.load_asset_board(project)
+    loaded = board_store.load_asset_board(project)
     inserted = _card(shot_index=99)
-    cpg.write_asset_board(project, [inserted, loaded[0]])
+    board_store.write_asset_board(project, [inserted, loaded[0]])
 
     migrated = asset_variants.load_manifest(project)
     assert migrated["schema_version"] == 2
