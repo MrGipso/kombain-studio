@@ -301,7 +301,9 @@ def _check_whisper(settings) -> CheckResult:
 
 
 @router.get("/diagnostics/{target}")
-async def run_check(target: str):
+def run_check(target: str):
+    # Plain ``def`` on purpose: probes make blocking HTTP and subprocess calls,
+    # so FastAPI runs this handler in its threadpool, off the event loop.
     settings = load_settings()
     if target == "lm":
         return _check_lm(settings)

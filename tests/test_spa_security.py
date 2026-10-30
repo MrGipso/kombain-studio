@@ -66,3 +66,45 @@ def test_untrusted_host_and_mutation_origin_are_rejected():
             headers={"Origin": "http://127.0.0.1:8000"},
         )
         assert local_origin.status_code == 404
+
+
+def test_same_origin_writes_are_allowed_on_a_custom_port():
+    # launch.py suggests PIPELINE_PORT=8010 when 8000 is busy; the page served
+    # from that port must still be able to write.
+    with TestClient(app) as client:
+        same_origin = client.post(
+            "/api/projects/missing/cancel",
+            headers={"Host": "127.0.0.1:8010", "Origin": "http://127.0.0.1:8010"},
+        )
+        assert same_origin.status_code == 404
+
+        other_local_port = client.post(
+            "/api/projects/missing/cancel",
+            headers={"Host": "127.0.0.1:8010", "Origin": "http://127.0.0.1:9999"},
+        )
+        assert other_local_port.status_code == 403
+
+        wrong_scheme = client.post(
+            "/api/projects/missing/cancel",
+            headers={"Host": "127.0.0.1:8010", "Origin": "https://127.0.0.1:8010"},
+        )
+        assert wrong_scheme.status_code == 403
+
+        # A rebinding attacker controls both headers; the hostname must still
+        # be trusted.
+        rebound = client.post(
+            "/api/projects/missing/cancel",
+            headers={"Host": "attacker.example:8010", "Origin": "http://attacker.example:8010"},
+        )
+        assert rebound.status_code in {400, 403}
+
+
+def test_blocking_probe_handlers_run_off_the_event_loop():
+    import inspect
+
+    from backend.routers import assets, diagnostics
+
+    # FastAPI runs plain ``def`` handlers in its threadpool. These make
+    # multi-second network/subprocess calls and must not stall SSE and media.
+    assert not inspect.iscoroutinefunction(assets.start_material_run)
+    assert not inspect.iscoroutinefunction(diagnostics.run_check)

@@ -1181,7 +1181,10 @@ async def get_material_run(project_id: str):
 
 
 @router.post("/{project_id:str}/materials/run", status_code=202)
-async def start_material_run(project_id: str, request: MaterialRunRequest):
+def start_material_run(project_id: str, request: MaterialRunRequest):
+    # Plain ``def`` on purpose: the ComfyUI probes below block for seconds, and
+    # FastAPI runs sync handlers in its threadpool instead of the event loop
+    # that serves SSE streams and media.
     pdir = _resolve_project(project_id)
     try:
         policy = production.ProductionPolicy.from_dict(request.model_dump())

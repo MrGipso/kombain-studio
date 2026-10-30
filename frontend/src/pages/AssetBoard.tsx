@@ -287,6 +287,7 @@ export default function AssetBoard() {
   const dirtyPatchesRef = useRef<Map<string, Partial<AssetCard>>>(new Map())
   const dirtyBaselinesRef = useRef<Map<string, Partial<AssetCard>>>(new Map())
   const conflictedCardIdsRef = useRef<Set<string>>(new Set())
+  const serverCardSignaturesRef = useRef<Map<string, string>>(new Map())
   const editorRef = useRef<HTMLElement | null>(null)
   const materialsListRef = useRef<HTMLElement | null>(null)
   const navigationDialogRef = useRef<HTMLDivElement | null>(null)
@@ -318,6 +319,9 @@ export default function AssetBoard() {
     try {
       const board = await api.getAssetBoard(projectId)
       if (requestId !== boardRequestRef.current) return false
+      const previousSignatures = serverCardSignaturesRef.current
+      const nextSignatures = new Map(board.map((card) => [card.card_id, JSON.stringify(card)]))
+      serverCardSignaturesRef.current = nextSignatures
       const boardCardIds = new Set(board.map((card) => card.card_id))
       const retainedPatches = new Map(
         [...dirtyPatchesRef.current].filter(([cardId]) => boardCardIds.has(cardId)),
@@ -372,6 +376,15 @@ export default function AssetBoard() {
           }, { replace: true })
         }
       }
+      // Background polls reload the whole board every few seconds. Re-keying
+      // the preview on each of them remounted the <video> and restarted
+      // playback, so only a changed server record of the selected card (e.g.
+      // a Ken Burns clip re-rendered under the same path) busts its cache.
+      const selectedCardId = selectedCardIdRef.current
+      const previousSignature = selectedCardId ? previousSignatures.get(selectedCardId) : undefined
+      if (selectedCardId && previousSignature !== undefined && previousSignature !== nextSignatures.get(selectedCardId)) {
+        setMediaVersion((value) => value + 1)
+      }
       hasLoadedBoardRef.current = true
       setBoardError(null)
       return true
@@ -404,6 +417,7 @@ export default function AssetBoard() {
     dirtyPatchesRef.current = new Map()
     dirtyBaselinesRef.current = new Map()
     conflictedCardIdsRef.current = new Set()
+    serverCardSignaturesRef.current = new Map()
     setDirtyCardIds(new Set())
     setConflictedCardIds(new Set())
     setChecked(new Set())
@@ -513,8 +527,7 @@ export default function AssetBoard() {
   useEffect(() => {
     if (!anyGenerating || busy) return
     const id = setInterval(() => {
-      load()
-      setMediaVersion((v) => v + 1)
+      void load()
     }, 4000)
     return () => clearInterval(id)
   }, [anyGenerating, busy, load])
@@ -540,13 +553,11 @@ export default function AssetBoard() {
         }
         if (state.status === 'running' || state.status === 'queued') {
           await load()
-          setMediaVersion((value) => value + 1)
         } else if (previous === 'running' || previous === 'queued') {
           // Also covers very short jobs which finish before ProjectLayout sees
           // the durable job record and would otherwise leave its busy banner on.
           setBusy(null)
           await load()
-          setMediaVersion((value) => value + 1)
         }
       } catch {
         // The durable project-job poll in ProjectLayout remains the fallback.
@@ -705,6 +716,9 @@ export default function AssetBoard() {
     // A poll may have started while the mutation was running. Its snapshot is
     // older than this successful response and must not overwrite the card.
     boardRequestRef.current += 1
+    // Remember the server's record so the next poll does not mistake this
+    // already-applied change for a new one and restart the preview again.
+    serverCardSignaturesRef.current.set(card.card_id, JSON.stringify(card))
     setCards((prev) => {
       const targetIndex = prev[index]?.card_id === card.card_id
         ? index

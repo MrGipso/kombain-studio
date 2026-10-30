@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -96,11 +97,47 @@ trusted_hosts.extend(
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
 
+def _is_trusted_hostname(hostname: str) -> bool:
+    """Match a hostname against ``trusted_hosts`` like TrustedHostMiddleware."""
+    for pattern in trusted_hosts:
+        if pattern == "*" or hostname == pattern:
+            return True
+        if pattern.startswith("*.") and hostname.endswith(pattern[1:]):
+            return True
+    return False
+
+
+def _is_same_origin(origin: str, request: Request) -> bool:
+    """True for a write sent by the page this server itself served.
+
+    The launchers accept any port (``PIPELINE_PORT``), so a fixed allowlist of
+    ports would reject the application's own writes. The hostname is checked
+    here as well because this middleware runs before TrustedHostMiddleware.
+    """
+    try:
+        parsed = urlsplit(origin)
+        hostname = parsed.hostname or ""
+    except ValueError:
+        return False
+    host = (request.headers.get("host") or "").lower()
+    return (
+        parsed.scheme == request.url.scheme
+        and bool(host)
+        and parsed.netloc.lower() == host
+        and _is_trusted_hostname(hostname)
+    )
+
+
 @app.middleware("http")
 async def reject_untrusted_mutation_origins(request: Request, call_next):
     """Reject browser writes from foreign origins while CLI clients keep working."""
     origin = request.headers.get("origin")
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and origin and origin not in LOCAL_ORIGINS:
+    if (
+        request.method not in {"GET", "HEAD", "OPTIONS"}
+        and origin
+        and origin not in LOCAL_ORIGINS
+        and not _is_same_origin(origin, request)
+    ):
         return JSONResponse({"detail": "Untrusted Origin"}, status_code=403)
     return await call_next(request)
 
