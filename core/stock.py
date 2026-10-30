@@ -467,7 +467,8 @@ def _uniquify_filter(mirror: bool = False) -> str:
 
 def build_stock_clip(src: Path, dst: Path, ffmpeg: str, slot_seconds: float,
                     ceiling: float = 0.0, offset: float = 0.7,
-                    uniquify: bool = True, mirror: bool = False) -> Path:
+                    uniquify: bool = True, mirror: bool = False,
+                    cancel_check: Callable[[], object] | None = None) -> Path:
     """Produce a clip whose length equals the timeline slot, so the export never
     freezes the last frame. If the source is long enough, cut a slot-length
     segment (skipping a short intro); if it is shorter than the slot, loop it to
@@ -496,7 +497,7 @@ def build_stock_clip(src: Path, dst: Path, ffmpeg: str, slot_seconds: float,
         cmd = [ff, "-y", "-ss", f"{max(0.0, offset):.2f}", "-i", str(src),
                "-t", f"{target:.2f}", *vf_args, *enc, str(dst)]
 
-    proc = run_captured(cmd, timeout=600)
+    proc = run_captured(cmd, timeout=600, cancel_check=cancel_check)
     if proc.returncode != 0 or not dst.exists():
         raise RuntimeError(f"ffmpeg trim failed: {proc.stderr[-400:] if proc.stderr else 'unknown error'}")
     return dst
@@ -663,7 +664,8 @@ def _rephrase_query(description: str, tried: list[str], lm_url: str, model: str,
 
 
 def fetch_stock_for_card(project_dir: Path, card: Any, settings: Any,
-                        log: Callable[[str], None] | None = None) -> dict | None:
+                        log: Callable[[str], None] | None = None,
+                        cancel_check: Callable[[], object] | None = None) -> dict | None:
     """Resolve one card to a stock clip via a layered search: score the first
     query's pool; accept the best if it clears `accept`; keep the best across
     rounds; if nothing clears `accept`, rephrase the query and try more rounds;
@@ -751,7 +753,8 @@ def fetch_stock_for_card(project_dir: Path, card: Any, settings: Any,
     mirror = bool(getattr(settings, "stock_mirror", False))
     slot = _tc_to_seconds(getattr(card, "end", "")) - _tc_to_seconds(getattr(card, "start", ""))
     _log(log, f"Сток: подгоняю клип под слот {slot:.0f}с" + (f" (потолок {ceiling:.0f}с)" if ceiling else "") + (" +уникализация" if uniquify else ""))
-    build_stock_clip(tmp_path, dst_path, ffmpeg, slot, ceiling=ceiling, uniquify=uniquify, mirror=mirror)
+    build_stock_clip(tmp_path, dst_path, ffmpeg, slot, ceiling=ceiling, uniquify=uniquify, mirror=mirror,
+                     cancel_check=cancel_check)
     try:
         tmp_path.unlink(missing_ok=True)
     except Exception:

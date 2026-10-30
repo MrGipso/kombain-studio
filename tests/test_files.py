@@ -42,7 +42,7 @@ def test_replace_gives_up_after_the_retry_budget(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         files.replace_with_retry(tmp_path / "a", tmp_path / "b")
 
-    assert calls["count"] == len(files._REPLACE_RETRY_DELAYS) + 1
+    assert calls["count"] == len(files._SHARING_RETRY_DELAYS) + 1
 
 
 def test_replace_does_not_retry_permission_errors_off_windows(tmp_path, monkeypatch):
@@ -53,3 +53,80 @@ def test_replace_does_not_retry_permission_errors_off_windows(tmp_path, monkeypa
         files.replace_with_retry(tmp_path / "a", tmp_path / "b")
 
     assert calls["count"] == 1
+
+
+def test_corrupt_settings_are_preserved_before_defaults_are_used(tmp_path):
+    from core.config import Settings, load_settings
+
+    path = tmp_path / "settings.json"
+    original = b'{"ffmpeg": "C:/tools/ffmpeg.exe", '
+    path.write_bytes(original)
+
+    assert load_settings(path) == Settings()
+    load_settings(path)
+
+    copies = list((tmp_path / ".corrupt").iterdir())
+    assert len(copies) == 1
+    assert copies[0].name.startswith("settings.json.")
+    assert copies[0].read_bytes() == original
+
+
+def test_non_object_settings_json_counts_as_corrupt(tmp_path):
+    from core.config import Settings, load_settings
+
+    path = tmp_path / "settings.json"
+    path.write_text("[]", encoding="utf-8")
+
+    assert load_settings(path) == Settings()
+    assert len(list((tmp_path / ".corrupt").iterdir())) == 1
+
+
+def test_unreadable_settings_raise_instead_of_becoming_defaults(tmp_path, monkeypatch):
+    # The settings route saves loaded values plus a patch; silently loading
+    # defaults here would wipe every configured path and key on the next save.
+    from core import config
+
+    path = tmp_path / "settings.json"
+    path.write_text('{"ffmpeg": "x"}', encoding="utf-8")
+
+    def locked(*_args, **_kwargs):
+        raise OSError("device not ready")
+
+    monkeypatch.setattr(config, "read_text_with_retry", locked)
+
+    with pytest.raises(OSError, match="device not ready"):
+        config.load_settings(path)
+
+
+def test_read_text_waits_out_a_windows_sharing_violation(tmp_path, monkeypatch):
+    monkeypatch.setattr(files, "_RETRY_SHARING_VIOLATIONS", True)
+    monkeypatch.setattr(files.time, "sleep", lambda _seconds: None)
+    path = tmp_path / "board.json"
+    path.write_text("[]", encoding="utf-8")
+    original = type(path).read_text
+    calls = {"count": 0}
+
+    def flaky_read_text(self, *args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError(13, "The process cannot access the file")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "read_text", flaky_read_text)
+
+    assert files.read_text_with_retry(path) == "[]"
+    assert calls["count"] == 2
+
+
+def test_project_read_json_preserves_corrupt_artifact(tmp_path):
+    from core.project import Project
+
+    project = Project(name="demo", dir=tmp_path)
+    path = project.file_path("scenes")
+    path.write_text('[{"index": 1,', encoding="utf-8")
+
+    assert project.read_json("scenes") is None
+
+    copies = list((tmp_path / ".corrupt").iterdir())
+    assert len(copies) == 1
+    assert copies[0].read_text(encoding="utf-8") == '[{"index": 1,'

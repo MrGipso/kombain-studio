@@ -1,4 +1,4 @@
-"""Tests for core.lm — the shared LM Studio client (strangler slice #1)."""
+"""Tests for core.lm — the shared LM Studio client."""
 
 import json
 from types import SimpleNamespace

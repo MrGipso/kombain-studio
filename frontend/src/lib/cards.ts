@@ -55,7 +55,8 @@ export function isIncluded(card: AssetCard): boolean {
 // the decision instead of leaving the button's effect invisible.
 
 export function tcToSec(tc: string): number {
-  const parts = String(tc || '').split(':').map((p) => Number(p))
+  // SRT-style timecodes use a decimal comma ("00:01:02,500").
+  const parts = String(tc || '').replace(',', '.').split(':').map((p) => Number(p))
   if (parts.some((n) => Number.isNaN(n))) return 0
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
   if (parts.length === 2) return parts[0] * 60 + parts[1]

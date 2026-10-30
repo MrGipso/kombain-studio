@@ -99,3 +99,64 @@ def test_run_captured_still_raises_for_a_missing_binary(tmp_path):
     # Callers such as sfx.normalize_clip rely on OSError for "not installed".
     with pytest.raises(OSError):
         run_captured([str(tmp_path / "missing-ffmpeg.exe")], timeout=5)
+
+
+def test_run_captured_terminates_child_when_job_is_cancelled():
+    import time
+
+    from core.process import ProcessCancelled
+
+    started = time.monotonic()
+    polls = {"count": 0}
+
+    def cancel_after_first_poll():
+        polls["count"] += 1
+        return polls["count"] > 1
+
+    with pytest.raises(ProcessCancelled):
+        run_captured(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout=60,
+            cancel_check=cancel_after_first_poll,
+            cancel_poll_seconds=0.05,
+        )
+
+    assert time.monotonic() - started < 10
+
+
+def test_run_captured_propagates_the_callers_cancellation_exception():
+    class JobCancelled(Exception):
+        pass
+
+    def cancelled():
+        raise JobCancelled("stop")
+
+    with pytest.raises(JobCancelled):
+        run_captured(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout=60,
+            cancel_check=cancelled,
+        )
+
+
+def test_run_captured_with_cancel_check_returns_output_and_times_out():
+    finished = run_captured(
+        [sys.executable, "-c",
+         "import sys; print('ok'); "
+         "sys.stderr.buffer.write('ошибка'.encode('utf-8')); sys.exit(3)"],
+        timeout=30,
+        cancel_check=lambda: False,
+        cancel_poll_seconds=0.05,
+    )
+    assert finished.returncode == 3
+    assert finished.stdout.strip() == "ok"
+    assert finished.stderr == "ошибка"
+
+    wedged = run_captured(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        timeout=0.5,
+        cancel_check=lambda: False,
+        cancel_poll_seconds=0.05,
+    )
+    assert wedged.returncode == -1
+    assert "Timed out after 0.5 s" in wedged.stderr

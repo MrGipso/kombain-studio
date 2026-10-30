@@ -366,7 +366,8 @@ def _generate_sync(
         rlog: list[str] = []
         lang = str(project.metadata.get("detected_language", "") or "en")
         ref_res = reference_lib.fetch_reference_for_card(
-            pdir, card, load_settings(), lang=lang, log=rlog.append
+            pdir, card, load_settings(), lang=lang, log=rlog.append,
+            cancel_check=cancel_check,
         )
         if ref_res:
             card.video_output = ref_res["video_output"]
@@ -421,7 +422,9 @@ def _generate_sync(
     # expensive AI. "Дополнить AI" (skip_stock) forces AI instead.
     if (not skip_stock) and (card.visual_type or "").lower() == "stock_video" and mode in {"route", "graphic"}:
         slog: list[str] = []
-        stock_res = stock_lib.fetch_stock_for_card(pdir, card, load_settings(), log=slog.append)
+        stock_res = stock_lib.fetch_stock_for_card(
+            pdir, card, load_settings(), log=slog.append, cancel_check=cancel_check
+        )
         if stock_res:
             card.video_output = stock_res["video_output"]
             card.source_url = stock_res.get("source_url", "")
@@ -491,7 +494,7 @@ def _generate_sync(
         jitter = variety and video_style == "documentary"
         kenburns.build_kenburns_clip(
             Path(card.image_output), dst, project.settings.ffmpeg or "ffmpeg", seconds,
-            direction=direction, jitter=jitter,
+            direction=direction, jitter=jitter, cancel_check=cancel_check,
         )
         card.video_output = str(dst)
         card.route = "kenburns"

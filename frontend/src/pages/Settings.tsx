@@ -312,8 +312,9 @@ export default function Settings() {
             </div>
 
           <div>
-            <label className="block text-xs text-slate-500 mb-1">Canonical reference для связанных кадров</label>
+            <label htmlFor="settings-reference-conditioning-mode" className="block text-xs text-slate-500 mb-1">Canonical reference для связанных кадров</label>
             <select
+              id="settings-reference-conditioning-mode"
               value={settings.reference_conditioning_mode || 'auto'}
               onChange={(e) => setSettings({ ...settings, reference_conditioning_mode: e.target.value as SettingsType['reference_conditioning_mode'] })}
               className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500"
@@ -326,8 +327,9 @@ export default function Settings() {
           </div>
 
           <div>
-            <label className="block text-xs text-slate-500 mb-1">LTX: разрешение генерации (экспорт масштабирует под выбранный delivery-профиль)</label>
+            <label htmlFor="settings-ltx-resolution" className="block text-xs text-slate-500 mb-1">LTX: разрешение генерации (экспорт масштабирует под выбранный delivery-профиль)</label>
             <select
+              id="settings-ltx-resolution"
               value={settings.ltx_resolution || '1920x1088'}
               onChange={(e) => setSettings({ ...settings, ltx_resolution: e.target.value })}
               className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500"
@@ -338,8 +340,9 @@ export default function Settings() {
           </div>
 
           <div>
-            <label className="block text-xs text-slate-500 mb-1">LTX: черновой режим (draft ~2-3x быстрее, чуть мягче картинка)</label>
+            <label htmlFor="settings-ltx-draft-mode" className="block text-xs text-slate-500 mb-1">LTX: черновой режим (draft ~2-3x быстрее, чуть мягче картинка)</label>
             <select
+              id="settings-ltx-draft-mode"
               value={settings.ltx_draft_mode || 'off'}
               onChange={(e) => setSettings({ ...settings, ltx_draft_mode: e.target.value })}
               className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500"
@@ -351,8 +354,9 @@ export default function Settings() {
           </div>
 
           <div className="flex items-center gap-3 pt-2">
-            <label className="text-sm text-slate-400">Auto-unload LM model</label>
+            <label htmlFor="settings-lm-auto-unload" className="text-sm text-slate-400">Auto-unload LM model</label>
             <input
+              id="settings-lm-auto-unload"
               type="checkbox"
               checked={settings.lm_auto_unload}
               onChange={(e) => setSettings({ ...settings, lm_auto_unload: e.target.checked })}
@@ -361,8 +365,9 @@ export default function Settings() {
           </div>
 
           <div>
-            <label className="block text-xs text-slate-500 mb-1">Unload delay (sec, 0 = immediate)</label>
+            <label htmlFor="settings-lm-unload-delay" className="block text-xs text-slate-500 mb-1">Unload delay (sec, 0 = immediate)</label>
             <input
+              id="settings-lm-unload-delay"
               value={settings.lm_unload_delay}
               onChange={(e) => setSettings({ ...settings, lm_unload_delay: e.target.value })}
               className="w-32 px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm font-mono"
@@ -491,8 +496,9 @@ export default function Settings() {
             </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Зерно (0 = выкл, 4-10 норм)</label>
+                <label htmlFor="settings-export-grain" className="block text-xs text-slate-500 mb-1">Зерно (0 = выкл, 4-10 норм)</label>
                 <input
+                  id="settings-export-grain"
                   value={String(settings.export_grain ?? '')}
                   onChange={(e) => setSettings({ ...settings, export_grain: e.target.value as unknown as number })}
                   className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm font-mono"
@@ -512,8 +518,9 @@ export default function Settings() {
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Woosh API URL</label>
+                <label htmlFor="settings-woosh-url" className="block text-xs text-slate-500 mb-1">Woosh API URL</label>
                 <input
+                  id="settings-woosh-url"
                   value={settings.woosh_url || ''}
                   placeholder="http://127.0.0.1:8500"
                   onChange={(e) => setSettings({ ...settings, woosh_url: e.target.value })}
@@ -521,8 +528,9 @@ export default function Settings() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Громкость SFX, dB (−24 норм)</label>
+                <label htmlFor="settings-sfx-volume-db" className="block text-xs text-slate-500 mb-1">Громкость SFX, dB (−24 норм)</label>
                 <input
+                  id="settings-sfx-volume-db"
                   value={String(settings.sfx_volume_db ?? '')}
                   onChange={(e) => setSettings({ ...settings, sfx_volume_db: e.target.value as unknown as number })}
                   className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm font-mono"

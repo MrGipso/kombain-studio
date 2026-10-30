@@ -17,6 +17,7 @@ image and passes its path in.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from core.process import run_captured
@@ -48,6 +49,7 @@ def build_kenburns_clip(
     direction: str = "in",
     max_zoom: float = 1.15,
     jitter: bool = False,
+    cancel_check: Callable[[], object] | None = None,
 ) -> Path:
     """Render a `seconds`-long 1920x1080 clip that slowly moves across `image`.
 
@@ -115,7 +117,7 @@ def build_kenburns_clip(
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         str(dst),
     ]
-    proc = run_captured(cmd, timeout=600)
+    proc = run_captured(cmd, timeout=600, cancel_check=cancel_check)
     if proc.returncode != 0 or not dst.exists():
         raise RuntimeError(f"ffmpeg Ken Burns failed: {proc.stderr[-400:] if proc.stderr else 'unknown error'}")
     return dst

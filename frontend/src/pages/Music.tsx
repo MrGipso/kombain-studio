@@ -168,7 +168,7 @@ export default function Music() {
             {/* Brief */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-sm text-slate-400">Теги — стиль, настроение, инструменты</label>
+                <label htmlFor="music-tags" className="text-sm text-slate-400">Теги — стиль, настроение, инструменты</label>
                 <button
                   onClick={handleBrief}
                   disabled={briefing || running || lockedElsewhere}
@@ -178,6 +178,7 @@ export default function Music() {
                 </button>
               </div>
               <textarea
+                id="music-tags"
                 value={music.music_tags}
                 onChange={(e) => patch({ music_tags: e.target.value })}
                 onBlur={() => save()}
@@ -188,8 +189,9 @@ export default function Music() {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm text-slate-400 mb-1.5">Темп, bpm</label>
+                <label htmlFor="music-bpm" className="block text-sm text-slate-400 mb-1.5">Темп, bpm</label>
                 <input
+                  id="music-bpm"
                   type="number" value={music.music_bpm}
                   onChange={(e) => patch({ music_bpm: Number(e.target.value) })}
                   onBlur={() => save()}
@@ -197,8 +199,9 @@ export default function Music() {
                 />
               </div>
               <div>
-                <label className="block text-sm text-slate-400 mb-1.5">Длина бэда, сек</label>
+                <label htmlFor="music-duration" className="block text-sm text-slate-400 mb-1.5">Длина бэда, сек</label>
                 <input
+                  id="music-duration"
                   type="number" value={music.music_duration}
                   onChange={(e) => patch({ music_duration: Number(e.target.value) })}
                   onBlur={() => save()}

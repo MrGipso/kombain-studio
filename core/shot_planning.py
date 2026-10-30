@@ -208,7 +208,7 @@ class GlobalVisualPlanItem:
 
 
 def clean_lm_json_content(content: str) -> str:
-    """Keep the monolith's lenient cleanup while using core.lm for fences."""
+    """Strip code fences, then repair common malformed-JSON quirks of local models."""
 
     cleaned = lm.strip_fences(content)
     cleaned = re.sub(r':\s*\[([^\]]+)\]"\s*([,\}\]])', r': [\1]\2', cleaned)

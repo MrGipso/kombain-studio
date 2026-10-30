@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
 import { FinalToggle } from '../components/FinalToggle'
-import { cardMediaPath, excludeImpact, hasMedia, isExcluded, isIncluded, LONG_SLOT_WARNING_SECONDS } from '../lib/cards'
+import { cardMediaPath, excludeImpact, hasMedia, isExcluded, isIncluded, LONG_SLOT_WARNING_SECONDS, tcToSec } from '../lib/cards'
 import type { AssetCard, TimelineMedia, TimelineMediaItem } from '../api/types'
 
 interface Context {
@@ -49,14 +49,6 @@ const TEXT_ANIMS = [
   ['fade', 'Fade'],
   ['none', 'None'],
 ]
-
-function tcToSec(value: string): number {
-  const text = String(value || '0').replace(',', '.')
-  const parts = text.split(':').map(Number)
-  if (parts.length === 3) return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0)
-  if (parts.length === 2) return (parts[0] || 0) * 60 + (parts[1] || 0)
-  return Number(text) || 0
-}
 
 function secToTc(value: number): string {
   const safe = Math.max(0, Math.round(value))
@@ -353,7 +345,7 @@ export default function Timeline() {
       if (event.code !== 'Space') return
       const target = event.target as HTMLElement | null
       const tagName = target?.tagName?.toLowerCase()
-      const isEditing = tagName === 'input' || tagName === 'textarea' || tagName === 'select' || tagName === 'button' || Boolean(target?.isContentEditable)
+      const isEditing = tagName === 'input' || tagName === 'textarea' || tagName === 'select' || tagName === 'button' || target?.getAttribute('role') === 'button' || Boolean(target?.isContentEditable)
       if (isEditing) return
       event.preventDefault()
       void togglePlay()
@@ -440,6 +432,14 @@ export default function Timeline() {
       status: item ? 'generated' : cards[index].status,
     })
     setSelectedIndex(index)
+  }
+
+  const nudgeClipDuration = (index: number, deltaSeconds: number) => {
+    const card = cards[index]
+    if (!card) return
+    const startTime = tcToSec(card.timeline_start || card.start)
+    const duration = Math.max(1, sourceDuration(card) + deltaSeconds)
+    updateCard(index, { timeline_end: secToTc(startTime + duration) })
   }
 
   const beginClipTrim = useCallback((event: React.MouseEvent, index: number) => {
@@ -570,7 +570,9 @@ export default function Timeline() {
                 )}
                 {!currentCard && <div className="text-sm text-slate-700">Нет кадров на timeline.</div>}
                 {currentCard && overlayText(currentCard) && (
+                  // Pointer shortcut; the overlay X/Y sliders are the keyboard path.
                   <div
+                    role="presentation"
                     onMouseDown={beginOverlayDrag}
                     className={`absolute cursor-move select-none text-center leading-tight text-white [text-shadow:0_3px_12px_rgba(0,0,0,0.95),0_0_2px_rgba(0,0,0,0.95)] ${overlayStyleClass(currentCard)}`}
                     style={overlayPositionStyle(currentCard)}
@@ -753,7 +755,8 @@ export default function Timeline() {
             </div>
 
             <div className="relative h-full" style={{ marginLeft: 112, width: trackWidth }}>
-              <div className="relative h-8 border-b border-slate-800" onMouseDown={(event) => {
+              {/* Click-to-seek is a pointer shortcut; ±5s and Space work from the keyboard. */}
+              <div role="presentation" className="relative h-8 border-b border-slate-800" onMouseDown={(event) => {
                 const rect = event.currentTarget.getBoundingClientRect()
                 seek((event.clientX - rect.left) / zoom)
               }}>
@@ -772,9 +775,24 @@ export default function Timeline() {
                   return (
                     <div
                       key={`${card.scene_index}-${card.shot_index}-${index}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={selectedIndex === index}
+                      aria-label={`Кадр ${card.shot_index}, ${secToTc(start)}, ${Math.round(duration)} с. Стрелки влево и вправо меняют длительность`}
+                      aria-keyshortcuts="ArrowLeft ArrowRight"
                       onClick={() => {
                         setSelectedIndex(index)
                         seek(start)
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setSelectedIndex(index)
+                          seek(start)
+                        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                          event.preventDefault()
+                          nudgeClipDuration(index, event.key === 'ArrowRight' ? 1 : -1)
+                        }
                       }}
                       onDragOver={(event) => {
                         event.preventDefault()
@@ -788,7 +806,7 @@ export default function Timeline() {
                       className={`absolute top-3 h-16 rounded-md border overflow-hidden cursor-pointer ${selectedIndex === index ? 'ring-2 ring-indigo-400' : ''}`}
                       style={{ left: start * zoom, width, borderColor: color, backgroundColor: `${color}22` }}
                     >
-                      <div onMouseDown={(event) => beginClipTrim(event, index)} className="absolute right-0 top-0 bottom-0 z-20 w-2 cursor-col-resize bg-white/10" />
+                      <div role="presentation" onMouseDown={(event) => beginClipTrim(event, index)} className="absolute right-0 top-0 bottom-0 z-20 w-2 cursor-col-resize bg-white/10" />
                       {path && isImage(path) && <img loading="lazy" decoding="async" src={mediaUrl(path)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />}
                       {path && isVideo(path) && card.image_output && <img loading="lazy" decoding="async" src={mediaUrl(card.image_output)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />}
                       <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/25 to-transparent" />
@@ -803,7 +821,16 @@ export default function Timeline() {
                 {ghostClips.map(({ card, index, start, duration }) => (
                   <div
                     key={`ghost-${card.scene_index}-${card.shot_index}-${index}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Кадр ${card.shot_index} вне финала`}
                     onClick={() => setSelectedIndex(index)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setSelectedIndex(index)
+                      }
+                    }}
                     title={`Shot ${card.shot_index} вне финала — его время отдано соседнему плану. Нажмите, чтобы выбрать и вернуть.`}
                     className={`absolute top-[78px] h-4 cursor-pointer overflow-hidden rounded-sm border border-dashed ${selectedIndex === index ? 'border-indigo-400' : 'border-slate-600'} bg-slate-800/50`}
                     style={{
@@ -818,12 +845,14 @@ export default function Timeline() {
                 <div className="absolute top-0 bottom-0 z-30 w-px bg-red-400" style={{ left: playhead * zoom }} />
               </div>
 
-              <div className="relative h-20 bg-slate-900/20" onMouseDown={(event) => {
+              <div role="presentation" className="relative h-20 bg-slate-900/20" onMouseDown={(event) => {
                 const rect = event.currentTarget.getBoundingClientRect()
                 seek((event.clientX - rect.left) / zoom)
               }}>
                 {media?.voice_url ? (
+                  // Pointer shortcut; the voice start field is the keyboard path.
                   <div
+                    role="presentation"
                     onMouseDown={beginVoiceDrag}
                     className="absolute top-5 h-10 rounded-md border border-sky-500 bg-sky-500/15 cursor-grab active:cursor-grabbing overflow-hidden"
                     style={{ left: voiceStart * zoom, width: Math.max(120, (voiceDuration || totalDuration) * zoom) }}

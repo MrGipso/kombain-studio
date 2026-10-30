@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import queue
 import threading
+import time
 from pathlib import Path
 from collections.abc import Callable, Sequence
 
@@ -48,10 +49,23 @@ def terminate_process(process: subprocess.Popen, timeout: float = 5.0) -> None:
         process.wait(timeout=timeout)
 
 
+def _timed_out(command: Sequence[str], stderr: object, timeout: float) -> subprocess.CompletedProcess[str]:
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    return subprocess.CompletedProcess(
+        list(command),
+        -1,
+        stdout="",
+        stderr=f"{stderr or ''}\nTimed out after {timeout:g} s",
+    )
+
+
 def run_captured(
     command: Sequence[str],
     *,
     timeout: float,
+    cancel_check: Callable[[], object] | None = None,
+    cancel_poll_seconds: float = 0.25,
 ) -> subprocess.CompletedProcess[str]:
     """Run a child to completion with UTF-8 output and a hard timeout.
 
@@ -59,26 +73,58 @@ def run_captured(
     ANSI code page can fail mid-read. A wedged child must not hold a job
     forever: on timeout it is killed and a failed result (``returncode`` -1)
     is returned, so callers keep their usual return-code handling.
+
+    ``cancel_check`` is polled while the child runs, with the same contract as
+    in :func:`run_streaming_process`: it may raise the caller's cancellation
+    exception or return a truthy value (then :class:`ProcessCancelled` is
+    raised). Either way the child is terminated first.
     """
+    if cancel_check is None:
+        try:
+            return subprocess.run(
+                list(command),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return _timed_out(command, exc.stderr, timeout)
+
+    process = subprocess.Popen(
+        list(command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    deadline = time.monotonic() + timeout
     try:
-        return subprocess.run(
-            list(command),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stderr = exc.stderr or ""
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", errors="replace")
-        return subprocess.CompletedProcess(
-            list(command),
-            -1,
-            stdout="",
-            stderr=f"{stderr}\nTimed out after {timeout:g} s",
-        )
+        while True:
+            if cancel_check():
+                raise ProcessCancelled("Process cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate_process(process)
+                _stdout, stderr = process.communicate()
+                return _timed_out(command, stderr, timeout)
+            try:
+                # communicate() may be retried after a timeout without losing
+                # output, which keeps both pipes drained while we poll.
+                stdout, stderr = process.communicate(
+                    timeout=min(max(0.01, cancel_poll_seconds), remaining)
+                )
+            except subprocess.TimeoutExpired:
+                continue
+            return subprocess.CompletedProcess(
+                list(command), process.returncode, stdout, stderr
+            )
+    except BaseException:
+        terminate_process(process)
+        process.communicate()
+        raise
 
 
 def run_streaming_process(

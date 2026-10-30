@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import Settings
-from core.files import replace_with_retry
+from core.files import preserve_corrupt_copy, read_text_with_retry, replace_with_retry
 from core.models import slugify
 
 
@@ -319,11 +319,19 @@ class Project:
         return self.dir / key
 
     def read_json(self, key: str) -> list | dict | None:
+        """Return a JSON artifact, or None when it is absent or unusable.
+
+        Corrupt content is preserved under ``.corrupt/`` first, because callers
+        treat None as "empty" and may write a fresh artifact over the file.
+        """
         path = self.file_path(key)
         if path and path.exists():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+                return json.loads(read_text_with_retry(path))
+            except json.JSONDecodeError:
+                preserve_corrupt_copy(path)
+                return None
+            except OSError:
                 return None
         return None
 

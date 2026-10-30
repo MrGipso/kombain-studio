@@ -414,7 +414,8 @@ def _ffprobe_ok() -> bool:  # small hook for tests to stub
 def build_reference_clip(screenshot: Path, dst: Path, ffmpeg: str,
                          slot_seconds: float, credit: str = "",
                          slide_seconds: float = 0.6,
-                         log: Callable[[str], None] | None = None) -> Path:
+                         log: Callable[[str], None] | None = None,
+                         cancel_check: Callable[[], object] | None = None) -> Path:
     """Render a slot-length 1920x1080 clip: the screenshot (framed as a panel)
     slides in from the right with an ease-out over `slide_seconds` and holds,
     over a blurred, darkened copy of itself. A small credit is burned in
@@ -475,7 +476,7 @@ def build_reference_clip(screenshot: Path, dst: Path, ffmpeg: str,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
         str(dst),
     ]
-    proc = run_captured(cmd, timeout=600)
+    proc = run_captured(cmd, timeout=600, cancel_check=cancel_check)
     # Tidy the scratch files regardless of outcome.
     for scratch in (panel if panel is not None else None, cred_file):
         try:
@@ -497,7 +498,8 @@ def reference_enabled(settings: Any) -> bool:
 
 def fetch_reference_for_card(project_dir: Path, card: Any, settings: Any,
                              lang: str = "en",
-                             log: Callable[[str], None] | None = None) -> dict | None:
+                             log: Callable[[str], None] | None = None,
+                             cancel_check: Callable[[], object] | None = None) -> dict | None:
     """Resolve -> capture -> build for one card. Returns the fields to write back,
     or None on any real miss (no page found / capture failed) so the caller can
     fall back to Ken Burns / AI. Never raises for a missing dependency."""
@@ -525,7 +527,8 @@ def fetch_reference_for_card(project_dir: Path, card: Any, settings: Any,
     ffmpeg = getattr(settings, "ffmpeg", "") or "ffmpeg"
     slot = _tc_to_seconds(getattr(card, "end", "")) - _tc_to_seconds(getattr(card, "start", ""))
     _log(log, f"Источник: собираю выезжающий инсерт под слот {slot:.0f}с...")
-    build_reference_clip(shot, dst_mp4, ffmpeg, slot, credit=ref.get("credit", ""), log=log)
+    build_reference_clip(shot, dst_mp4, ffmpeg, slot, credit=ref.get("credit", ""), log=log,
+                         cancel_check=cancel_check)
 
     return {
         "video_output": str(dst_mp4),

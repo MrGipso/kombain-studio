@@ -1403,15 +1403,6 @@ export default function AssetBoard() {
       previouslyFocused?.focus()
     }
   }, [resetBlockedNavigation])
-  useEffect(() => {
-    if (!hasUnsavedChanges && !isBatchBusy) return
-    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault()
-      event.returnValue = ''
-    }
-    window.addEventListener('beforeunload', warnBeforeUnload)
-    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
-  }, [hasUnsavedChanges, isBatchBusy])
   const currentActivityLabel = stockProgress?.label || (busy ? activityLabel(busy) : '')
   const unattendedActive = isActiveMaterialStatus(materialRun?.status)
   const unattendedRunning = materialRun?.status === 'running' || materialRun?.status === 'queued'
@@ -1797,6 +1788,9 @@ export default function AssetBoard() {
                         aria-current={isSelected ? 'true' : undefined}
                         onClick={() => selectCard(index)}
                         onKeyDown={(event) => {
+                          // Keys bubbling from the row's own checkbox and final
+                          // toggle must keep their default action.
+                          if (event.target !== event.currentTarget) return
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault()
                             selectCard(index)
@@ -1845,7 +1839,7 @@ export default function AssetBoard() {
                           {card.text_overlay_enabled && <span className="text-cyan-300" title="Есть текст поверх видео">текст</span>}
                           {isConflict ? <span className="text-rose-300" title="Конфликт правок">конфликт</span> : isDirty && <span className="text-amber-300" title="Есть несохранённые правки">не сохр.</span>}
                         </span>
-                        <span onClick={(event) => event.stopPropagation()} className="shrink-0">
+                        <span role="presentation" onClick={(event) => event.stopPropagation()} className="shrink-0">
                           <FinalToggle
                             on={!excluded}
                             disabled={Boolean(busy) || isDirty}
@@ -1928,7 +1922,7 @@ export default function AssetBoard() {
                         {isConflict ? <span className="font-medium text-rose-300">Конфликт правок</span> : isDirty && <span className="font-medium text-amber-300">Не сохранено</span>}
                       </div>
 
-                      <div onClick={(event) => event.stopPropagation()} className="mt-2 flex flex-wrap items-center justify-between gap-1.5 border-t border-slate-800/80 pt-2">
+                      <div role="presentation" onClick={(event) => event.stopPropagation()} className="mt-2 flex flex-wrap items-center justify-between gap-1.5 border-t border-slate-800/80 pt-2">
                         <FinalToggle
                           on={!isExcluded(card)}
                           disabled={Boolean(busy) || isDirty}

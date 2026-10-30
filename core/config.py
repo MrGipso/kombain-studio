@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from core.files import replace_with_retry
+from core.files import preserve_corrupt_copy, read_text_with_retry, replace_with_retry
 
 ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH_ENV = "PIPELINE_SETTINGS_PATH"
@@ -170,14 +170,24 @@ class PresetConfig:
 
 
 def load_settings(path: Path | None = None) -> Settings:
+    """Load settings; an absent file means defaults.
+
+    The settings route saves the loaded values plus the user's patch, so an
+    unreadable file must not quietly become defaults: a read error is raised,
+    and corrupt JSON is preserved under ``.corrupt/`` before defaults are used.
+    """
     p = path or DEFAULT_SETTINGS_PATH
-    if p and p.exists():
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            return Settings.from_dict(data)
-        except (json.JSONDecodeError, OSError):
-            pass
-    return Settings()
+    if not (p and p.exists()):
+        return Settings()
+    text = read_text_with_retry(p)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict):
+        preserve_corrupt_copy(p)
+        return Settings()
+    return Settings.from_dict(data)
 
 
 def save_settings(settings: Settings, path: Path | None = None) -> None:
