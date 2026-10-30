@@ -48,6 +48,39 @@ def terminate_process(process: subprocess.Popen, timeout: float = 5.0) -> None:
         process.wait(timeout=timeout)
 
 
+def run_captured(
+    command: Sequence[str],
+    *,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run a child to completion with UTF-8 output and a hard timeout.
+
+    ffmpeg prints paths and filter text as UTF-8; decoding it with the Windows
+    ANSI code page can fail mid-read. A wedged child must not hold a job
+    forever: on timeout it is killed and a failed result (``returncode`` -1)
+    is returned, so callers keep their usual return-code handling.
+    """
+    try:
+        return subprocess.run(
+            list(command),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stderr = exc.stderr or ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        return subprocess.CompletedProcess(
+            list(command),
+            -1,
+            stdout="",
+            stderr=f"{stderr}\nTimed out after {timeout:g} s",
+        )
+
+
 def run_streaming_process(
     command: Sequence[str],
     log_callback: Callable[[str], None] | None = None,

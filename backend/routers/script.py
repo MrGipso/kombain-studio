@@ -267,22 +267,9 @@ def _lm_text(
         raise RuntimeError(lm.explain_error(exc)) from exc
 
 
-def _script_unload_delay(settings) -> int | None:
-    """None disables auto-unload; zero requests an explicit immediate unload."""
-    auto = getattr(settings, "lm_auto_unload", True)
-    if isinstance(auto, str):
-        auto = auto.strip().lower() not in {"0", "false", "no", "off"}
-    if not auto:
-        return None
-    try:
-        return max(0, int(str(getattr(settings, "lm_unload_delay", "0")).strip() or "0"))
-    except (TypeError, ValueError):
-        return 60
-
-
 def _unload_lm_after_script(settings, log=None) -> None:
     """Apply the same immediate-unload/TTL policy used by other LM stages."""
-    delay = _script_unload_delay(settings)
+    delay = lm.unload_delay_seconds(settings)
     if delay is None:
         if log:
             log("Автовыгрузка LM Studio отключена в настройках")

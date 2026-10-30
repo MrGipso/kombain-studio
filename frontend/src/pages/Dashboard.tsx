@@ -236,18 +236,25 @@ export default function Dashboard() {
   const [jobItems, setJobItems] = useState<JobRecord[]>([])
   const [runLogItems, setRunLogItems] = useState<RunLogRecord[]>([])
   const [initialLoaded, setInitialLoaded] = useState(false)
+  const [boardError, setBoardError] = useState<string | null>(null)
   const logContainerRef = useRef<HTMLDivElement>(null)
   // Locked by a job started on another page of this project.
   const lockedElsewhere = Boolean(busy) && !running
 
   const refresh = useCallback(async () => {
+    // A failed board read must not look like a project without materials:
+    // keep the last good cards and say that the refresh failed.
     const [board, state, jobState, runLogState] = await Promise.all([
-      api.getAssetBoard(projectId).catch(() => [] as AssetCard[]),
+      api.getAssetBoard(projectId).then(
+        (items) => ({ items, error: null }),
+        (error: unknown) => ({ items: null, error: (error as Error).message || 'Неизвестная ошибка' }),
+      ),
       api.getProjectState(projectId).catch(() => null),
       api.getProjectJobs(projectId, 8).catch(() => null),
       api.getProjectRunLogs(projectId, 40).catch(() => null),
     ])
-    setCards(board)
+    if (board.items) setCards(board.items)
+    setBoardError(board.error)
     if (state) setSteps(state.steps)
     if (jobState) setJobItems(jobState.items)
     if (runLogState) setRunLogItems(runLogState.items)
@@ -656,8 +663,19 @@ export default function Dashboard() {
               <div role="status" className="space-y-3" aria-label="Загрузка материалов">
                 {[1, 2, 3].map((item) => <div key={item} className="h-8 animate-pulse rounded-lg bg-slate-800/70" />)}
               </div>
+            ) : boardError && !cards.length ? (
+              <div role="alert" className="flex min-h-52 flex-col items-center justify-center rounded-xl border border-dashed border-rose-900 bg-rose-950/20 px-6 py-8 text-center">
+                <h3 className="text-sm font-semibold text-slate-200">Материалы не загрузились</h3>
+                <p className="mt-1 max-w-sm text-sm leading-6 text-slate-400">{boardError}</p>
+                <button type="button" onClick={() => void refresh()} className="mt-4 min-h-10 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">Повторить загрузку</button>
+              </div>
             ) : cards.length ? (
               <>
+                {boardError && (
+                  <p role="alert" className="mb-4 rounded-lg border border-amber-800/70 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+                    Не удалось обновить материалы, показана последняя загруженная версия. <span className="font-mono">{boardError}</span>
+                  </p>
+                )}
                 <div className="space-y-3">
                   {statusSummary.map(([status, count]) => (
                     <div key={status} className="grid grid-cols-[minmax(8rem,12rem)_minmax(0,1fr)_2.5rem] items-center gap-3">

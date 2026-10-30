@@ -227,7 +227,28 @@ def card_overlay_text(card: AssetCard) -> str:
 
 
 def ffmpeg_filter_path(path: Path) -> str:
-    return str(path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    """Escape a path for a single-quoted filter option, e.g. ``textfile='…'``.
+
+    Filtergraph text is unescaped twice: the graph parser strips the quotes,
+    then the option parser treats ``:`` and ``'`` as syntax. A quote in the
+    path therefore ends the quoted run, emits an escaped backslash and an
+    escaped quote (left as ``\\'`` for the option parser) and reopens it.
+    """
+    return (
+        str(path)
+        .replace("\\", "/")
+        .replace(":", "\\:")
+        .replace("'", r"'\\\''")
+    )
+
+
+def concat_file_line(path: Path) -> str:
+    """One concat-demuxer ``file`` directive for ``path``.
+
+    Single quotes have no escape inside a quoted run, so a quote in the path
+    is written as close quote, escaped quote, reopen: ``'\\''``.
+    """
+    return "file '" + str(path.resolve()).replace("'", r"'\''") + "'"
 
 
 def find_overlay_font(prefer_mono: bool = False) -> Path | None:
@@ -374,7 +395,7 @@ def build_concat_file_from_paths(paths: list[Path], output_path: Path) -> str:
     if not paths:
         return ""
     output_path.mkdir(parents=True, exist_ok=True)
-    lines = [f"file '{str(path.resolve())}'" for path in paths]
+    lines = [concat_file_line(path) for path in paths]
     concat_path = output_path / "_concat_list.txt"
     concat_path.write_text("\n".join(lines), encoding="utf-8")
     return str(concat_path)
@@ -388,7 +409,7 @@ def build_concat_file(cards: list[AssetCard], output_path: Path) -> str:
             continue
         src = card_source(card)
         if src:
-            lines.append(f"file '{str(src.resolve())}'")
+            lines.append(concat_file_line(src))
             lines.append(f"duration {card_duration(card)}")
     if not lines:
         return ""

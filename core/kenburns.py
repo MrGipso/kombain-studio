@@ -17,8 +17,9 @@ image and passes its path in.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
+
+from core.process import run_captured
 
 VIDEO_W = 1920
 VIDEO_H = 1080
@@ -114,7 +115,7 @@ def build_kenburns_clip(
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         str(dst),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = run_captured(cmd, timeout=600)
     if proc.returncode != 0 or not dst.exists():
         raise RuntimeError(f"ffmpeg Ken Burns failed: {proc.stderr[-400:] if proc.stderr else 'unknown error'}")
     return dst

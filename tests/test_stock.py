@@ -160,7 +160,7 @@ def test_score_candidate_rejects_accidental_zero_to_ten_scale(monkeypatch):
 def test_build_stock_clip_cut_and_loop(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_run(cmd, capture_output=True, text=True, timeout=None):
+    def fake_run(cmd, **_kwargs):
         captured["cmd"] = cmd
         Path(cmd[-1]).write_text("x")
         return types.SimpleNamespace(returncode=0, stderr="")
@@ -189,7 +189,7 @@ def test_uniquify_filter():
 def test_build_stock_clip_uniquify_flag(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_run(cmd, capture_output=True, text=True, timeout=None):
+    def fake_run(cmd, **_kwargs):
         captured["cmd"] = cmd
         Path(cmd[-1]).write_text("x")
         return types.SimpleNamespace(returncode=0, stderr="")

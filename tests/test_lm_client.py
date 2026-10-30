@@ -36,6 +36,31 @@ def test_ttl_positive_delay():
     assert lm.ttl_seconds(_settings(lm_unload_delay="120")) == 120
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"lm_auto_unload": False}, None),
+        ({"lm_auto_unload": "false"}, None),
+        ({"lm_auto_unload": "off"}, None),
+        ({"lm_unload_delay": "0"}, 0),
+        ({"lm_unload_delay": " 45 "}, 45),
+        ({"lm_unload_delay": "-5"}, 0),
+        ({"lm_unload_delay": "soon"}, 60),
+        ({"lm_unload_delay": None}, 60),
+    ],
+)
+def test_unload_delay_policy(overrides, expected):
+    assert lm.unload_delay_seconds(_settings(**overrides)) == expected
+
+
+def test_unload_delay_reads_plain_settings_mappings():
+    # pipeline_orch passes settings as a dict; a string "false" must still
+    # disable auto-unload there.
+    assert lm.unload_delay_seconds({"lm_auto_unload": "false"}) is None
+    assert lm.unload_delay_seconds({"lm_unload_delay": "30"}) == 30
+    assert lm.unload_delay_seconds({}) == 0
+
+
 def test_strip_fences():
     assert lm.strip_fences("```json\n{\"a\": 1}\n```") == '{"a": 1}'
     assert lm.strip_fences('{"a": 1}') == '{"a": 1}'

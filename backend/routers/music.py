@@ -140,22 +140,10 @@ async def update_music_settings(project_id: str, req: MusicSettingsRequest):
     return payload
 
 
-def _lm_unload_delay_seconds(settings) -> int | None:
-    auto_unload = getattr(settings, "lm_auto_unload", True)
-    if isinstance(auto_unload, str):
-        auto_unload = auto_unload.strip().lower() not in {"0", "false", "no", "off"}
-    if not auto_unload:
-        return None
-    try:
-        return max(0, int(str(getattr(settings, "lm_unload_delay", "0")).strip() or "0"))
-    except ValueError:
-        return 60
-
-
 def _unload_lm_after_brief(settings) -> None:
     """Free the LLM from VRAM after the brief, same policy as scene analysis, so
     the GPU is clear before ACE-Step music generation runs in ComfyUI."""
-    delay = _lm_unload_delay_seconds(settings)
+    delay = lm_client.unload_delay_seconds(settings)
     if delay is None or delay > 0:
         # Auto-unload disabled, or a TTL keeps the model warm — nothing to do.
         return
@@ -215,8 +203,7 @@ def _lm_music_brief(base_url: str, model: str, notes: list[str], topic: str, ttl
 async def generate_music_brief(project_id: str):
     resolved = _resolve_project(project_id)
     settings = load_settings()
-    delay = _lm_unload_delay_seconds(settings)
-    ttl = delay if delay and delay > 0 else None
+    ttl = lm_client.ttl_seconds(settings)
 
     def run_brief():
         with jobs.project_job(resolved.dir.name, "Музыкальный бриф", resource="llm") as cancel_event:

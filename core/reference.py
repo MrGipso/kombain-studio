@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable
+
+from core.process import run_captured
 
 try:  # Pillow is optional: enables rounded panels, shadows and the API-card fallback.
     from PIL import Image, ImageDraw, ImageFont, ImageFilter  # type: ignore
@@ -474,7 +475,7 @@ def build_reference_clip(screenshot: Path, dst: Path, ffmpeg: str,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
         str(dst),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = run_captured(cmd, timeout=600)
     # Tidy the scratch files regardless of outcome.
     for scratch in (panel if panel is not None else None, cred_file):
         try:

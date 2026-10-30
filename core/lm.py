@@ -17,6 +17,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, Literal, TypeVar
 
@@ -56,6 +57,29 @@ class AssistantContentError(ValueError):
     """The server returned a completion envelope without usable text."""
 
 
+def unload_delay_seconds(settings: Any) -> int | None:
+    """The user's LM Studio auto-unload policy for the end of a stage.
+
+    None = auto-unload disabled; 0 = unload explicitly right after the stage;
+    positive int = idle seconds before LM Studio unloads the model. Accepts a
+    Settings object or a plain settings mapping; an unparsable delay is 60 s.
+    """
+    def read(name: str, default: Any) -> Any:
+        if isinstance(settings, Mapping):
+            return settings.get(name, default)
+        return getattr(settings, name, default)
+
+    auto = read("lm_auto_unload", True)
+    if isinstance(auto, str):
+        auto = auto.strip().lower() not in {"0", "false", "no", "off"}
+    if not auto:
+        return None
+    try:
+        return max(0, int(str(read("lm_unload_delay", "0")).strip() or "0"))
+    except (TypeError, ValueError):
+        return 60
+
+
 def ttl_seconds(settings: Any) -> int | None:
     """LM Studio JIT auto-unload TTL derived from the user's settings.
 
@@ -63,16 +87,8 @@ def ttl_seconds(settings: Any) -> int | None:
     A configured delay of 0 means "unload immediately after the stage", which
     callers implement via an explicit unload — not via TTL — so 0 maps to None.
     """
-    auto = getattr(settings, "lm_auto_unload", True)
-    if isinstance(auto, str):
-        auto = auto.strip().lower() not in {"0", "false", "no", "off"}
-    if not auto:
-        return None
-    try:
-        delay = max(0, int(str(getattr(settings, "lm_unload_delay", "0")).strip() or "0"))
-    except ValueError:
-        delay = 60
-    return delay if delay > 0 else None
+    delay = unload_delay_seconds(settings)
+    return delay if delay else None
 
 
 def add_ttl(payload: dict, ttl: int | None) -> None:

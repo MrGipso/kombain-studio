@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core import sfx
+from core import process, sfx
 from core.export import _audio_mix_filtergraph
 
 
@@ -35,7 +35,7 @@ class _FakeRun:
     returncode: int = 0
     calls: list = field(default_factory=list)
 
-    def __call__(self, cmd, capture_output=True, text=True):
+    def __call__(self, cmd, **_kwargs):
         self.calls.append(cmd)
         if self.create:
             out = Path(cmd[-1])
@@ -66,7 +66,7 @@ def test_bed_merges_spans_and_crossfades_adjacent(tmp_path, monkeypatch):
         (_Card(str(rain)), (10, 15)),
     ]
     fake = _FakeRun()
-    monkeypatch.setattr(sfx.subprocess, "run", fake)
+    monkeypatch.setattr(process.subprocess, "run", fake)
 
     bed = sfx.build_sfx_bed(cards, tmp_path / "exports", "ffmpeg", 15)
 
@@ -93,7 +93,7 @@ def test_bed_does_not_crossfade_across_gaps(tmp_path, monkeypatch):
         (_Card(str(rain)), (9, 15)),
     ]
     fake = _FakeRun()
-    monkeypatch.setattr(sfx.subprocess, "run", fake)
+    monkeypatch.setattr(process.subprocess, "run", fake)
 
     assert sfx.build_sfx_bed(cards, tmp_path / "exports", "ffmpeg", 15) is not None
     graph = fake.calls[0][fake.calls[0].index("-filter_complex") + 1]
@@ -106,7 +106,7 @@ def test_bed_includes_room_tone_layer(tmp_path, monkeypatch):
     tone = _clip(tmp_path, "room_tone.flac")
     cards = [(_Card(str(hum)), (0, 10))]
     fake = _FakeRun()
-    monkeypatch.setattr(sfx.subprocess, "run", fake)
+    monkeypatch.setattr(process.subprocess, "run", fake)
 
     bed = sfx.build_sfx_bed(
         cards, tmp_path / "exports", "ffmpeg", 20,
@@ -125,7 +125,7 @@ def test_bed_includes_room_tone_layer(tmp_path, monkeypatch):
 def test_normalize_clip_success_replaces_file(tmp_path, monkeypatch):
     clip = _clip(tmp_path, "sfx_a.flac")
     fake = _FakeRun(create=True, returncode=0)
-    monkeypatch.setattr(sfx.subprocess, "run", fake)
+    monkeypatch.setattr(process.subprocess, "run", fake)
 
     assert sfx.normalize_clip(clip, "ffmpeg") is True
     cmd = fake.calls[0]
@@ -138,7 +138,7 @@ def test_normalize_clip_failure_keeps_original(tmp_path, monkeypatch):
     clip = _clip(tmp_path, "sfx_a.flac")
     original = clip.read_bytes()
     fake = _FakeRun(create=False, returncode=1)
-    monkeypatch.setattr(sfx.subprocess, "run", fake)
+    monkeypatch.setattr(process.subprocess, "run", fake)
 
     assert sfx.normalize_clip(clip, "ffmpeg") is False
     assert clip.read_bytes() == original
@@ -409,7 +409,7 @@ def test_bed_places_accents_once_at_shot_start(tmp_path, monkeypatch):
         (Card(str(hum), str(accent)), (6, 10)),
     ]
     fake = _FakeRun()
-    monkeypatch.setattr(sfx.subprocess, "run", fake)
+    monkeypatch.setattr(process.subprocess, "run", fake)
 
     bed = sfx.build_sfx_bed(cards, tmp_path / "exports", "ffmpeg", 10, volume_db=-24.0)
 

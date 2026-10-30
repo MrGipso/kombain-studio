@@ -178,19 +178,32 @@ export default function Timeline() {
   const [zoom, setZoom] = useState(10)
   const [playing, setPlaying] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const frameRef = useRef<number | null>(null)
 
   const load = useCallback(async () => {
+    // A failed read must not look like an empty timeline: keep the last good
+    // data and report what could not be refreshed.
+    const failures: string[] = []
+    const failed = (label: string) => (error: unknown) => {
+      failures.push(`${label}: ${(error as Error).message || 'неизвестная ошибка'}`)
+      return null
+    }
     const [board, timelineMedia] = await Promise.all([
-      api.getAssetBoard(projectId).catch(() => [] as AssetCard[]),
-      api.getTimelineMedia(projectId).catch(() => null),
+      api.getAssetBoard(projectId).catch(failed('материалы')),
+      api.getTimelineMedia(projectId).catch(failed('озвучка и экспорт')),
     ])
-    setCards(board)
-    setMedia(timelineMedia)
-    setVoiceStart(tcToSec(timelineMedia?.voice_start || '00:00:00'))
-    setSelectedIndex((current) => (board.length && current < board.length ? current : 0))
+    setLoadError(failures.length ? failures.join('; ') : null)
+    if (board) {
+      setCards(board)
+      setSelectedIndex((current) => (board.length && current < board.length ? current : 0))
+    }
+    if (timelineMedia) {
+      setMedia(timelineMedia)
+      setVoiceStart(tcToSec(timelineMedia.voice_start || '00:00:00'))
+    }
   }, [projectId])
 
   useEffect(() => {
@@ -531,6 +544,13 @@ export default function Timeline() {
               <div className="px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 font-mono text-sm text-white">{secToTc(playhead)}</div>
             </div>
           </div>
+
+          {loadError && (
+            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-800/70 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+              <span>Не удалось загрузить данные таймлайна. <span className="font-mono text-xs">{loadError}</span></span>
+              <button type="button" onClick={() => void load()} className="rounded-lg border border-amber-700 px-3 py-1.5 font-semibold hover:bg-amber-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400">Повторить</button>
+            </div>
+          )}
 
           <section className="grid grid-cols-[minmax(420px,1fr)_340px] gap-4">
             <div className="rounded-lg bg-black border border-slate-800 overflow-hidden">

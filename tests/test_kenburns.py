@@ -1,18 +1,18 @@
 import types
 from pathlib import Path
 
-from core import kenburns
+from core import kenburns, process
 
 
 def _capture(monkeypatch):
     box = {}
 
-    def fake_run(cmd, capture_output=True, text=True):
+    def fake_run(cmd, **_kwargs):
         box["cmd"] = cmd
         Path(cmd[-1]).write_text("x")
         return types.SimpleNamespace(returncode=0, stderr="")
 
-    monkeypatch.setattr(kenburns.subprocess, "run", fake_run)
+    monkeypatch.setattr(process.subprocess, "run", fake_run)
     return box
 
 
@@ -39,7 +39,7 @@ def test_kenburns_zoom_out(monkeypatch, tmp_path):
 
 
 def test_kenburns_raises_on_ffmpeg_failure(monkeypatch, tmp_path):
-    monkeypatch.setattr(kenburns.subprocess, "run",
+    monkeypatch.setattr(process.subprocess, "run",
                         lambda *a, **k: types.SimpleNamespace(returncode=1, stderr="boom"))
     try:
         kenburns.build_kenburns_clip(tmp_path / "i.png", tmp_path / "o.mp4", "ffmpeg", 5)

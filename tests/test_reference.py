@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import core.reference as R
+from core import process
 
 
 # ─── helpers ─────────────────────────────────────────────────────────
@@ -131,13 +132,13 @@ def test_resolve_reference_arxiv_falls_back_to_wiki(monkeypatch):
 def test_build_reference_clip_command(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_run(cmd, capture_output=True, text=True):
+    def fake_run(cmd, **_kwargs):
         captured["cmd"] = cmd
         # Simulate ffmpeg writing the output so the function returns cleanly.
         Path(cmd[-1]).write_bytes(b"\x00")
         return types.SimpleNamespace(returncode=0, stderr="")
 
-    monkeypatch.setattr(R.subprocess, "run", fake_run)
+    monkeypatch.setattr(process.subprocess, "run", fake_run)
     # Force the no-Pillow path so the panel chain scales the raw screenshot.
     monkeypatch.setattr(R, "_build_panel_png", lambda *a, **k: None)
 

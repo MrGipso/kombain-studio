@@ -713,18 +713,6 @@ def _extract_json_object(content: str) -> dict[str, Any]:
     return data
 
 
-def _lm_unload_delay_seconds(settings) -> int | None:
-    auto_unload = getattr(settings, "lm_auto_unload", True)
-    if isinstance(auto_unload, str):
-        auto_unload = auto_unload.strip().lower() not in {"0", "false", "no", "off"}
-    if not auto_unload:
-        return None
-    try:
-        return max(0, int(str(getattr(settings, "lm_unload_delay", "0")).strip() or "0"))
-    except ValueError:
-        return 60
-
-
 def _lm_prompt(endpoint: str, model: str, prompt: str, ttl_seconds: int | None = None) -> dict[str, Any]:
     payload = {
         "model": model.strip() or "local-model",
@@ -761,7 +749,7 @@ def _prompt_from_lm_data(data: dict[str, Any], target: str) -> str:
 
 
 def _unload_lm_after_prompt(settings) -> dict[str, Any]:
-    delay = _lm_unload_delay_seconds(settings)
+    delay = lm_client.unload_delay_seconds(settings)
     if delay is None:
         return {"ok": True, "skipped": True, "message": "LM Studio auto-unload disabled"}
     if delay > 0:
@@ -826,8 +814,7 @@ def _regenerate_prompt_sync(pdir: Path, card_index: int, target: str) -> dict[st
             f"Current video prompt, if any:\n{card.video_prompt}\n"
         )
 
-    delay = _lm_unload_delay_seconds(settings)
-    ttl = delay if delay and delay > 0 else None
+    ttl = lm_client.ttl_seconds(settings)
     data = _lm_prompt(
         settings.lm_url or "http://127.0.0.1:1234/v1",
         settings.lm_model or "local-model",

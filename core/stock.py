@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core import lm
 from core.config import ROOT
+from core.process import run_captured
 from core.project import atomic_write_text
 
 try:  # Pillow is optional; perceptual dedup degrades gracefully without it.
@@ -495,7 +496,7 @@ def build_stock_clip(src: Path, dst: Path, ffmpeg: str, slot_seconds: float,
         cmd = [ff, "-y", "-ss", f"{max(0.0, offset):.2f}", "-i", str(src),
                "-t", f"{target:.2f}", *vf_args, *enc, str(dst)]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = run_captured(cmd, timeout=600)
     if proc.returncode != 0 or not dst.exists():
         raise RuntimeError(f"ffmpeg trim failed: {proc.stderr[-400:] if proc.stderr else 'unknown error'}")
     return dst

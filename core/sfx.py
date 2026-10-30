@@ -20,10 +20,11 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
+
+from core.process import run_captured
 
 
 def _log(log: Callable[[str], None] | None, msg: str) -> None:
@@ -126,7 +127,7 @@ def normalize_clip(path: Path, ffmpeg: str,
         "-ar", "48000", str(tmp),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = run_captured(cmd, timeout=120)
         if proc.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
             tmp.replace(path)
             return True
@@ -562,7 +563,8 @@ def build_sfx_bed(cards_with_intervals: list[tuple[Any, tuple[int, int]]],
               + f", {total}s"
               + (", room tone" if room_tone is not None and Path(room_tone).exists() else "")
               + ")...")
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # The bed spans the whole narration, so allow far longer than one clip.
+    proc = run_captured(cmd, timeout=1800)
     if proc.returncode != 0 or not dst.exists():
         _log(log, f"SFX: сборка подложки не удалась: {(proc.stderr or '')[-300:]}")
         return None
