@@ -237,10 +237,3 @@ def test_repository_workflows_are_structurally_valid():
     for workflow in loaded.values():
         assert comfy.validate_workflow_compatibility(workflow, available)["ok"] is True
 
-
-def test_gui_keeps_legacy_helper_exports():
-    import content_pipeline_gui as pipeline
-
-    assert pipeline.comfy_queue_prompt is comfy.comfy_queue_prompt
-    assert pipeline.comfy_wait_for_history is comfy.comfy_wait_for_history
-    assert pipeline.comfy_download_output is comfy.comfy_download_output

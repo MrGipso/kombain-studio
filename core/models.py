@@ -217,30 +217,6 @@ def estimate_duration_seconds(text: str) -> int:
     return max(12, round(words / 2.25))
 
 
-def split_into_blocks(text: str, max_words: int = 95) -> list[str]:
-    text = clean_script_text(text)
-    paragraphs = [
-        p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()
-    ]
-    blocks: list[str] = []
-    current: list[str] = []
-    current_words = 0
-
-    for paragraph in paragraphs:
-        words = len(paragraph.split())
-        if current and current_words + words > max_words:
-            blocks.append("\n\n".join(current))
-            current = []
-            current_words = 0
-        current.append(paragraph)
-        current_words += words
-
-    if current:
-        blocks.append("\n\n".join(current))
-
-    return blocks
-
-
 def normalize_timestamp(value) -> str:
     if isinstance(value, (int, float)):
         return seconds_to_timecode(round(float(value)))

@@ -1,9 +1,9 @@
 """Canonical, UI-independent Asset Board operations.
 
-The board is the editable source of truth shared by the desktop and web
-frontends.  Keeping its persistence and route-normalisation rules in ``core``
-prevents backend workers from importing the Tk application merely to read or
-write ``06_asset_board.json``.
+The board is the editable source of truth for the web application and its
+background workers.  Keeping its persistence and route-normalisation rules in
+``core`` gives every caller one implementation for reading and writing
+``06_asset_board.json``.
 """
 
 from __future__ import annotations

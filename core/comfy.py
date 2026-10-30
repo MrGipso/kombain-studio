@@ -1,12 +1,11 @@
 """Small, reusable HTTP adapter for the ComfyUI API.
 
 The pipeline only needs a handful of ComfyUI endpoints: queue a workflow, poll
-its history, upload an input image, and download generated files.  Keeping that
-transport code here avoids making non-GUI callers import the Tk application.
+its history, upload an input image, and download generated files.  That
+transport code lives here so every caller shares one implementation.
 
-The module-level ``comfy_*`` functions intentionally retain the signatures and
-error behaviour of the original helpers from :mod:`content_pipeline_gui`.
-``ComfyClient`` is a convenient bound-URL facade for new callers.
+The module-level ``comfy_*`` functions take the server URL explicitly;
+``ComfyClient`` is a convenient bound-URL facade over them.
 """
 
 from __future__ import annotations

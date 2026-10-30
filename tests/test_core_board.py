@@ -274,11 +274,3 @@ def test_atomic_write_failure_keeps_previous_board(tmp_path, monkeypatch):
     assert path.read_bytes() == original
     assert not list(project_dir.glob(f"{board.ASSET_BOARD_FILE}.*.tmp"))
 
-
-def test_gui_module_reexports_canonical_board_contract():
-    import content_pipeline_gui as cpg
-
-    assert cpg.load_asset_board is board.load_asset_board
-    assert cpg.write_asset_board is board.write_asset_board
-    assert cpg.build_asset_board is board.build_asset_board
-    assert cpg.sync_asset_card_route is board.sync_asset_card_route

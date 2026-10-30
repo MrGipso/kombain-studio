@@ -1,6 +1,6 @@
-"""Whisper.cpp transcription primitives shared by desktop and web frontends.
+"""Whisper.cpp transcription primitives for the web pipeline.
 
-This module deliberately has no dependency on either GUI toolkit or FastAPI.
+This module deliberately has no dependency on a GUI toolkit or FastAPI.
 It is the canonical home for executable discovery, whisper output parsing and
 the small filesystem orchestration needed by a transcription run.
 """

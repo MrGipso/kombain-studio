@@ -8,6 +8,8 @@
 > По состоянию на 2026-07-12 backend полностью headless: сцены, shot planning,
 > Asset Board, Whisper и Comfy generation вынесены в `core/`; импорт всего
 > FastAPI-приложения не загружает `content_pipeline_gui` или `tkinter`.
+> По состоянию на 2026-10-30 legacy Tk/PySide-интерфейсы (`content_pipeline_gui.py`,
+> `content_pipeline_qt.py`, `ui/`) и слой `plugins/` удалены из репозитория.
 > Оценки ниже описывают прежнюю версию и не являются текущим статусом проекта.
 
 Дата: 2026-07-04. Объём: FastAPI-бэкенд (`backend/`), общий движок `content_pipeline_gui.py`, ядро `core/`, фронтенд `frontend/` (React 19 + TS + Vite).

@@ -209,7 +209,7 @@ def _lm_json(prompt: str, system: str, settings, timeout: int = 300, log=None) -
     """One LM Studio chat call that must return JSON (object or array).
 
     Thin wrapper kept for call-site stability; the actual client lives in
-    core.lm (first strangler slice out of the monolith)."""
+    core.lm."""
     active_prompt = prompt
     last_error: ValueError | None = None
     for attempt in range(2):

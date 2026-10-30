@@ -3,11 +3,11 @@
 Local-first AI video production pipeline: script or voice recording → transcript
 → scenes → shot plan → stock/AI assets → timeline → quality control → export.
 
-The FastAPI + React application is the single supported interface. It can run
-in a browser or in the native window provided by `launch.py`; both modes use
-the same backend, settings and orchestration. Historical Qt/Tk sources remain
-temporarily in the repository for migration reference, but all shipped
-launchers and `main.py` open the current interface.
+The FastAPI + React application is the only interface. It can run in a
+browser or in the native window provided by `launch.py`; both modes use the
+same backend, settings and orchestration. Every shipped launcher (including the
+older `start_content_pipeline*.bat` and `start_pipeline_studio.bat` aliases of
+`start_desktop.bat`) and `main.py` open this interface.
 
 ## Requirements
 
@@ -193,10 +193,8 @@ record can be downloaded from Preview alongside the MP4.
 - `backend/` — FastAPI application and job orchestration
 - `frontend/` — React + TypeScript web client
 - `core/` — domain models, project storage, validation, and export engine
-- `plugins/` — transcriber, analyzer, and generator adapters
 - `tests/` — offline unit and API-oriented tests
 - `workflows/` — ComfyUI API workflows
-- `ui/` — compatibility Qt interface
 
 Machine-specific settings, generated projects, models, logs, and built frontend
 assets are intentionally ignored by Git.

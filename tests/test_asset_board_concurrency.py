@@ -6,9 +6,9 @@ from contextlib import contextmanager
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import content_pipeline_gui as cpg
 from backend.routers import assets as assets_router
 from core import asset_variants
+from core import board as board_store
 from core.config import Settings
 from core.models import AssetCard
 from core.project import create_project
@@ -54,7 +54,7 @@ def _client_for(project, monkeypatch) -> TestClient:
 def _project_with_board(tmp_path, monkeypatch, card: AssetCard | None = None):
     settings = Settings(output_base=str(tmp_path))
     project = create_project("Board", tmp_path, settings=settings)
-    cpg.write_asset_board(project.dir, [card or _card()])
+    board_store.write_asset_board(project.dir, [card or _card()])
     return project, _client_for(project, monkeypatch)
 
 
@@ -89,7 +89,7 @@ def test_bulk_save_uses_strong_etag_and_rejects_stale_or_missing_revision(
     )
     assert stale.status_code == 409
     assert stale.json()["detail"]["current"] == current_etag.strip('"')
-    assert cpg.load_asset_board(project.dir)[0].description == "First editor won"
+    assert board_store.load_asset_board(project.dir)[0].description == "First editor won"
 
     missing = client.post(
         f"/projects/{project.dir.name}/asset-board/save",
@@ -129,11 +129,11 @@ def test_user_board_mutations_are_rejected_while_project_job_runs(tmp_path, monk
 
         # The render worker already owns the long-job lock and writes directly;
         # it must not attempt to re-enter the short HTTP mutation guard.
-        worker_cards = cpg.load_asset_board(project.dir)
+        worker_cards = board_store.load_asset_board(project.dir)
         worker_cards[0].notes = "written by active worker"
-        cpg.write_asset_board(project.dir, worker_cards)
+        board_store.write_asset_board(project.dir, worker_cards)
 
-    stored = cpg.load_asset_board(project.dir)[0]
+    stored = board_store.load_asset_board(project.dir)[0]
     assert stored.description == "A server room"
     assert stored.notes == "written by active worker"
 
@@ -150,7 +150,7 @@ def test_user_media_paths_cannot_escape_project_or_be_snapshotted(tmp_path, monk
     assert rejected.status_code == 403
     detail = rejected.json()["detail"]
     assert detail["violations"] == [{"card_index": 0, "field": "assigned_media"}]
-    assert cpg.load_asset_board(project.dir)[0].assigned_media == ""
+    assert board_store.load_asset_board(project.dir)[0].assigned_media == ""
     assert asset_variants.list_variants(project.dir) == []
 
     board = client.get(f"/projects/{project.dir.name}/asset-board")
@@ -200,7 +200,7 @@ def test_card_id_cannot_be_replaced_by_patch_or_bulk_save(tmp_path, monkeypatch)
         json=payload,
     )
     assert bulk.status_code == 409
-    assert cpg.load_asset_board(project.dir)[0].card_id != "replacement-id"
+    assert board_store.load_asset_board(project.dir)[0].card_id != "replacement-id"
 
 
 def test_long_card_actions_require_current_revision_and_stable_card_id(
@@ -255,13 +255,13 @@ def test_unchanged_legacy_external_media_path_remains_editable(tmp_path, monkeyp
         json=payload,
     )
     assert saved.status_code == 200
-    assert cpg.load_asset_board(project.dir)[0].assigned_media == str(legacy)
+    assert board_store.load_asset_board(project.dir)[0].assigned_media == str(legacy)
     assert asset_variants.list_variants(project.dir) == []
 
 
 def test_rebuild_holds_project_job_through_record_and_write(tmp_path, monkeypatch):
     project, _client = _project_with_board(tmp_path, monkeypatch)
-    previous = cpg.load_asset_board(project.dir)
+    previous = board_store.load_asset_board(project.dir)
     rebuilt = [_card(description="rebuilt")]
     events: list[str] = []
 

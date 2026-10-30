@@ -16,11 +16,8 @@ core/      чистая логика без UI: project (стейт этапов
            comfy/comfy_generation, script_align, style_presets, stock,
            reference, kenburns, export(+profiles), media_qc, sfx,
            asset_variants, validation, production (план/preflight), models
-plugins/   тонкие адаптеры анализаторов, транскрайберов и генераторов к core
 launch.py  нативное окно над тем же FastAPI/React runtime
-ui/, content_pipeline_qt.py, content_pipeline_gui.py
-           изолированный legacy-код для временной сверки при миграции;
-           ни одна штатная точка входа его больше не запускает.
+main.py    совместимый алиас launch.py
 ```
 
 **Источники правды проекта** — версионируемые stage-артефакты (`00_script.*`,
@@ -123,29 +120,21 @@ LM/Comfy/stock/Woosh не нужны: LM отвечает детерминиро
 production heuristic fallback проходит сцены и шоты. Пользовательские проекты
 и настройки не изменяются.
 
-## Статус распила legacy-монолита
+## Legacy-интерфейсы удалены
 
-Strangler-срез завершён на уровне runtime-зависимостей:
+Tk-монолит `content_pipeline_gui.py`, PySide-интерфейс (`ui/`,
+`content_pipeline_qt.py`, extra `desktop`, его `core.pipeline` и локализации
+`core.locale` + `presets/*/locale/`), слой `plugins/` с `core.registry`, а также
+`video_joiner_gui.py` и `schema_generator.py` удалены. Их логика живёт в `core/*` (`lm`, `scenes`, `shot_planning`/`shots`, `board`,
+`comfy`/`comfy_generation`, `transcribe`), единственный интерфейс — FastAPI/React
+в браузере или в окне `launch.py`.
 
-- [x] `core/lm.py` — LM Studio transport/model lifecycle;
-- [x] `core/scenes.py` — эвристическая/embedding/LLM-сегментация сцен;
-- [x] `core/shot_planning.py` и `core/shots.py` — LLM-план, тайминг,
-      маршруты, бюджеты и нарезка stock;
-- [x] `core/board.py` — Asset Board persistence/reconciliation;
-- [x] `core/comfy.py` и `core/comfy_generation.py` — transport, workflows и
-      image/LTX/music generation;
-- [x] `core/transcribe.py` — whisper.cpp orchestration и парсеры;
-- [x] backend, plugins и PySide workers не импортируют Tk/legacy engine;
-- [x] subprocess architecture-тест поднимает весь `backend.main` с запретом
-      `content_pipeline_gui` и `tkinter`.
+Subprocess architecture-тест поднимает весь `backend.main` с запретом
+`tkinter` и `PySide6`; тесты `core.scenes` и `core.shot_planning` дополнительно
+запрещают импорт `backend`.
 
-`content_pipeline_gui.py` пока сохраняет старые тела части функций перед
-compatibility re-export: это безопасный, но лишний исходный код. Следующая
-необязательная уборка — удалить эти мёртвые копии после отдельного desktop
-acceptance-теста, затем решить, нужен ли сам Tk entry point.
-
-Правило: новый production-код обращается только к `core/*`; обратная зависимость
-из core/backend/plugins/ui в legacy-модуль запрещена архитектурными тестами.
+Правило: новый production-код обращается только к `core/*`; `core` не
+импортирует `backend` и UI-тулкиты.
 
 ## Границы web deployment
 
@@ -162,7 +151,7 @@ workers, межпроцессная очередь/локи, object storage, aut
 
 ## Известные договорённости
 
-- Python ≥3.12 (PEP 701 f-строки в монолите).
+- Python ≥3.12 (поддерживаемый и тестируемый baseline; CI — 3.12 и 3.13).
 - Все негативы стилей идут только в LTX-проход (Krea зануляет негатив).
 - Долгие задачи: `jobs.project_job(project_id, имя, resource=...)` +
   `jobs.checking_logger(runlog.tee(...), cancel_event)` — лок, отмена и
