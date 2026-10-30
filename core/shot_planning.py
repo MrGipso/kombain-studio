@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Iterable
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from core import continuity, lm
 from core.models import (
@@ -67,6 +69,81 @@ class _LmSettings:
     lm_url: str
     lm_model: str
     lm_auto_unload: bool = False
+
+
+class GlobalVisualPlanProposal(BaseModel):
+    """Schema-constrained LM row for the all-film directing pass."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        str_strip_whitespace=True,
+    )
+
+    scene_index: int = Field(ge=1)
+    narrative_role: str = Field(min_length=1, max_length=320)
+    visual_family: str = Field(min_length=1, max_length=80)
+    location: str = Field(min_length=1, max_length=320)
+    primary_subject: str = Field(min_length=1, max_length=320)
+    shot_progression: str = Field(min_length=1, max_length=320)
+    palette: str = Field(min_length=1, max_length=320)
+    transition: str = Field(min_length=1, max_length=320)
+    avoid: str = Field(min_length=1, max_length=320)
+    story_thread: str = Field(max_length=320)
+    continuity_mode: str = Field(min_length=1, max_length=80)
+    location_id: str = Field(max_length=160)
+    subject_ids: str = Field(max_length=500)
+    entry_state: str = Field(max_length=320)
+    scene_event: str = Field(max_length=320)
+    exit_state: str = Field(max_length=320)
+
+
+class ShotProposal(BaseModel):
+    """Strict wire format for one model-authored shot draft."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        str_strip_whitespace=True,
+    )
+
+    scene_index: int = Field(ge=1)
+    start: str = Field(min_length=1, max_length=32)
+    end: str = Field(min_length=1, max_length=32)
+    visual_type: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=4_000)
+    asset_query: str = Field(min_length=1, max_length=500)
+    image_model: str = Field(max_length=160)
+    video_model: str = Field(max_length=160)
+    image_prompt: str = Field(min_length=1, max_length=8_000)
+    video_prompt: str = Field(max_length=8_000)
+    screen_text: str = Field(max_length=500)
+    motion: str = Field(max_length=2_000)
+    priority: str = Field(min_length=1, max_length=40)
+    fallback: str = Field(max_length=2_000)
+    sfx_query: str = Field(max_length=500)
+    sfx_accent_query: str = Field(max_length=500)
+    reference_query: str = Field(max_length=500)
+    reference_source: str = Field(max_length=80)
+    purpose: str = Field(max_length=2_000)
+    continuity_mode: str = Field(min_length=1, max_length=80)
+    continuity_group_id: str = Field(max_length=200)
+    location_id: str = Field(max_length=200)
+    subject_ids: list[str] = Field(max_length=32)
+    state_before: str = Field(max_length=2_000)
+    action: str = Field(max_length=2_000)
+    state_after: str = Field(max_length=2_000)
+    shot_size: str = Field(max_length=80)
+    camera_angle: str = Field(max_length=80)
+    screen_direction: str = Field(max_length=80)
+    reference_frame_id: str = Field(max_length=200)
+    transition_in: str = Field(max_length=500)
+    transition_out: str = Field(max_length=500)
+    change_from_previous: str = Field(max_length=2_000)
+
+
+_GLOBAL_VISUAL_PLAN_RESPONSE = TypeAdapter(list[GlobalVisualPlanProposal])
+_SHOT_RESPONSE = TypeAdapter(list[ShotProposal])
 
 
 @dataclass(frozen=True)
@@ -476,30 +553,31 @@ def audit_global_visual_plan(plan: list[GlobalVisualPlanItem]) -> list[str]:
                 "одно визуальное семейство и локацию"
             )
 
-    location_descriptions: dict[str, set[str]] = {}
     location_ids_by_description: dict[str, set[str]] = {}
-    subject_ids_by_name: dict[str, set[str]] = {}
+    subject_id_sets_by_name: dict[str, set[tuple[str, ...]]] = {}
     for item in plan:
         location_key = " ".join(item.location.casefold().split())
         location_id = item.location_id.casefold()
-        location_descriptions.setdefault(location_id, set()).add(location_key)
         location_ids_by_description.setdefault(location_key, set()).add(location_id)
         subject_key = " ".join(item.primary_subject.casefold().split())
-        subject_ids_by_name.setdefault(subject_key, set()).update(
-            continuity.normalize_subject_ids(item.subject_ids)
+        subject_id_sets_by_name.setdefault(subject_key, set()).add(
+            tuple(continuity.normalize_subject_ids(item.subject_ids))
         )
-    for location_id, descriptions in location_descriptions.items():
-        if location_id and len(descriptions) > 1:
-            violations.append(
-                f"location_id {location_id} назначен разным локациям"
-            )
+    # ``location_id`` is the canonical identity.  Its human description may
+    # legitimately evolve from "open ocean" to "stormy open ocean" as scene
+    # state changes, so differing prose is not itself a conflict.  The inverse
+    # is actionable: the exact same described place must not receive two IDs.
     for description, ids in location_ids_by_description.items():
         if description and len(ids) > 1:
             violations.append(
                 f"одна локация «{description}» получила разные location_id"
             )
-    for subject, ids in subject_ids_by_name.items():
-        if subject and len(ids) > 1:
+    for subject, id_sets in subject_id_sets_by_name.items():
+        # One row may intentionally describe a composite subject (for example
+        # "car and sealed box") and therefore contain several IDs.  Instability
+        # exists only when the same named subject receives a different ID set
+        # in another scene.
+        if subject and len(id_sets) > 1:
             violations.append(
                 f"один субъект «{subject}» получил разные subject_ids"
             )
@@ -529,6 +607,46 @@ def audit_global_visual_plan(plan: list[GlobalVisualPlanItem]) -> list[str]:
                 f"{label} встречаются в {len(matching)} сценах {matching}; максимум {motif_cap}"
             )
     return violations
+
+
+def stabilize_global_visual_context(
+    plan: list[GlobalVisualPlanItem],
+) -> list[GlobalVisualPlanItem]:
+    """Reuse canonical IDs for exact recurring locations and subjects.
+
+    Local models often understand that a place or object recurs but vary the
+    slug they emit.  Exact human labels give us a safe deterministic repair;
+    fuzzy semantic merging remains the model's responsibility.
+    """
+
+    location_ids: dict[str, str] = {}
+    subject_ids: dict[str, tuple[str, ...]] = {}
+    repaired: list[GlobalVisualPlanItem] = []
+    for item in plan:
+        location_key = " ".join(item.location.casefold().split())
+        canonical_location_id = location_ids.setdefault(
+            location_key,
+            item.location_id,
+        )
+        subject_key = " ".join(item.primary_subject.casefold().split())
+        current_subject_ids = tuple(
+            continuity.normalize_subject_ids(
+                item.subject_ids,
+                item.primary_subject,
+            )
+        )
+        canonical_subject_ids = subject_ids.setdefault(
+            subject_key,
+            current_subject_ids,
+        )
+        repaired.append(
+            replace(
+                item,
+                location_id=canonical_location_id,
+                subject_ids=", ".join(canonical_subject_ids),
+            )
+        )
+    return repaired
 
 
 def build_global_visual_plan_prompt(
@@ -614,13 +732,13 @@ def request_global_visual_plan(
     prompt: str,
     ttl_seconds: int | None = None,
 ) -> str:
-    """Request the mandatory all-film visual analysis through LM Studio."""
+    """Request the all-film analysis as schema-validated JSON."""
 
     settings = _LmSettings(
         lm_url=(base_url or lm.DEFAULT_URL).rstrip("/"),
         lm_model=model.strip() or "local-model",
     )
-    return lm.chat(
+    reply = lm.chat_structured(
         settings,
         [
             {
@@ -632,10 +750,18 @@ def request_global_visual_plan(
             },
             {"role": "user", "content": prompt},
         ],
+        _GLOBAL_VISUAL_PLAN_RESPONSE,
+        model=model.strip() or "local-model",
+        transport="openai",
         temperature=0.2,
+        max_tokens=16_000,
         timeout=300,
         ttl=ttl_seconds,
-        max_tokens=16_000,
+        schema_name="global_visual_plan",
+    )
+    return json.dumps(
+        [item.model_dump(mode="json") for item in reply.value],
+        ensure_ascii=False,
     )
 
 
@@ -650,18 +776,24 @@ def create_global_visual_plan(
     character_description: str = "",
     log_callback: Callable[[str], None] | None = None,
 ) -> list[GlobalVisualPlanItem]:
-    """Run a required global LM pass and reject structurally monotonous plans."""
+    """Run the required all-film pass with one technical recovery attempt.
+
+    A complete plan is useful even when the creative diversity audit has
+    advisory findings.  Regenerating all scenes to chase those findings made
+    long films spend several minutes rewriting otherwise valid context, and a
+    later attempt could be worse or malformed.  Structural failures still get
+    one recovery request; creative findings are accepted and handled by the
+    deterministic shot post-processing below.
+    """
 
     if not scenes:
         return []
     feedback = ""
     last_error = ""
-    best_plan: list[GlobalVisualPlanItem] | None = None
-    best_violations = 0
-    for attempt in range(1, 4):
+    for attempt in range(1, 3):
         if log_callback:
             log_callback(
-                f"LM Studio: глобальная режиссура видеоряда, попытка {attempt}/3..."
+                f"LM Studio: глобальная режиссура видеоряда, попытка {attempt}/2..."
             )
         try:
             prompt = build_global_visual_plan_prompt(
@@ -677,7 +809,9 @@ def create_global_visual_plan(
                 prompt,
                 ttl_seconds=ttl_seconds,
             )
-            plan = parse_global_visual_plan(content, scenes)
+            plan = stabilize_global_visual_context(
+                parse_global_visual_plan(content, scenes)
+            )
             violations = audit_global_visual_plan(plan)
             if not violations:
                 if log_callback:
@@ -686,33 +820,31 @@ def create_global_visual_plan(
                         f"{len({item.visual_family for item in plan})} визуальных семейств."
                     )
                 return plan
-            last_error = "; ".join(violations)
-            # Keep the least-bad plan seen so far. Diversity is a matter of
-            # taste and the model may never fully satisfy it, but a complete
-            # plan with recorded debt is worth far more than no film at all.
-            if best_plan is None or len(violations) < best_violations:
-                best_plan, best_violations = plan, len(violations)
+            if log_callback:
+                log_callback(
+                    "Глобальный визуальный план принят с творческими "
+                    f"замечаниями ({len(violations)}): {'; '.join(violations)}. "
+                    "Повторная полная генерация не требуется; ограничения "
+                    "будут учтены при раскадровке."
+                )
+            return plan
         except Exception as exc:
             last_error = str(exc)
+            # Connection/provider failures cannot be fixed by immediately
+            # submitting the same expensive request again.  Let the job layer
+            # report the outage and preserve the previous artifacts.
+            if isinstance(exc, lm.StructuredOutputError):
+                raise
+            if not isinstance(exc, ValueError):
+                raise
         feedback = last_error[:4_000]
         if log_callback:
             log_callback(
-                f"Глобальный визуальный план отклонён: {last_error}"
+                f"Глобальный визуальный план технически не разобран: {last_error}"
             )
-    if best_plan is not None:
-        # Creative critique must never be fatal: a rejected plan used to fail
-        # the whole shots stage and leave the project unfinishable without
-        # manual intervention.
-        if log_callback:
-            log_callback(
-                "Глобальный визуальный план принят с замечаниями после 3 попыток "
-                f"({best_violations} нарушений): {last_error}. Шот-лист будет "
-                "построен; замечания можно исправить точечно."
-            )
-        return best_plan
     raise ValueError(
         "LM Studio не вернула разбираемый глобальный визуальный план после "
-        f"3 попыток. Старый шот-лист сохранён. Причина: {last_error}"
+        f"2 попыток. Старый шот-лист сохранён. Причина: {last_error}"
     )
 
 
@@ -1566,13 +1698,13 @@ def request_lm_shots(
     prompt: str,
     ttl_seconds: int | None = None,
 ) -> list[dict]:
-    """Request one shot array through the canonical LM Studio client."""
+    """Request one shot array through strict JSON Schema validation."""
 
     settings = _LmSettings(
         lm_url=(base_url or lm.DEFAULT_URL).rstrip("/"),
         lm_model=model.strip() or "local-model",
     )
-    content = lm.chat(
+    reply = lm.chat_structured(
         settings,
         [
             {
@@ -1584,11 +1716,16 @@ def request_lm_shots(
             },
             {"role": "user", "content": prompt},
         ],
+        _SHOT_RESPONSE,
+        model=model.strip() or "local-model",
+        transport="openai",
         temperature=0.25,
+        max_tokens=8_192,
         timeout=300,
         ttl=ttl_seconds,
+        schema_name="scene_shot_list",
     )
-    parsed = parse_lm_json_array(content, "LM Studio frame list")
+    parsed = [item.model_dump(mode="json") for item in reply.value]
     if not all(isinstance(item, dict) for item in parsed):
         raise ValueError("LM Studio frame list должен содержать JSON-объекты")
     return parsed
@@ -1825,6 +1962,9 @@ def call_lm_studio_for_shots(
     ai_route_mix: bool = False,
     reference_density: str | None = "normal",
     on_visual_plan: Callable[[list[dict[str, object]]], None] | None = None,
+    precomputed_global_visual_plan: list[dict[str, object]] | None = None,
+    resume_shots: list[Shot] | None = None,
+    on_progress: Callable[[str, float], None] | None = None,
 ) -> list[Shot]:
     """Plan, repair, route and style a shot list without reading global config.
 
@@ -1846,21 +1986,38 @@ def call_lm_studio_for_shots(
         ai_route_mix=ai_route_mix,
         reference_density=density,
     )
-    global_visual_plan = create_global_visual_plan(
-        base_url,
-        model,
-        scenes,
-        ttl_seconds=ttl_seconds,
-        video_style=video_style,
-        style_anchor=style_anchor,
-        character_description=character_description,
-        log_callback=log_callback,
-    )
+    if on_progress:
+        on_progress("global_plan", 0.02)
+    if precomputed_global_visual_plan:
+        global_visual_plan = stabilize_global_visual_context(
+            parse_global_visual_plan(
+                json.dumps(precomputed_global_visual_plan, ensure_ascii=False),
+                scenes,
+            )
+        )
+        if log_callback:
+            log_callback(
+                f"Глобальный визуальный план взят из кэша: "
+                f"{len(global_visual_plan)} сцен."
+            )
+    else:
+        global_visual_plan = create_global_visual_plan(
+            base_url,
+            model,
+            scenes,
+            ttl_seconds=ttl_seconds,
+            video_style=video_style,
+            style_anchor=style_anchor,
+            character_description=character_description,
+            log_callback=log_callback,
+        )
     visual_plan_by_scene = {
         item.scene_index: item for item in global_visual_plan
     }
     if on_visual_plan:
         on_visual_plan([item.as_dict() for item in global_visual_plan])
+    if on_progress:
+        on_progress("global_plan", 0.10)
 
     def _request(prompt: str) -> list[dict]:
         return request_lm_shots(
@@ -1887,7 +2044,87 @@ def call_lm_studio_for_shots(
             for scene in scenes
         )
         first_scene_index = scenes[0].index if scenes else None
+        style_line = (
+            f"ОБЯЗАТЕЛЬНЫЙ ВИЗУАЛЬНЫЙ СТИЛЬ: {selected_style.name}. "
+            "Каждый image_prompt и video_prompt должен подчиняться этому стилю. "
+            "Никаких LoRA и trigger-фраз, только текстовый prompt.\n"
+        )
+        character_line = (
+            f"Персонаж: {character_description}\n"
+            if character_description
+            else ""
+        )
+        # Keep the large immutable film context at the beginning of every
+        # scene request. LM Studio can then reuse its prompt-prefix checkpoints
+        # instead of evaluating the same all-film map after a scene-specific
+        # prefix 53 times.
+        shared_film_prefix = (
+            "Ты visual director для YouTube-ролика.\n"
+            f"{style_line}{character_line}"
+            f"{instructions}"
+            "\nГЛОБАЛЬНАЯ КАРТА РОЛИКА. Каждая сцена — часть одного "
+            "последовательного фильма; учитывай предыдущие и будущие темы:\n"
+            f"{global_scene_map}\n\n"
+        )
+
+        def remember_scene(scene_shots: list[Shot]) -> None:
+            nonlocal recent_tail
+            scene_motifs = _matching_motifs(scene_shots)
+            for label, matching in scene_motifs.items():
+                if matching:
+                    motif_scene_counts[label] += 1
+            recent_tail = [
+                (shot.description or shot.image_prompt)[:110].strip()
+                for shot in scene_shots[-2:]
+                if shot.description or shot.image_prompt
+            ]
+            for shot in scene_shots:
+                first_sentence = (shot.image_prompt or "").split(".")[0].strip()[:120]
+                if first_sentence and "continuation shot" not in first_sentence.lower():
+                    key = first_sentence.lower()
+                    if all(key != location.lower() for location in location_bank):
+                        location_bank.append(first_sentence)
+                concept = " — ".join(
+                    value.strip()
+                    for value in (shot.description, shot.asset_query)
+                    if value and value.strip()
+                )[:160]
+                concept_key = concept.lower()
+                if concept and all(
+                    concept_key != existing.lower()
+                    for existing in concept_bank
+                ):
+                    concept_bank.append(concept)
+
+        resumed_scene_ids: set[int] = set()
+        if resume_shots:
+            by_scene: dict[int, list[Shot]] = {}
+            for shot in resume_shots:
+                by_scene.setdefault(int(shot.scene_index), []).append(shot)
+            for scene in scenes:
+                saved = by_scene.get(scene.index, [])
+                if not saved:
+                    break
+                for shot in saved:
+                    shot.index = len(all_shots) + 1
+                    all_shots.append(shot)
+                remember_scene(saved)
+                resumed_scene_ids.add(scene.index)
+            if resumed_scene_ids and log_callback:
+                log_callback(
+                    "Возобновление: из контрольной точки восстановлено "
+                    f"{len(resumed_scene_ids)} последовательных сцен и "
+                    f"{len(all_shots)} кадров."
+                )
+
         for scene_position, scene in enumerate(scenes, start=1):
+            if scene.index in resumed_scene_ids:
+                if on_progress:
+                    on_progress(
+                        "scenes",
+                        0.10 + 0.85 * scene_position / max(1, len(scenes)),
+                    )
+                continue
             scene_start = timecode_to_seconds(scene.start)
             scene_end = timecode_to_seconds(scene.end)
             scene_segments = [
@@ -1897,19 +2134,14 @@ def call_lm_studio_for_shots(
             ]
             if not scene_segments:
                 continue
+            if log_callback:
+                log_callback(
+                    f"Раскадровка: сцена {scene_position} из {len(scenes)} "
+                    f"«{scene.title}»..."
+                )
             segment_lines = "\n".join(
                 f'  [{index}] {segment.start} - {segment.end} | "{segment.text}"'
                 for index, segment in enumerate(scene_segments, start=1)
-            )
-            style_line = (
-                f"ОБЯЗАТЕЛЬНЫЙ ВИЗУАЛЬНЫЙ СТИЛЬ: {selected_style.name}. "
-                "Каждый image_prompt и video_prompt должен подчиняться этому стилю. "
-                "Никаких LoRA и trigger-фраз, только текстовый prompt.\n"
-            )
-            character_line = (
-                f"Персонаж: {character_description}\n"
-                if character_description
-                else ""
             )
             memory_block = ""
             if recent_tail:
@@ -1985,7 +2217,7 @@ def call_lm_studio_for_shots(
                 scene.screen_text,
             )
             prompt = (
-                "Ты visual director для YouTube-ролика.\n"
+                f"{shared_film_prefix}"
                 f'Сцена {scene.index}: "{scene.title}"\n'
                 f"Направление: {scene.visual_direction}\n"
                 f"Разрешённая числовая надпись: {numeric_screen_text or '[нет]'}\n"
@@ -1994,10 +2226,6 @@ def call_lm_studio_for_shots(
                 "Кадры обязаны реализовать эту стратегию; не заменяй её привычными "
                 "серверами, мониторами, графиками или трейдерами.\n"
                 f"{motif_budget_block}"
-                "ГЛОБАЛЬНАЯ КАРТА РОЛИКА. Текущая сцена — часть одного "
-                "последовательного фильма; учитывай предыдущие и будущие темы:\n"
-                f"{global_scene_map}\n\n"
-                f"{style_line}{character_line}\n"
                 f"{memory_block}{hook_block}"
                 f"Сегменты этой сцены ({len(scene_segments)} шт.):\n{segment_lines}\n\n"
                 "ШАГ 1 — РАЗВЕРНИ текст в полную визуальную сцену:\n"
@@ -2015,14 +2243,10 @@ def call_lm_studio_for_shots(
                 f"- Эта сцена длится {scene_length}с — сделай примерно {recommended} кадр(а/ов), ±1. "
                 f"Не делай кадры длиннее {SHOT_MAX_SECONDS}с (LTX limit): лучше больше коротких, чем один длинный\n"
                 "- Порядок кадров: от общего к частному или по логике повествования\n\n"
-                f"{instructions}"
             )
 
             scene_shots: list[Shot] | None = None
-            weak_motion = False
-            creative_feedback = ""
-            creative_retry_used = False
-            for attempt in range(3):
+            for attempt in range(2):
                 try:
                     extra = ""
                     if attempt >= 1:
@@ -2030,54 +2254,35 @@ def call_lm_studio_for_shots(
                             "\n\nВЕРНИ СТРОГО валидный JSON-массив и НИЧЕГО больше: "
                             "без markdown, без текста до или после массива, все строки в кавычках."
                         )
-                        if weak_motion:
-                            extra += (
-                                "\n\nВАЖНО про video_prompt: в КАЖДОМ кадре опиши конкретное "
-                                "движение, подходящее именно этому кадру — одно маленькое действие "
-                                "субъекта, если в кадре есть кто/что действует, иначе движение среды "
-                                "(свет, ткань, вода, частицы) плюс лёгкое движение камеры. Не оставляй "
-                                "поле пустым и не пиши общими фразами."
-                            )
-                        if creative_feedback:
-                            extra += (
-                                "\n\nПРЕДЫДУЩАЯ РАСКАДРОВКА ОТКЛОНЕНА. "
-                                "Полностью исправь нарушения, сохранив тайминг и "
-                                "глобальную стратегию сцены:\n- "
-                                + "\n- ".join(creative_feedback.splitlines())
-                            )
                     parsed = parse_shots(_request(prompt + extra), offset=len(all_shots))
                     if parsed:
-                        if attempt == 0 and motions_mostly_weak(parsed):
-                            scene_shots = parsed
-                            weak_motion = True
-                            continue
                         creative_violations = audit_scene_shots_against_visual_plan(
                             parsed,
                             strategy,
                             forbidden_motifs=forbidden_motifs,
                         )
                         if creative_violations:
-                            creative_feedback = "\n".join(creative_violations)
-                            can_retry = not creative_retry_used and attempt < 2
-                            if can_retry and log_callback:
-                                log_callback(
-                                    f"Сцена {scene.index}: раскадровка отклонена — "
-                                    + "; ".join(creative_violations)
-                                )
-                            if can_retry:
-                                creative_retry_used = True
-                                continue
                             if log_callback:
                                 log_callback(
-                                    f"Сцена {scene.index}: после повторной попытки "
-                                    "остались творческие замечания; принимаю лучший "
-                                    "вариант и продолжу, чтобы не потерять весь результат — "
+                                    f"Сцена {scene.index}: творческие замечания приняты "
+                                    "без дорогой полной перегенерации — "
                                     + "; ".join(creative_violations)
                                 )
                         scene_shots = parsed
                         break
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if isinstance(exc, lm.StructuredOutputError):
+                        # chat_structured already performed its one schema
+                        # repair request. Do not turn that into two more full
+                        # scene generations at this layer.
+                        break
+                    if not isinstance(exc, ValueError):
+                        raise
+                    if attempt == 0 and log_callback:
+                        log_callback(
+                            f"Сцена {scene.index}: ответ технически не разобран; "
+                            "одна повторная попытка."
+                        )
 
             if not scene_shots:
                 if log_callback:
@@ -2104,35 +2309,19 @@ def call_lm_studio_for_shots(
             for index, shot in enumerate(split_shots):
                 shot.index = len(all_shots) + index + 1
             all_shots.extend(split_shots)
-            scene_motifs = _matching_motifs(split_shots)
-            for label, matching in scene_motifs.items():
-                if matching:
-                    motif_scene_counts[label] += 1
-
-            recent_tail = [
-                (shot.description or shot.image_prompt)[:110].strip()
-                for shot in split_shots[-2:]
-                if shot.description or shot.image_prompt
-            ]
-            for shot in split_shots:
-                first_sentence = (shot.image_prompt or "").split(".")[0].strip()[:120]
-                if first_sentence and "continuation shot" not in first_sentence.lower():
-                    key = first_sentence.lower()
-                    if all(key != location.lower() for location in location_bank):
-                        location_bank.append(first_sentence)
-                concept = " — ".join(
-                    value.strip()
-                    for value in (shot.description, shot.asset_query)
-                    if value and value.strip()
-                )[:160]
-                concept_key = concept.lower()
-                if concept and all(
-                    concept_key != existing.lower()
-                    for existing in concept_bank
-                ):
-                    concept_bank.append(concept)
+            remember_scene(split_shots)
             if on_scene_shots:
                 on_scene_shots(split_shots)
+            if log_callback:
+                log_callback(
+                    f"Раскадровка: сцена {scene_position} из {len(scenes)} "
+                    f"готова, кадров {len(split_shots)}."
+                )
+            if on_progress:
+                on_progress(
+                    "scenes",
+                    0.10 + 0.85 * scene_position / max(1, len(scenes)),
+                )
         shots = all_shots
     else:
         compact_scenes = [
@@ -2161,6 +2350,8 @@ def call_lm_studio_for_shots(
         )
         shots = parse_shots(_request(prompt))
 
+    if on_progress:
+        on_progress("finalize", 0.96)
     shots = finalize_shot_timeline(shots, scenes, segments)
     shots = collapse_redundant_shot_runs(
         shots,
@@ -2222,6 +2413,8 @@ def call_lm_studio_for_shots(
             shot.video_prompt or shot.motion or make_ltx_prompt(shot.image_prompt),
             shot_description=shot.description,
         )
+    if on_progress:
+        on_progress("finalize", 0.99)
     return shots
 
 

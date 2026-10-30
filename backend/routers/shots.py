@@ -85,8 +85,104 @@ async def generate_shots(project_id: str):
                     settings_dict = current_project.effective_settings()
                     total_scenes = len(scenes_data)
                     try:
-                        accumulated_shots = []
-                        scenes_done = {"n": 0}
+                        stage_settings = {
+                            key: settings_dict.get(key)
+                            for key in (
+                                "lm_model", "lm_context", "video_style", "style_anchor",
+                                "character_description", "shot_mode", "route_priority",
+                                "stock_mode", "stock_cut_seconds", "stock_variable_rhythm",
+                                "image_model_preference", "reference_enable",
+                                "reference_density",
+                            )
+                        }
+                        stage_input_hash = current_project.content_hash({
+                            "scenes": scenes_data,
+                            "settings": stage_settings,
+                        })
+                        partial_path = current_project.dir / "04_shot_list.partial.json"
+                        checkpoint_path = (
+                            current_project.dir / ".shot_generation_checkpoint.json"
+                        )
+                        resume_shots: list[dict[str, Any]] = []
+                        try:
+                            checkpoint = current_project.read_json(
+                                ".shot_generation_checkpoint.json"
+                            )
+                            partial = current_project.read_json(
+                                "04_shot_list.partial.json"
+                            )
+                            if (
+                                isinstance(checkpoint, dict)
+                                and checkpoint.get("input_hash") == stage_input_hash
+                                and isinstance(partial, list)
+                            ):
+                                resume_shots = [
+                                    item for item in partial if isinstance(item, dict)
+                                ]
+                        except (OSError, ValueError, TypeError):
+                            resume_shots = []
+
+                        resumed_scene_ids: list[int] = []
+                        for scene in scenes_data:
+                            scene_index = int(scene.get("index", 0) or 0)
+                            if any(
+                                int(item.get("scene_index", 0) or 0) == scene_index
+                                for item in resume_shots
+                            ):
+                                resumed_scene_ids.append(scene_index)
+                            else:
+                                break
+                        resume_set = set(resumed_scene_ids)
+                        resume_shots = [
+                            item
+                            for item in resume_shots
+                            if int(item.get("scene_index", 0) or 0) in resume_set
+                        ]
+                        accumulated_shots = list(resume_shots)
+                        scenes_done = {"n": len(resumed_scene_ids)}
+                        job_log = jobs.checking_logger(
+                            runlog.tee(
+                                current_project.dir,
+                                "Генерация шот-листа",
+                                log_handler,
+                            ),
+                            cancel_event,
+                        )
+                        if resume_shots:
+                            job_log(
+                                f"Возобновление с контрольной точки: "
+                                f"готово сцен {len(resumed_scene_ids)} из "
+                                f"{total_scenes}, кадров {len(resume_shots)}."
+                            )
+                            loop.call_soon_threadsafe(
+                                sse.emit_to,
+                                sub_id,
+                                "scene_shots",
+                                {"shots": resume_shots, "resumed": True},
+                            )
+
+                        def _on_progress(step: str, progress: float) -> None:
+                            labels = {
+                                "global_plan": "Глобальный план фильма",
+                                "scenes": (
+                                    f"Сцена {scenes_done['n']} из {total_scenes}"
+                                ),
+                                "finalize": "Финальная сборка шот-листа",
+                            }
+                            jobs.update_progress(
+                                cancel_event,
+                                max(0.0, min(1.0, float(progress))),
+                                labels.get(step, step),
+                            )
+                            loop.call_soon_threadsafe(
+                                sse.emit_to,
+                                sub_id,
+                                "progress",
+                                {
+                                    "step": step,
+                                    "progress": max(0.0, min(1.0, float(progress))),
+                                },
+                            )
 
                         def _on_scene_shots(raw_shots):
                             # Per-scene hook doubles as a cancellation checkpoint:
@@ -98,11 +194,14 @@ async def generate_shots(project_id: str):
                                 [s.__dict__ for s in accumulated_shots],
                             )
                             scenes_done["n"] += 1
-                            progress = min(1.0, scenes_done["n"] / total_scenes)
-                            jobs.update_progress(
-                                cancel_event,
-                                progress,
-                                f"Сцена {scenes_done['n']} из {total_scenes}",
+                            current_project.write_json(
+                                ".shot_generation_checkpoint.json",
+                                {
+                                    "schema_version": 1,
+                                    "input_hash": stage_input_hash,
+                                    "scenes_completed": scenes_done["n"],
+                                    "shots_completed": len(accumulated_shots),
+                                },
                             )
                             loop.call_soon_threadsafe(
                                 sse.emit_to,
@@ -113,26 +212,15 @@ async def generate_shots(project_id: str):
                                     for shot in raw_shots
                                 ]},
                             )
-                            loop.call_soon_threadsafe(
-                                sse.emit_to,
-                                sub_id,
-                                "progress",
-                                {"step": "shots", "progress": progress},
-                            )
 
                         shots, cards = run_shot_generation(
                             current_project.dir,
                             scenes_data,
                             settings_dict,
-                            jobs.checking_logger(
-                                runlog.tee(
-                                    current_project.dir,
-                                    "Генерация шот-листа",
-                                    log_handler,
-                                ),
-                                cancel_event,
-                            ),
+                            job_log,
                             on_scene_shots=_on_scene_shots,
+                            resume_shots=resume_shots,
+                            on_progress=_on_progress,
                         )
                         jobs.check(cancel_event)
                         current_project.write_json("shot_list", shots)
@@ -143,26 +231,15 @@ async def generate_shots(project_id: str):
                         current_project.mark_stage_completed(
                             "shots",
                             shots,
-                            input_hash=current_project.content_hash({
-                                "scenes": scenes_data,
-                                "settings": {
-                                    key: settings_dict.get(key)
-                                    for key in (
-                                        "lm_model", "lm_context", "video_style", "style_anchor",
-                                        "character_description", "shot_mode", "route_priority",
-                                        "stock_mode", "stock_cut_seconds", "image_model_preference",
-                                    )
-                                },
-                            }),
+                            input_hash=stage_input_hash,
                         )
                         current_project.mark_stage_completed(
                             "assets",
                             cards,
                             input_hash=current_project.content_hash(shots),
                         )
-                        (current_project.dir / "04_shot_list.partial.json").unlink(
-                            missing_ok=True
-                        )
+                        partial_path.unlink(missing_ok=True)
+                        checkpoint_path.unlink(missing_ok=True)
                     except jobs.JobCancelled:
                         raise
                     except Exception as exc:

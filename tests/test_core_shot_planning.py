@@ -73,6 +73,30 @@ def _raw_shot(**overrides) -> dict:
     return values
 
 
+def _structured_shot(**overrides) -> planning.ShotProposal:
+    values = _raw_shot()
+    values.update({
+        "sfx_accent_query": "",
+        "purpose": "Establish the physical setting",
+        "continuity_mode": "same_location",
+        "continuity_group_id": "scene-1-location",
+        "location_id": "server-room",
+        "subject_ids": ["server-racks"],
+        "state_before": "The room is operating normally",
+        "action": "Status lights pulse across the racks",
+        "state_after": "The active aisle is established",
+        "shot_size": "wide",
+        "camera_angle": "eye_level",
+        "screen_direction": "left_to_right",
+        "reference_frame_id": "server-room-anchor",
+        "transition_in": "cut",
+        "transition_out": "match cut",
+        "change_from_previous": "Establishes the location",
+    })
+    values.update(overrides)
+    return planning.ShotProposal(**values)
+
+
 def _global_plan(scenes: list[Scene]) -> list[planning.GlobalVisualPlanItem]:
     families = planning.GLOBAL_VISUAL_FAMILIES
     return [
@@ -151,11 +175,20 @@ def test_reference_density_is_explicit_with_compatible_normal_default():
 def test_lm_request_uses_canonical_client_and_preserves_transport_contract(monkeypatch):
     captured = {}
 
-    def fake_chat(settings, messages, **kwargs):
-        captured.update(settings=settings, messages=messages, kwargs=kwargs)
-        return '```json\n[{"scene_index": 1}]\n```'
+    def fake_chat(settings, messages, response_model, **kwargs):
+        captured.update(
+            settings=settings,
+            messages=messages,
+            response_model=response_model,
+            kwargs=kwargs,
+        )
+        return planning.lm.StructuredReply(
+            value=[_structured_shot()],
+            attempts=1,
+            transport="openai",
+        )
 
-    monkeypatch.setattr(planning.lm, "chat", fake_chat)
+    monkeypatch.setattr(planning.lm, "chat_structured", fake_chat)
 
     result = planning.request_lm_shots(
         "http://lm.test/v1/",
@@ -164,14 +197,20 @@ def test_lm_request_uses_canonical_client_and_preserves_transport_contract(monke
         ttl_seconds=37,
     )
 
-    assert result == [{"scene_index": 1}]
+    assert result[0]["scene_index"] == 1
+    assert result[0]["subject_ids"] == ["server-racks"]
     assert captured["settings"].lm_url == "http://lm.test/v1"
     assert captured["settings"].lm_model == "local-model.gguf"
     assert captured["messages"][1] == {"role": "user", "content": "plan this"}
+    assert captured["response_model"] is planning._SHOT_RESPONSE
     assert captured["kwargs"] == {
+        "model": "local-model.gguf",
+        "transport": "openai",
         "temperature": 0.25,
+        "max_tokens": 8_192,
         "timeout": 300,
         "ttl": 37,
+        "schema_name": "scene_shot_list",
     }
 
 
@@ -181,15 +220,79 @@ def test_truncated_lm_array_recovers_last_complete_object():
     assert planning.parse_lm_json_array(response) == [{"scene_index": 1}]
 
 
-def test_segment_planning_retries_weak_motion_then_applies_postprocessing(monkeypatch):
+def test_global_visual_request_uses_strict_schema(monkeypatch):
+    captured = {}
+    proposal = planning.GlobalVisualPlanProposal(
+        **_global_plan([_scene()])[0].as_dict()
+    )
+
+    def fake_chat(settings, messages, response_model, **kwargs):
+        captured.update(
+            settings=settings,
+            messages=messages,
+            response_model=response_model,
+            kwargs=kwargs,
+        )
+        return planning.lm.StructuredReply(
+            value=[proposal],
+            attempts=1,
+            transport="openai",
+        )
+
+    monkeypatch.setattr(planning.lm, "chat_structured", fake_chat)
+
+    result = json.loads(
+        planning.request_global_visual_plan(
+            "http://lm.test/v1/",
+            "model.gguf",
+            "direct the film",
+            ttl_seconds=41,
+        )
+    )
+
+    assert result[0]["scene_index"] == 1
+    assert captured["response_model"] is planning._GLOBAL_VISUAL_PLAN_RESPONSE
+    assert captured["kwargs"] == {
+        "model": "model.gguf",
+        "transport": "openai",
+        "temperature": 0.2,
+        "max_tokens": 16_000,
+        "timeout": 300,
+        "ttl": 41,
+        "schema_name": "global_visual_plan",
+    }
+
+
+def test_global_visual_schema_exhaustion_is_not_replayed_by_outer_loop(
+    monkeypatch,
+):
+    calls = 0
+
+    def fail_schema(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise planning.lm.StructuredOutputError("schema repair exhausted")
+
+    monkeypatch.setattr(planning, "request_global_visual_plan", fail_schema)
+
+    with pytest.raises(planning.lm.StructuredOutputError):
+        planning.create_global_visual_plan(
+            "http://lm.test/v1",
+            "model",
+            [_scene()],
+        )
+
+    assert calls == 1
+
+
+def test_segment_planning_repairs_weak_motion_without_regenerating_scene(monkeypatch):
     _stub_global_plan(monkeypatch)
     requests: list[str] = []
     weak = _raw_shot(video_prompt="", motion="")
-    strong = _raw_shot()
 
     def fake_request(_base_url, _model, prompt, ttl_seconds=None):
         requests.append(prompt)
-        return [weak] if len(requests) == 1 else [strong]
+        return [weak]
 
     callback_snapshot: list[list[tuple[str, str]]] = []
     monkeypatch.setattr(planning, "request_lm_shots", fake_request)
@@ -209,8 +312,7 @@ def test_segment_planning_retries_weak_motion_then_applies_postprocessing(monkey
         reference_density="off",
     )
 
-    assert len(requests) == 2
-    assert "ВАЖНО про video_prompt" in requests[1]
+    assert len(requests) == 1
     assert callback_snapshot == [[("00:00:01", "00:00:09")]]
     assert len(shots) == 1
     assert (shots[0].start, shots[0].end) == ("00:00:00", "00:00:10")
@@ -246,14 +348,138 @@ def test_bad_scene_response_falls_back_without_double_composing_style(monkeypatc
         video_style="documentary",
     )
 
-    assert calls == 3
+    assert calls == 2
     assert len(shots) == 2
-    assert logs and "запасную раскадровку" in logs[0]
+    assert any("запасную раскадровку" in message for message in logs)
     assert all(shot.image_prompt.count("Rendered ") == 1 for shot in shots)
     assert [(shot.start, shot.end) for shot in shots] == [
         ("00:00:00", "00:00:04"),
         ("00:00:04", "00:00:08"),
     ]
+
+
+def test_exhausted_scene_schema_repair_falls_back_without_outer_replay(
+    monkeypatch,
+):
+    _stub_global_plan(monkeypatch)
+    calls = 0
+
+    def fail_schema(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise planning.lm.StructuredOutputError("schema repair exhausted")
+
+    monkeypatch.setattr(planning, "request_lm_shots", fail_schema)
+
+    shots = planning.call_lm_studio_for_shots(
+        "http://lm.test/v1",
+        "model",
+        [_scene(end="00:00:08")],
+        segments=[
+            TranscriptSegment("00:00:00", "00:00:04", "Data moves."),
+            TranscriptSegment("00:00:04", "00:00:08", "Racks respond."),
+        ],
+        video_style="documentary",
+    )
+
+    assert calls == 1
+    assert shots
+
+
+def test_scene_checkpoint_resumes_contiguous_prefix_without_repeating_lm_work(
+    monkeypatch,
+):
+    scenes = [
+        _scene(end="00:00:10"),
+        replace(
+            _scene(start="00:00:10", end="00:00:20"),
+            index=2,
+            title="Turbine room",
+            voice_text="The turbine drives the ship.",
+            visual_direction="A turbine rotates below deck",
+        ),
+    ]
+    _stub_global_plan(monkeypatch)
+    requests: list[str] = []
+    callbacks: list[list[int]] = []
+
+    def fake_request(_base_url, _model, prompt, ttl_seconds=None):
+        requests.append(prompt)
+        return [
+            _raw_shot(
+                scene_index=2,
+                start="00:00:11",
+                end="00:00:19",
+                description="A turbine rotates below deck",
+                asset_query="ship turbine room",
+                image_prompt="A turbine rotates in a steel compartment.",
+                video_prompt="The turbine spins while the camera tracks alongside.",
+            )
+        ]
+
+    monkeypatch.setattr(planning, "request_lm_shots", fake_request)
+    resumed = _shot(
+        scene_index=1,
+        start="00:00:00",
+        end="00:00:10",
+        description="A ship crosses the open sea",
+        asset_query="ship at sea",
+        image_prompt="A ship crosses the open sea.",
+    )
+
+    shots = planning.call_lm_studio_for_shots(
+        "http://lm.test/v1",
+        "model",
+        scenes,
+        segments=[
+            TranscriptSegment("00:00:00", "00:00:10", "The ship remains afloat."),
+            TranscriptSegment("00:00:10", "00:00:20", "The turbine drives the ship."),
+        ],
+        resume_shots=[resumed],
+        on_scene_shots=lambda items: callbacks.append(
+            [shot.scene_index for shot in items]
+        ),
+        reference_density="off",
+    )
+
+    assert len(requests) == 1
+    assert callbacks == [[2]]
+    assert {shot.scene_index for shot in shots} == {1, 2}
+
+
+def test_global_visual_creative_findings_do_not_regenerate_complete_plan(
+    monkeypatch,
+):
+    scene = _scene()
+    raw = json.dumps(
+        [item.as_dict() for item in _global_plan([scene])],
+        ensure_ascii=False,
+    )
+    calls = 0
+    logs: list[str] = []
+
+    def fake_request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return raw
+
+    monkeypatch.setattr(planning, "request_global_visual_plan", fake_request)
+    monkeypatch.setattr(
+        planning,
+        "audit_global_visual_plan",
+        lambda _plan: ["advisory repetition"],
+    )
+
+    plan = planning.create_global_visual_plan(
+        "http://lm.test/v1",
+        "model",
+        [scene],
+        log_callback=logs.append,
+    )
+
+    assert len(plan) == 1
+    assert calls == 1
+    assert any("Повторная полная генерация не требуется" in message for message in logs)
 
 
 def test_long_shot_splits_on_transcript_boundaries_and_keeps_overlay_on_part_a():
@@ -450,6 +676,48 @@ def test_global_visual_plan_audit_rejects_unstable_context_ids():
 
     assert any("разные location_id" in item for item in violations)
     assert any("разные subject_ids" in item for item in violations)
+
+
+def test_global_visual_plan_audit_allows_one_composite_subject():
+    plan = _global_plan([_scene()])
+    plan[0] = replace(
+        plan[0],
+        primary_subject="Автомобиль и герметичный ящик",
+        subject_ids="subject-car, subject-sealed-box",
+    )
+
+    violations = planning.audit_global_visual_plan(plan)
+
+    assert not any("разные subject_ids" in item for item in violations)
+
+
+def test_global_visual_context_stabilizer_reuses_exact_recurring_ids():
+    first = _scene()
+    second = Scene(**{**vars(first), "index": 2, "title": "Second scene"})
+    plan = _global_plan([first, second])
+    plan[0] = replace(
+        plan[0],
+        location="Один кабинет",
+        location_id="location-office-a",
+        primary_subject="Алекс",
+        subject_ids="subject-alex",
+    )
+    plan[1] = replace(
+        plan[1],
+        location="Один кабинет",
+        location_id="location-office-b",
+        primary_subject="Алекс",
+        subject_ids="subject-other",
+    )
+
+    repaired = planning.stabilize_global_visual_context(plan)
+
+    assert repaired[1].location_id == "location-office-a"
+    assert repaired[1].subject_ids == "subject-alex"
+    assert not any(
+        "разные location_id" in item or "разные subject_ids" in item
+        for item in planning.audit_global_visual_plan(repaired)
+    )
 
 
 def test_global_visual_plan_audit_rejects_monotonous_video_language():
@@ -659,11 +927,16 @@ def test_numeric_screen_text_gate_keeps_one_supported_fact_per_scene():
     ]
 
 
-@pytest.mark.parametrize("bad", ["{}", "not json", "[1, 2]"])
-def test_request_rejects_non_shot_arrays(monkeypatch, bad):
-    monkeypatch.setattr(planning.lm, "chat", lambda *_args, **_kwargs: bad)
+def test_request_propagates_exhausted_schema_repair(monkeypatch):
+    monkeypatch.setattr(
+        planning.lm,
+        "chat_structured",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            planning.lm.StructuredOutputError("invalid schema output")
+        ),
+    )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(planning.lm.StructuredOutputError):
         planning.request_lm_shots("http://lm.test/v1", "model", "prompt")
 
 

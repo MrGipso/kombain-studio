@@ -21,7 +21,14 @@ def test_shot_worker_reads_scenes_after_acquiring_project_lock(
 
     captured: dict[str, object] = {}
 
-    def fake_generate(project_dir, scenes, effective, log, on_scene_shots=None):
+    def fake_generate(
+        project_dir,
+        scenes,
+        effective,
+        log,
+        on_scene_shots=None,
+        **_kwargs,
+    ):
         captured["project_dir"] = project_dir
         captured["scenes"] = scenes
         captured["settings"] = effective
