@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Link, useOutletContext } from 'react-router-dom'
 import * as api from '../api/client'
 import type { AssetCard, JobRecord, ProjectInfo, RunLogRecord } from '../api/types'
+import { usePolling } from '../hooks/usePolling'
 import { useSSE } from '../hooks/useSSE'
 import { useToast } from '../components/toast-context'
 import { hasMedia, isExcluded, isIncluded } from '../lib/cards'
@@ -265,15 +266,19 @@ export default function Dashboard() {
     refresh()
   }, [refresh])
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      // Keep the durable job history independent from diagnostic log reads:
-      // a damaged/locked JSONL file must not stop the existing job refresh.
-      api.getProjectJobs(projectId, 8).then((state) => setJobItems(state.items)).catch(() => {})
-      api.getProjectRunLogs(projectId, 40).then((state) => setRunLogItems(state.items)).catch(() => {})
-    }, 2500)
-    return () => window.clearInterval(timer)
+  const refreshHistory = useCallback(async (isCurrent: () => boolean) => {
+    // Keep the durable job history independent from diagnostic log reads:
+    // a damaged/locked JSONL file must not stop the existing job refresh.
+    await Promise.allSettled([
+      api.getProjectJobs(projectId, 8).then((state) => {
+        if (isCurrent()) setJobItems(state.items)
+      }),
+      api.getProjectRunLogs(projectId, 40).then((state) => {
+        if (isCurrent()) setRunLogItems(state.items)
+      }),
+    ])
   }, [projectId])
+  usePolling(refreshHistory, 2500)
 
   useEffect(() => {
     if (!logs.length || !logContainerRef.current) return

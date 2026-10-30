@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import Settings
+from core.files import replace_with_retry
 from core.locale import Locale, load_locale
 from core.models import slugify
 
@@ -175,7 +176,7 @@ def atomic_write_text(path: Path, text: str) -> None:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, str(path))
+        replace_with_retry(tmp, str(path))
     except Exception:
         try:
             os.unlink(tmp)

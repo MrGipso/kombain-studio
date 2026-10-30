@@ -25,34 +25,44 @@ export function isBoardRevisionConflict(error: unknown): boolean {
   return 'expected' in error.detail && 'current' in error.detail
 }
 
+async function responseError(res: Response): Promise<ApiError> {
+  const text = await res.text().catch(() => '')
+  let message = text || res.statusText || `HTTP ${res.status}`
+  let errorDetail: unknown
+  try {
+    const payload = JSON.parse(text) as { detail?: unknown; message?: unknown }
+    const detail = payload.detail ?? payload.message
+    errorDetail = detail
+    if (typeof detail === 'string') message = detail
+    else if (Array.isArray(detail)) {
+      message = detail.map((item) => {
+        if (item && typeof item === 'object' && 'msg' in item) return String(item.msg)
+        return String(item)
+      }).join('; ')
+    } else if (detail && typeof detail === 'object' && 'message' in detail) {
+      message = String(detail.message)
+    }
+  } catch {
+    // The response was plain text; keep it as-is.
+  }
+  return new ApiError(res.status, message, errorDetail)
+}
+
 async function r<T>(url: string, opts?: RequestInit, onResponse?: (response: Response) => void): Promise<T> {
   const res = await fetch(`${BASE}${url}`, {
     headers: { 'Content-Type': 'application/json', ...opts?.headers },
     ...opts,
   })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    let message = text || res.statusText || `HTTP ${res.status}`
-    let errorDetail: unknown
-    try {
-      const payload = JSON.parse(text) as { detail?: unknown; message?: unknown }
-      const detail = payload.detail ?? payload.message
-      errorDetail = detail
-      if (typeof detail === 'string') message = detail
-      else if (Array.isArray(detail)) {
-        message = detail.map((item) => {
-          if (item && typeof item === 'object' && 'msg' in item) return String(item.msg)
-          return String(item)
-        }).join('; ')
-      } else if (detail && typeof detail === 'object' && 'message' in detail) {
-        message = String(detail.message)
-      }
-    } catch {
-      // The response was plain text; keep it as-is.
-    }
-    throw new ApiError(res.status, message, errorDetail)
-  }
+  if (!res.ok) throw await responseError(res)
   onResponse?.(res)
+  return res.json()
+}
+
+// Multipart upload: the browser must set its own Content-Type boundary, so
+// this cannot go through r(), but errors are reported the same way.
+async function upload<T>(url: string, form: FormData): Promise<T> {
+  const res = await fetch(`${BASE}${url}`, { method: 'POST', body: form })
+  if (!res.ok) throw await responseError(res)
   return res.json()
 }
 
@@ -90,12 +100,7 @@ export const selectNarrationForTranscription = (projectId: string) =>
 export const uploadAudio = async (projectId: string, file: File): Promise<{ path: string; filename: string }> => {
   const form = new FormData()
   form.append('file', file)
-  const res = await fetch(`${BASE}/projects/${encodeURIComponent(projectId)}/upload-audio`, {
-    method: 'POST',
-    body: form,
-  })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  return upload(`/projects/${encodeURIComponent(projectId)}/upload-audio`, form)
 }
 
 // Scenes
@@ -339,9 +344,7 @@ export const importScriptFile = async (id: string, file: File, mode: 'ready' | '
   form.append('file', file)
   form.append('mode', mode)
   if (targetMinutes) form.append('target_minutes', String(targetMinutes))
-  const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/script/import-file`, { method: 'POST', body: form })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  return upload(`/projects/${encodeURIComponent(id)}/script/import-file`, form)
 }
 export const inspectYoutubeSubtitles = (id: string, url: string) =>
   r<YoutubeInspection>(`/projects/${encodeURIComponent(id)}/script/youtube/inspect`, {
@@ -370,9 +373,7 @@ export const getVoiceProfiles = (id: string) =>
 export const transcribeReferenceVoice = async (id: string, file: File): Promise<{ text: string; language: string; segments: { start: string; end: string; text: string }[] }> => {
   const form = new FormData()
   form.append('file', file)
-  const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/voices/reference/transcribe`, { method: 'POST', body: form })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  return upload(`/projects/${encodeURIComponent(id)}/voices/reference/transcribe`, form)
 }
 export const addReferenceVoice = async (id: string, file: File, data: { display_name: string; language: string; transcript: string }): Promise<VoiceProfile> => {
   const form = new FormData()
@@ -380,9 +381,7 @@ export const addReferenceVoice = async (id: string, file: File, data: { display_
   form.append('display_name', data.display_name)
   form.append('language', data.language)
   form.append('transcript', data.transcript)
-  const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/voices/reference`, { method: 'POST', body: form })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  return upload(`/projects/${encodeURIComponent(id)}/voices/reference`, form)
 }
 export interface VoiceRenderSettings {
   speed: number
@@ -418,9 +417,7 @@ export const uploadSfx = async (id: string, cardIndices: number[], file: File, t
   form.append('file', file)
   form.append('card_indices', cardIndices.join(','))
   form.append('target', target)
-  const res = await fetch(`${BASE}/projects/${encodeURIComponent(id)}/sfx/upload`, { method: 'POST', body: form })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  return upload(`/projects/${encodeURIComponent(id)}/sfx/upload`, form)
 }
 
 // SSE event endpoints

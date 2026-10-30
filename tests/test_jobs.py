@@ -261,6 +261,44 @@ def test_background_project_job_is_durable_before_return_and_finishes(jobs):
     assert record["status"] == "succeeded"
 
 
+def test_background_job_abandoned_after_start_timeout_never_runs(jobs, monkeypatch):
+    release = threading.Event()
+    ran = threading.Event()
+    created: list[str] = []
+    original_start_record = jobs._start_record
+
+    def slow_start_record(*args, **kwargs):
+        # Stands in for a durable insert stuck behind SQLite's busy timeout.
+        release.wait(timeout=5)
+        job_id = original_start_record(*args, **kwargs)
+        created.append(job_id)
+        return job_id
+
+    monkeypatch.setattr(jobs, "_start_record", slow_start_record)
+
+    with pytest.raises(RuntimeError, match="не смогла запуститься вовремя"):
+        jobs.start_background_project_job(
+            "project-a",
+            "Unattended materials",
+            lambda _cancel_event: ran.set(),
+            start_timeout=0.2,
+        )
+
+    release.set()
+    deadline = time.monotonic() + 2
+    record = None
+    while time.monotonic() < deadline:
+        record = jobs.job_record(created[0]) if created else None
+        if record and record["status"] != "running" and not jobs.running_job("project-a"):
+            break
+        time.sleep(0.01)
+
+    assert record is not None
+    assert record["status"] == "cancelled"
+    assert not ran.is_set()
+    assert not jobs.running_job("project-a")
+
+
 def test_background_project_job_reports_fast_worker_failure_in_durable_record(jobs):
     def worker(_cancel_event):
         raise RuntimeError("provider failed immediately")

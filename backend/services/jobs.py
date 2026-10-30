@@ -604,6 +604,12 @@ def start_background_project_job(
 
     started = threading.Event()
     outcome: dict[str, Any] = {}
+    # The caller and the thread agree under this lock on exactly one outcome:
+    # either the job started in time, or the caller gave up and the job must
+    # never run. Without it a slow guard (e.g. SQLite busy) could report a
+    # start failure to the user while the work silently began afterwards.
+    handoff = threading.Lock()
+    handoff_state = {"started": False, "abandoned": False}
 
     def run() -> None:
         guard = project_job(project_id, name, resource=resource)
@@ -612,6 +618,12 @@ def start_background_project_job(
             with guard as cancel_event:
                 job_id = guard.job_id
                 outcome["job_id"] = job_id
+                with handoff:
+                    if handoff_state["abandoned"]:
+                        raise JobCancelled(
+                            f"Задача «{name}» не запустилась вовремя и отменена"
+                        )
+                    handoff_state["started"] = True
                 with _meta:
                     _background_threads[job_id] = threading.current_thread()
                 started.set()
@@ -635,7 +647,10 @@ def start_background_project_job(
     )
     thread.start()
     if not started.wait(timeout=max(0.1, float(start_timeout))):
-        raise RuntimeError(f"Задача «{name}» не смогла запуститься вовремя")
+        with handoff:
+            if not handoff_state["started"] and "error" not in outcome:
+                handoff_state["abandoned"] = True
+                raise RuntimeError(f"Задача «{name}» не смогла запуститься вовремя")
     error = outcome.get("error")
     if error is not None:
         raise error

@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useCallback, useState, useEffect, useRef } from 'react'
 import { Outlet, NavLink, useParams, useNavigate } from 'react-router-dom'
 import * as api from '../api/client'
+import { usePolling } from '../hooks/usePolling'
 import type { PipelineStageState, ProjectInfo } from '../api/types'
 import ThemeToggle from '../components/ThemeToggle'
 
@@ -65,12 +66,11 @@ export default function ProjectLayout() {
 
   // Reconnect the shell to a server-side job after navigation or a full page
   // reload. Page-local SSE remains responsible for detailed live logs.
-  useEffect(() => {
+  const refreshJob = useCallback(async (isCurrent: () => boolean) => {
     if (!projectId) return
-    let active = true
-    const refreshJob = () => {
+    await Promise.allSettled([
       api.getProjectJobs(projectId, 1).then((state) => {
-        if (!active) return
+        if (!isCurrent()) return
         if (state.running) {
           serverBusyRef.current = true
           setBusy(state.running)
@@ -78,20 +78,15 @@ export default function ProjectLayout() {
           serverBusyRef.current = false
           setBusy(null)
         }
-      }).catch(() => {})
+      }),
       api.getProjectState(projectId).then((state) => {
-        if (!active) return
+        if (!isCurrent()) return
         setSteps(state.steps)
         setStageStates(state.stage_states || {})
-      }).catch(() => {})
-    }
-    refreshJob()
-    const timer = window.setInterval(refreshJob, 2500)
-    return () => {
-      active = false
-      window.clearInterval(timer)
-    }
+      }),
+    ])
   }, [projectId])
+  usePolling(refreshJob, 2500, { enabled: Boolean(projectId), immediate: true })
 
   if (!project) {
     return (

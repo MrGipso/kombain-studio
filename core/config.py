@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from core.files import replace_with_retry
+
 ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH_ENV = "PIPELINE_SETTINGS_PATH"
 
@@ -189,7 +191,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> None:
             stream.write(json.dumps(data, ensure_ascii=False, indent=2))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, p)
+        replace_with_retry(temporary, p)
     finally:
         temporary.unlink(missing_ok=True)
 

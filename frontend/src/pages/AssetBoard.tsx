@@ -3,6 +3,7 @@ import { type BlockerFunction, useBlocker, useOutletContext, useSearchParams } f
 import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
 import { FinalToggle } from '../components/FinalToggle'
+import { usePolling } from '../hooks/usePolling'
 import { excludeImpact, hasMedia, isExcluded, isIncluded, LONG_SLOT_WARNING_SECONDS, tcToSec } from '../lib/cards'
 import type { AssetCard, AssetVariant, AssetVariantHistory, ComfyWatchdogStatus, MaterialPreflight, MaterialRunState } from '../api/types'
 
@@ -524,70 +525,48 @@ export default function AssetBoard() {
     () => cards.some((c) => (c.status || '').toLowerCase() === 'generating'),
     [cards],
   )
-  useEffect(() => {
-    if (!anyGenerating || busy) return
-    const id = setInterval(() => {
-      void load()
-    }, 4000)
-    return () => clearInterval(id)
-  }, [anyGenerating, busy, load])
+  usePolling(load, 4000, { enabled: anyGenerating && !busy })
 
   // Unlike the legacy browser-owned batch loop, an unattended run lives on
   // the server. Navigation/reload is safe; this page merely reconnects to its
   // checkpoint and refreshes the board while work continues.
-  useEffect(() => {
-    let active = true
-    const refresh = async () => {
-      try {
-        const state = await api.getMaterialRun(projectId)
-        if (!active) return
-        setMaterialRun(state)
-        const previous = materialRunStatusRef.current
-        const hadLoaded = materialRunLoadedRef.current
-        materialRunLoadedRef.current = true
-        materialRunStatusRef.current = state.status
-        if (hadLoaded && state.status === 'succeeded' && previous !== 'succeeded') {
-          toast.success(`Все материалы готовы${state.summary?.fallbacks ? ` · резервных кадров: ${state.summary.fallbacks}` : ''}`)
-        } else if (hadLoaded && state.status === 'failed' && previous !== 'failed') {
-          toast.error(state.error || 'Автономная сборка материалов остановилась с ошибкой')
-        }
-        if (state.status === 'running' || state.status === 'queued') {
-          await load()
-        } else if (previous === 'running' || previous === 'queued') {
-          // Also covers very short jobs which finish before ProjectLayout sees
-          // the durable job record and would otherwise leave its busy banner on.
-          setBusy(null)
-          await load()
-        }
-      } catch {
-        // The durable project-job poll in ProjectLayout remains the fallback.
+  const refreshMaterialRun = useCallback(async (isCurrent: () => boolean) => {
+    try {
+      const state = await api.getMaterialRun(projectId)
+      if (!isCurrent()) return
+      setMaterialRun(state)
+      const previous = materialRunStatusRef.current
+      const hadLoaded = materialRunLoadedRef.current
+      materialRunLoadedRef.current = true
+      materialRunStatusRef.current = state.status
+      if (hadLoaded && state.status === 'succeeded' && previous !== 'succeeded') {
+        toast.success(`Все материалы готовы${state.summary?.fallbacks ? ` · резервных кадров: ${state.summary.fallbacks}` : ''}`)
+      } else if (hadLoaded && state.status === 'failed' && previous !== 'failed') {
+        toast.error(state.error || 'Автономная сборка материалов остановилась с ошибкой')
       }
-    }
-    void refresh()
-    const id = window.setInterval(refresh, 3000)
-    return () => {
-      active = false
-      window.clearInterval(id)
+      if (state.status === 'running' || state.status === 'queued') {
+        await load()
+      } else if (previous === 'running' || previous === 'queued') {
+        // Also covers very short jobs which finish before ProjectLayout sees
+        // the durable job record and would otherwise leave its busy banner on.
+        setBusy(null)
+        await load()
+      }
+    } catch {
+      // The durable project-job poll in ProjectLayout remains the fallback.
     }
   }, [load, projectId, setBusy, toast])
+  usePolling(refreshMaterialRun, 3000, { immediate: true })
 
-  useEffect(() => {
-    let active = true
-    const refresh = async () => {
-      try {
-        const state = await api.getComfyWatchdog()
-        if (active) setComfyWatchdog(state)
-      } catch {
-        if (active) setComfyWatchdog(null)
-      }
-    }
-    void refresh()
-    const id = window.setInterval(refresh, 5000)
-    return () => {
-      active = false
-      window.clearInterval(id)
+  const refreshWatchdog = useCallback(async (isCurrent: () => boolean) => {
+    try {
+      const state = await api.getComfyWatchdog()
+      if (isCurrent()) setComfyWatchdog(state)
+    } catch {
+      if (isCurrent()) setComfyWatchdog(null)
     }
   }, [])
+  usePolling(refreshWatchdog, 5000, { immediate: true })
 
   useEffect(() => {
     let active = true
