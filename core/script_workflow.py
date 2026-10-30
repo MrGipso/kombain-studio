@@ -275,6 +275,158 @@ def assess_script_quality(script: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def word_budgets(total_words: int, count: int) -> list[int]:
+    """Split a word target into ``count`` near-equal block budgets."""
+    base, remainder = divmod(max(count, total_words), count)
+    return [base + (1 if index < remainder else 0) for index in range(count)]
+
+
+def automatic_duration_window(source_duration_sec: int) -> tuple[int, int, int]:
+    """Keep the rewrite near the source, with a modest allowance for clearer narration."""
+    natural = max(60, int(source_duration_sec or 0))
+    buffer_sec = min(120, max(30, round(natural * 0.06)))
+    target = natural + buffer_sec
+    minimum = round(natural * 0.95)
+    maximum = natural + 120
+    return target, minimum, maximum
+
+
+def set_script_source(
+    script: dict[str, Any],
+    text: str,
+    *,
+    mode: str,
+    source: dict[str, Any],
+    target_minutes: int | None,
+    source_duration_sec: int | None = None,
+) -> dict[str, Any]:
+    """Replace the script source and reset everything derived from the old one."""
+    if mode not in {"ready", "rewrite"}:
+        raise ValueError("Неизвестный режим сценария")
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError("Исходный текст пуст")
+    target_sec = None
+    target_min_sec = None
+    target_max_sec = None
+    estimated_source_sec = estimate_duration_sec(cleaned, script.get("estimated_wpm", DEFAULT_WPM))
+    measured_source_sec = int(source_duration_sec or 0)
+    natural_source_sec = measured_source_sec if measured_source_sec >= 60 else estimated_source_sec
+    minutes = int(target_minutes or 0) if mode == "rewrite" else int(script.get("target_minutes") or 8)
+    duration_mode = "auto"
+    if mode == "rewrite":
+        if target_minutes is not None and (minutes < 1 or minutes > 180):
+            raise ValueError("Для рерайта укажите длительность от 1 до 180 минут")
+        if target_minutes is not None:
+            target_sec = minutes * 60
+            duration_mode = "manual"
+        else:
+            target_sec, target_min_sec, target_max_sec = automatic_duration_window(
+                natural_source_sec
+            )
+            minutes = max(1, round(target_sec / 60))
+    if duration_mode != "auto":
+        target_min_sec = round(target_sec * 0.95) if target_sec else None
+        target_max_sec = min(target_sec + 120, round(target_sec * 1.08)) if target_sec else None
+    previous_final_text = str(script.get("final_text") or "")
+    next_final_text = cleaned if mode == "ready" else ""
+    text_changed = next_final_text != previous_final_text
+    script.update({
+        "schema_version": 2,
+        "mode": mode,
+        "source": source,
+        "source_text": cleaned,
+        "cleaned_text": cleaned,
+        "final_text": next_final_text,
+        "target_duration_sec": target_sec,
+        "target_duration_min_sec": target_min_sec,
+        "target_duration_max_sec": target_max_sec,
+        "duration_mode": duration_mode,
+        "target_minutes": minutes,
+        "estimated_duration_sec": estimate_duration_sec(cleaned, script.get("estimated_wpm", DEFAULT_WPM)),
+        "source_estimated_duration_sec": natural_source_sec,
+        "voice_outdated": bool(script.get("actual_audio_duration_sec") is not None and text_changed),
+        "text_revision": int(script.get("text_revision", 0) or 0) + (1 if text_changed else 0),
+        "analysis": {"facts": [], "theses": [], "warnings": []},
+        "beats": split_into_beats(cleaned) if mode == "ready" else [],
+        "voice_plan": {"status": "empty", "chunks": []},
+        "quality": {
+            "status": "empty", "target_words": 0, "actual_words": 0, "word_ratio": 0.0,
+            "total_beats": 0, "completed_beats": 0, "coverage_ratio": 0.0,
+            "accepted_actual": False,
+        },
+        "agent": {
+            "status": "idle", "stage": "", "progress": 0, "iteration": 0,
+            "max_iterations": 1, "score": 0, "issues": [], "history": [],
+            "last_report_signature": "", "last_checked_revision": -1,
+        },
+        "revision": int(script.get("revision", 0) or 0) + 1,
+    })
+    script["quality"] = assess_script_quality(script)
+    return script
+
+
+def _apply_automatic_duration(script: dict[str, Any]) -> dict[str, Any]:
+    source_seconds = int(script.get("source_estimated_duration_sec") or 0)
+    if source_seconds <= 0:
+        source_seconds = estimate_duration_sec(
+            str(script.get("source_text") or ""),
+            int(script.get("estimated_wpm") or DEFAULT_WPM),
+        )
+    target, minimum, maximum = automatic_duration_window(source_seconds)
+    changed = (
+        script.get("duration_mode") != "auto"
+        or int(script.get("target_duration_sec") or 0) != target
+        or int(script.get("target_duration_min_sec") or 0) != minimum
+        or int(script.get("target_duration_max_sec") or 0) != maximum
+    )
+    script["target_duration_sec"] = target
+    script["target_duration_min_sec"] = minimum
+    script["target_duration_max_sec"] = maximum
+    script["duration_mode"] = "auto"
+    script["target_minutes"] = max(1, round(target / 60))
+    if changed:
+        wpm = int(script.get("estimated_wpm") or DEFAULT_WPM)
+        target_words = max(100, round(target / 60 * wpm * 0.90))
+        quality = script.get("quality") if isinstance(script.get("quality"), dict) else {}
+        script["quality"] = {
+            **quality,
+            "target_words": target_words,
+            "accepted_actual": False,
+        }
+        beats = script.get("beats") if isinstance(script.get("beats"), list) else []
+        if beats:
+            for beat, budget in zip(beats, word_budgets(target_words, len(beats))):
+                if isinstance(beat, dict):
+                    beat["target_words"] = budget
+        script["revision"] = int(script.get("revision", 0) or 0) + 1
+    script["quality"] = assess_script_quality(script)
+    return script
+
+
+def apply_requested_duration(script: dict[str, Any], target_minutes: int | None) -> dict[str, Any]:
+    """Apply the duration chosen when a rewrite is (re)generated.
+
+    ``None`` re-derives the automatic window from the source length; an
+    explicit value switches the script to a manual target.
+    """
+    if script.get("mode") != "rewrite":
+        return script
+    if target_minutes is None:
+        return _apply_automatic_duration(script)
+    minutes = int(target_minutes)
+    if minutes < 1 or minutes > 180:
+        raise ValueError("Для рерайта укажите длительность от 1 до 180 минут")
+    script["target_duration_sec"] = minutes * 60
+    script["target_duration_min_sec"] = round(minutes * 60 * 0.95)
+    script["target_duration_max_sec"] = min(minutes * 60 + 120, round(minutes * 60 * 1.08))
+    script["duration_mode"] = "manual"
+    script["target_minutes"] = minutes
+    quality = script.get("quality") if isinstance(script.get("quality"), dict) else {}
+    script["quality"] = {**quality, "accepted_actual": False}
+    return script
+
+
 def _voice_direction(sentence: str) -> tuple[str, float, float, int]:
     """Return emotion, intensity, speed multiplier and base ending pause."""
     lowered = sentence.casefold()

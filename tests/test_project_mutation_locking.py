@@ -18,6 +18,8 @@ from backend.routers import projects, scenes, script, transcription
 from backend.services import jobs
 from core.config import Settings
 from core.project import create_project
+from core.script_store import SCRIPT_TEXT_FILE, write_script
+from core.script_workflow import default_script
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +109,7 @@ def test_script_save_rejects_busy_project_without_artifact_or_manifest_change(
 ):
     config = Settings(output_base=str(tmp_path))
     project = create_project("Locked script", tmp_path, settings=config)
-    script._write_script(project.dir, {**script._default_script(), "topic": "Original"})
+    write_script(project.dir, {**default_script(), "topic": "Original"})
     project.mark_stage_completed("script", {"topic": "Original"})
     monkeypatch.setattr(script, "load_settings", lambda: config)
 
@@ -122,12 +124,12 @@ def test_script_export_rejects_busy_project_without_overwriting_text(
 ):
     config = Settings(output_base=str(tmp_path))
     project = create_project("Locked script export", tmp_path, settings=config)
-    script._write_script(project.dir, {
-        **script._default_script(),
+    write_script(project.dir, {
+        **default_script(),
         "hooks": ["Hook"],
         "beats": [{"text": "Generated narration"}],
     })
-    (project.dir / script.SCRIPT_TEXT_FILE).write_bytes(b"existing narration")
+    (project.dir / SCRIPT_TEXT_FILE).write_bytes(b"existing narration")
     monkeypatch.setattr(script, "load_settings", lambda: config)
 
     _assert_busy_without_changes(
