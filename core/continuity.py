@@ -100,6 +100,7 @@ def apply_storyboard_context(
         by_scene.setdefault(shot.scene_index, []).append(shot)
 
     previous_global: Shot | None = None
+    group_directions: dict[str, str] = {}
     for scene_index in sorted(by_scene):
         scene_shots = sorted(by_scene[scene_index], key=lambda shot: shot.index)
         strategy = plan_by_scene.get(scene_index, {})
@@ -107,6 +108,16 @@ def apply_storyboard_context(
         location_id = str(strategy.get("location_id", "") or "").strip()
         if not location_id:
             location_id = stable_context_id(strategy.get("location", ""), "location")
+        else:
+            location_id = re.sub(
+                r"[^a-zа-яё0-9_-]+",
+                "-",
+                location_id.casefold(),
+                flags=re.IGNORECASE,
+            ).strip("-_") or stable_context_id(
+                strategy.get("location", ""),
+                "location",
+            )
         subjects = normalize_subject_ids(
             strategy.get("subject_ids"),
             str(strategy.get("primary_subject", "") or ""),
@@ -118,6 +129,8 @@ def apply_storyboard_context(
             strategy.get("story_thread", f"scene-{scene_index}"),
             "thread",
         )
+        continuous_run = 0
+        previous_mode = ""
 
         for local_index, shot in enumerate(scene_shots):
             previous = scene_shots[local_index - 1] if local_index else previous_global
@@ -130,26 +143,42 @@ def apply_storyboard_context(
                 if shot.continuity_mode != "independent"
                 else shot.location_id.strip() or location_id
             )
-            shot.subject_ids = (
-                list(subjects)
-                if shot.continuity_mode != "independent" and subjects
-                else normalize_subject_ids(shot.subject_ids) or list(subjects)
-            )
-            if not shot.continuity_group_id.strip():
-                if shot.continuity_mode == "independent":
-                    shot.continuity_group_id = f"shot-{shot.index:03d}"
-                elif shot.continuity_mode == "recurring_subject" and shot.subject_ids:
-                    shot.continuity_group_id = (
-                        f"group-recurring-{shot.subject_ids[0]}"
-                    )
-                elif shot.continuity_mode == "same_location":
-                    shot.continuity_group_id = f"group-{location_id}"
-                elif shot.continuity_mode == "evidence_sequence":
-                    shot.continuity_group_id = f"group-{story_thread_id}"
-                else:
-                    shot.continuity_group_id = (
-                        f"group-{story_thread_id}-{location_id}"
-                    )
+            if shot.continuity_mode == "recurring_subject" and subjects:
+                # The group follows one canonical recurring identity. Secondary
+                # props may change from scene to scene and must not redefine it.
+                shot.subject_ids = [subjects[0]]
+            elif shot.continuity_mode != "independent" and subjects:
+                shot.subject_ids = list(subjects)
+            else:
+                shot.subject_ids = (
+                    normalize_subject_ids(shot.subject_ids) or list(subjects)
+                )
+            # Group identity is an engine contract, not creative prose.  Local
+            # models frequently reuse a plausible label ("ship interior") in
+            # unrelated scenes or mix modes inside one authored label.  Trusting
+            # it creates cross-film state chains and blocks unattended material
+            # generation after the expensive storyboard pass has completed.
+            if shot.continuity_mode == "independent":
+                shot.continuity_group_id = f"shot-{shot.index:03d}"
+            elif shot.continuity_mode == "recurring_subject" and shot.subject_ids:
+                shot.continuity_group_id = (
+                    f"group-recurring-{shot.subject_ids[0]}"
+                )
+            elif shot.continuity_mode == "same_location":
+                shot.continuity_group_id = f"group-location-{location_id}"
+            elif shot.continuity_mode == "evidence_sequence":
+                shot.continuity_group_id = f"group-evidence-{story_thread_id}"
+            else:
+                # Continuous action is scene-bounded unless a future authored
+                # contract explicitly models a cross-scene causal hand-off.
+                # A standalone/evidence insert also breaks the action run; two
+                # action fragments around that insert are not one causal chain.
+                if previous_mode != "continuous_action":
+                    continuous_run += 1
+                shot.continuity_group_id = (
+                    f"group-scene-{scene_index:03d}-action-"
+                    f"{continuous_run:02d}-{location_id}"
+                )
             if not shot.purpose.strip():
                 if len(scene_shots) == 1:
                     shot.purpose = "Раскрыть смысл сцены"
@@ -194,12 +223,25 @@ def apply_storyboard_context(
             )
             shot.shot_size = shot.shot_size.strip() or _infer_shot_size(shot)
             shot.camera_angle = shot.camera_angle.strip() or "eye_level"
-            shot.screen_direction = shot.screen_direction.strip() or "neutral"
-            if (
-                not shot.reference_frame_id.strip()
-                and shot.continuity_mode
-                in {"same_location", "continuous_action", "recurring_subject"}
-            ):
+            direction = re.sub(
+                r"[\s-]+",
+                "_",
+                shot.screen_direction.strip().casefold(),
+            )
+            if direction not in {"left_to_right", "right_to_left", "neutral"}:
+                direction = "neutral"
+            if shot.continuity_mode != "independent" and direction != "neutral":
+                canonical_direction = group_directions.setdefault(
+                    shot.continuity_group_id,
+                    direction,
+                )
+                direction = canonical_direction
+            shot.screen_direction = direction
+            if shot.continuity_mode in {
+                "same_location",
+                "continuous_action",
+                "recurring_subject",
+            }:
                 reference_key = (
                     shot.subject_ids[0]
                     if shot.continuity_mode == "recurring_subject" and shot.subject_ids
@@ -227,6 +269,7 @@ def apply_storyboard_context(
                     if previous is None
                     else f"Новая крупность {shot.shot_size}; действие продвигается"
                 )
+            previous_mode = shot.continuity_mode
         previous_global = scene_shots[-1]
     return shots
 

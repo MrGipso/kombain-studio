@@ -133,6 +133,37 @@ def test_independent_broll_does_not_share_reference_or_group():
     assert shots[1].reference_frame_id == ""
 
 
+def test_model_authored_group_names_cannot_merge_unrelated_modes():
+    plan = [{**_plan()[0], "continuity_mode": "independent"}]
+    shots = [_shot(1, "Улица"), _shot(2, "Архивный документ")]
+    shots[0].continuity_mode = "continuous_action"
+    shots[1].continuity_mode = "independent"
+    shots[0].continuity_group_id = "generic-sequence"
+    shots[1].continuity_group_id = "generic-sequence"
+
+    apply_storyboard_context(shots, plan)
+
+    assert shots[0].continuity_group_id.startswith("group-scene-001-action-")
+    assert shots[1].continuity_group_id == "shot-002"
+    assert shots[0].continuity_group_id != shots[1].continuity_group_id
+
+
+def test_linked_group_normalizes_screen_direction_and_reference_identity():
+    shots = [
+        _shot(1, "Алекс замечает телефон"),
+        _shot(2, "Алекс поднимает телефон"),
+    ]
+    shots[0].screen_direction = "left-to-right"
+    shots[1].screen_direction = "right_to_left"
+    shots[0].reference_frame_id = "model-reference-a"
+    shots[1].reference_frame_id = "model-reference-b"
+
+    apply_storyboard_context(shots, _plan())
+
+    assert {shot.screen_direction for shot in shots} == {"left_to_right"}
+    assert len({shot.reference_frame_id for shot in shots}) == 1
+
+
 def test_provider_prompt_compiler_uses_bible_descriptions_and_causal_state():
     shots = [_shot(1, "Алекс берёт телефон")]
     apply_storyboard_context(shots, _plan())
