@@ -7,9 +7,11 @@ import pytest
 
 from core.omnivoice_tts import BUILTIN_VOICES, assemble_wav, compile_omnivoice_text, discover_voice_profiles, wav_duration
 from core.script_workflow import (
+    apply_requested_duration,
     assess_script_quality,
     build_voice_plan,
     clean_subtitle_text,
+    default_script,
     estimate_duration_sec,
     migrate_script,
     split_into_beats,
@@ -159,3 +161,41 @@ def test_new_project_has_ready_omnivoice_profiles(tmp_path: Path):
     assert all(profile["type"] == "preset" for profile in profiles)
     explainer = next(profile for profile in BUILTIN_VOICES if profile["id"] == "studio_explainer_f")
     assert explainer["instruct"] == "female, young adult, moderate pitch"
+
+
+def _rewrite_script() -> dict:
+    script = default_script()
+    script.update({
+        "mode": "rewrite",
+        "source_text": "Проверенный исходный материал для нового сценария.",
+        "target_duration_sec": 600,
+        "estimated_wpm": 135,
+    })
+    return script
+
+
+def test_process_request_updates_duration_selected_after_import():
+    script = _rewrite_script()
+
+    result = apply_requested_duration(script, 23)
+
+    assert result["target_duration_sec"] == 23 * 60
+
+
+def test_process_request_uses_source_duration_with_small_automatic_buffer():
+    script = _rewrite_script()
+    script["source_estimated_duration_sec"] = 25 * 60
+    script["duration_mode"] = "manual"
+
+    result = apply_requested_duration(script, None)
+
+    assert result["duration_mode"] == "auto"
+    assert result["target_duration_min_sec"] == round(25 * 60 * 0.95)
+    assert result["target_duration_sec"] == 25 * 60 + 90
+    assert result["target_duration_max_sec"] == 27 * 60
+
+
+@pytest.mark.parametrize("minutes", [0, 181])
+def test_process_request_rejects_invalid_duration(minutes):
+    with pytest.raises(ValueError, match="от 1 до 180"):
+        apply_requested_duration(_rewrite_script(), minutes)
