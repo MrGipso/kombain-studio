@@ -10,12 +10,13 @@ from backend.services import material_engine
 from core import board as board_store
 from core import continuity
 from core import production as production_core
-from core.models import AssetCard
+from core.models import AssetCard, TranscriptSegment
 from core.project import content_hash
 from core.config import Settings
 from core.production import (
     ProductionPolicy,
     annotate_shot_segments,
+    enforce_shot_visual_anchors,
     freeze_material_plan,
     load_material_plan,
     load_material_run,
@@ -224,6 +225,65 @@ def test_millisecond_timing_and_segment_ownership_are_not_truncated():
     annotated = annotate_shot_segments(shots, segments)
     assert annotated[0]["segment_ids"] == [1, 2]
     assert annotated[0]["visual_concept_id"] == "scene-002-shot-001"
+
+
+def test_segment_annotation_accepts_active_pipeline_dataclasses():
+    shots = [{
+        "index": 7,
+        "scene_index": 3,
+        "start": "00:00:10",
+        "end": "00:00:15",
+        "visual_concept_id": "",
+    }]
+    segments = [
+        TranscriptSegment("00:00:09", "00:00:12", "First"),
+        TranscriptSegment("00:00:12", "00:00:16", "Second"),
+    ]
+
+    annotated = annotate_shot_segments(shots, segments)
+
+    assert annotated[0]["segment_ids"] == [1, 2]
+    assert annotated[0]["visual_concept_id"] == "scene-003-shot-007"
+
+
+def test_visual_anchor_enforcement_adds_numeric_overlay_and_named_fact():
+    shots = [
+        {
+            "index": 1,
+            "scene_index": 1,
+            "start": "00:00:00",
+            "end": "00:00:05",
+            "description": "Корабль выходит в море.",
+            "asset_query": "warship at sea",
+            "image_prompt": "A warship at sea.",
+            "screen_text": "",
+            "reference_query": "",
+        },
+        {
+            "index": 2,
+            "scene_index": 1,
+            "start": "00:00:05",
+            "end": "00:00:10",
+            "description": "Корпус испытывает нагрузку.",
+            "asset_query": "ship hull stress",
+            "image_prompt": "A stressed ship hull.",
+            "screen_text": "Уже занято",
+            "reference_query": "",
+        },
+    ]
+    segments = [
+        {"start": "00:00:00", "end": "00:00:05", "text": "В 1999 году вышел Torrens."},
+        {"start": "00:00:05", "end": "00:00:10", "text": "Нагрузка достигла 3000 тонн."},
+    ]
+
+    changed = enforce_shot_visual_anchors(shots, segments)
+
+    assert changed == 2
+    assert shots[0]["screen_text"] == "1999"
+    assert "Torrens" in shots[0]["description"]
+    assert shots[1]["screen_text"] == "Уже занято"
+    assert "3000" in shots[1]["description"]
+    assert "3000" in shots[1]["image_prompt"]
 
 
 def test_preflight_blocks_stale_plan_and_warns_about_long_repeat(tmp_path):

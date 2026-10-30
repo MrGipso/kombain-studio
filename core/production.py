@@ -15,7 +15,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from core import canonical_references, continuity
 from core.project import atomic_write_text, content_hash
@@ -436,18 +436,32 @@ def build_material_operations(
     return operations
 
 
+def _record_value(record: Any, key: str, default: Any = None) -> Any:
+    """Read a field from either a mapping or one of the pipeline dataclasses.
+
+    Transcript and shot data intentionally cross several persistence boundaries.
+    Some callers therefore hold JSON dictionaries while the active pipeline uses
+    ``TranscriptSegment``/``Shot`` instances.  Keeping that compatibility here
+    prevents a late type error after an expensive all-scenes LM run.
+    """
+
+    if isinstance(record, Mapping):
+        return record.get(key, default)
+    return getattr(record, key, default)
+
+
 def overlapping_segment_ids(
-    shot: dict[str, Any],
-    segments: list[dict[str, Any]],
+    shot: Any,
+    segments: list[Any],
 ) -> list[int]:
     """Return 1-based transcript segment IDs touched by a shot."""
 
-    start = timecode_to_milliseconds(shot.get("start"))
-    end = timecode_to_milliseconds(shot.get("end"))
+    start = timecode_to_milliseconds(_record_value(shot, "start"))
+    end = timecode_to_milliseconds(_record_value(shot, "end"))
     result: list[int] = []
     for index, segment in enumerate(segments, start=1):
-        seg_start = timecode_to_milliseconds(segment.get("start"))
-        seg_end = timecode_to_milliseconds(segment.get("end"))
+        seg_start = timecode_to_milliseconds(_record_value(segment, "start"))
+        seg_end = timecode_to_milliseconds(_record_value(segment, "end"))
         if seg_end > start and seg_start < end:
             result.append(index)
     return result
@@ -455,7 +469,7 @@ def overlapping_segment_ids(
 
 def annotate_shot_segments(
     shots: list[dict[str, Any]],
-    segments: list[dict[str, Any]],
+    segments: list[Any],
 ) -> list[dict[str, Any]]:
     """Add backward-compatible semantic/timeline identities to shot dictionaries."""
 
@@ -470,6 +484,102 @@ def annotate_shot_segments(
             )
         result.append(item)
     return result
+
+
+def enforce_shot_visual_anchors(
+    shots: list[Any],
+    segments: list[Any],
+) -> int:
+    """Attach uncovered factual names/numbers to their owning shot.
+
+    The timeline already assigns each transcript fact to the best-overlapping
+    shot.  This pass makes that ownership visible in the storyboard itself so
+    unattended preflight does not depend on a human noticing that a date or
+    named entity disappeared from the model's prose.
+    """
+
+    shot_rows = [
+        dict(shot) if isinstance(shot, Mapping) else dict(vars(shot))
+        for shot in shots
+    ]
+    segment_rows = [
+        dict(segment)
+        if isinstance(segment, Mapping)
+        else {
+            "start": _record_value(segment, "start"),
+            "end": _record_value(segment, "end"),
+            "text": _record_value(segment, "text", ""),
+        }
+        for segment in segments
+    ]
+    requirements = _shot_anchor_requirements(shot_rows, segment_rows)
+    changed = 0
+    for shot in shots:
+        shot_id = int(_record_value(shot, "index", 0) or 0)
+        anchors = requirements.get(shot_id, [])
+        if not anchors:
+            continue
+        candidate_screen_text = str(
+            _record_value(shot, "screen_text", "") or ""
+        )
+        # Asset-board overlay normalization currently accepts supported numeric
+        # facts, not free text/Roman numerals. Do not count a value here if it
+        # would disappear while building the board.
+        renderable_screen_text = (
+            candidate_screen_text
+            if any(character.isdigit() for character in candidate_screen_text)
+            else ""
+        )
+        existing_text = " ".join(
+            [
+                str(_record_value(shot, "description", "") or ""),
+                str(_record_value(shot, "asset_query", "") or ""),
+                renderable_screen_text,
+                str(_record_value(shot, "reference_query", "") or ""),
+            ]
+        )
+        missing = [
+            anchor
+            for anchor in anchors
+            if not _contains_anchor(existing_text, anchor)
+        ]
+        if not missing:
+            continue
+
+        numeric = [
+            anchor
+            for anchor in missing
+            if any(character.isdigit() for character in anchor)
+        ]
+        screen_text = str(_record_value(shot, "screen_text", "") or "").strip()
+        if numeric and not screen_text:
+            value = " · ".join(numeric[:3])
+            if isinstance(shot, Mapping):
+                shot["screen_text"] = value
+            else:
+                shot.screen_text = value
+
+        remaining = [anchor for anchor in missing if anchor not in numeric or screen_text]
+        if remaining:
+            suffix = "Фактический визуальный якорь: " + ", ".join(remaining[:8]) + "."
+            description = str(_record_value(shot, "description", "") or "").strip()
+            image_prompt = str(_record_value(shot, "image_prompt", "") or "").strip()
+            if isinstance(shot, Mapping):
+                shot["description"] = f"{description} {suffix}".strip()
+                shot["image_prompt"] = (
+                    f"{image_prompt} Include a clear factual visual cue for: "
+                    + ", ".join(remaining[:8])
+                    + "."
+                ).strip()
+            else:
+                shot.description = f"{description} {suffix}".strip()
+                shot.image_prompt = (
+                    f"{image_prompt} Include a clear factual visual cue for: "
+                    + ", ".join(remaining[:8])
+                    + "."
+                ).strip()
+        changed += 1
+    return changed
 
 
 def _normalised_concept(card: dict[str, Any]) -> str:
@@ -1700,6 +1810,7 @@ __all__ = [
     "card_is_ready",
     "card_needs_image",
     "card_needs_video",
+    "enforce_shot_visual_anchors",
     "freeze_material_plan",
     "load_material_plan",
     "load_material_run",
