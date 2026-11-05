@@ -19,6 +19,8 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from core import comfy_contract
+
 
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -97,31 +99,42 @@ def validate_workflow_compatibility(
     }
 
 
+def validate_workflow_file(name: str, path: Path, object_info: dict) -> dict:
+    """Check one configured workflow file against a live Comfy install.
+
+    Besides the node types, the engine's marker contract
+    (:mod:`core.comfy_contract`) is resolved, so a custom workflow without the
+    required ``ENGINE_*`` markers is reported here instead of failing mid-render.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return {"ok": False, "path": str(path), "error": "workflow file not found"}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("workflow root must be an object")
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "path": str(path), "error": str(exc)}
+    report = {"path": str(path), **validate_workflow_compatibility(raw, object_info)}
+    if name in comfy_contract.CONTRACTS:
+        contract = comfy_contract.contract_report(raw, name)
+        report["contract"] = contract
+        if not contract["ok"]:
+            report["ok"] = False
+            report["error"] = contract["error"]
+    return report
+
+
 def validate_configured_workflows(base_url: str, settings: object) -> dict:
     """Read-only live compatibility probe; never queues a Comfy prompt."""
     object_info = comfy_request_json(
         f"{comfy_base_url(base_url)}/object_info",
         timeout=20,
     )
-    workflows: dict[str, dict] = {}
-    for name, path in configured_workflow_paths(settings).items():
-        if not path.is_file():
-            workflows[name] = {
-                "ok": False,
-                "path": str(path),
-                "error": "workflow file not found",
-            }
-            continue
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("workflow root must be an object")
-            workflows[name] = {
-                "path": str(path),
-                **validate_workflow_compatibility(raw, object_info),
-            }
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            workflows[name] = {"ok": False, "path": str(path), "error": str(exc)}
+    workflows: dict[str, dict] = {
+        name: validate_workflow_file(name, path, object_info)
+        for name, path in configured_workflow_paths(settings).items()
+    }
     return {
         "ok": all(item.get("ok") for item in workflows.values()),
         "available_node_types": len(object_info),
@@ -391,4 +404,5 @@ __all__ = [
     "configured_workflow_paths",
     "validate_configured_workflows",
     "validate_workflow_compatibility",
+    "validate_workflow_file",
 ]

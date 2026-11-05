@@ -81,6 +81,11 @@
 - `ENGINE_PROMPT` — узел с одним входом `text`, `value` или `prompt`;
 - `ENGINE_OUTPUT` — сохраняющий узел с `inputs.filename_prefix`.
 
+Маркер может стоять в заголовке рядом с обычным текстом, вход можно выбрать
+явно (`ENGINE_PROMPT:prompt_text`), а `ENGINE_SEED` ограничивает, какие сиды
+меняются. Этот же контракт действует для всех остальных workflow движка, см.
+[COMFY_WORKFLOWS.md](COMFY_WORKFLOWS.md).
+
 Режим `auto` использует такой workflow, когда он настроен, а без него оставляет
 явное preflight-предупреждение и работает только через Context Bible/prompts.
 Режим `required` блокирует кнопку «Материал», если файла нет, контракт меток

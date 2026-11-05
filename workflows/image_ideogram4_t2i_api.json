@@ -20,7 +20,7 @@
     },
     "class_type": "SaveImage",
     "_meta": {
-      "title": "Save Image"
+      "title": "ENGINE_OUTPUT | Save Image"
     }
   },
   "98:9": {
@@ -171,7 +171,7 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "CLIP Text Encode (Positive Prompt)"
+      "title": "ENGINE_PROMPT | CLIP Text Encode (Positive Prompt)"
     }
   },
   "98:14": {

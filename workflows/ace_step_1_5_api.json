@@ -2,7 +2,7 @@
   "3": {
     "inputs": {
       "seed": 42,
-      "steps": 16,
+      "steps": 8,
       "cfg": 2,
       "sampler_name": "euler",
       "scheduler": "simple",
@@ -93,7 +93,7 @@
     },
     "class_type": "TextEncodeAceStepAudio1.5",
     "_meta": {
-      "title": "TextEncodeAceStepAudio1.5"
+      "title": "ENGINE_PROMPT ENGINE_LYRICS ENGINE_BPM ENGINE_DURATION | TextEncodeAceStepAudio1.5"
     }
   },
   "98": {
@@ -103,7 +103,7 @@
     },
     "class_type": "EmptyAceStep1.5LatentAudio",
     "_meta": {
-      "title": "Empty Ace Step 1.5 Latent Audio"
+      "title": "ENGINE_DURATION | Empty Ace Step 1.5 Latent Audio"
     }
   },
   "105": {
@@ -138,7 +138,7 @@
     },
     "class_type": "SaveAudioMP3",
     "_meta": {
-      "title": "Save Audio (MP3)"
+      "title": "ENGINE_OUTPUT | Save Audio (MP3)"
     }
   },
   "110": {

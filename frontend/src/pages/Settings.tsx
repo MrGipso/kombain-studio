@@ -99,7 +99,7 @@ export default function Settings() {
     },
     {
       title: 'Пути и инструменты',
-      description: 'Локальные workflow, Whisper, FFmpeg и папка для результатов.',
+      description: 'ComfyUI workflow, Whisper, FFmpeg и папка для результатов. Свой workflow (в т.ч. на облачных API-нодах) подключается по маркерам ENGINE_* в названиях узлов — см. docs/COMFY_WORKFLOWS.md.',
       keys: ['comfy_install_dir', 'comfy_krea_workflow', 'comfy_reference_workflow', 'comfy_ideogram_workflow', 'comfy_ltx_workflow', 'comfy_ltx_draft_workflow', 'comfy_ace_workflow', 'whisper_cli', 'whisper_model', 'ffmpeg', 'whisper_language', 'omnivoice_cli', 'omnivoice_model', 'output_base'],
     },
     {

@@ -5,7 +5,7 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "ENGINE_INPUT_IMAGE | Load Image"
     }
   },
   "273": {
@@ -20,7 +20,7 @@
     },
     "class_type": "SaveVideo",
     "_meta": {
-      "title": "Save Video"
+      "title": "ENGINE_OUTPUT | Save Video"
     }
   },
   "267:237": {
@@ -193,7 +193,7 @@
     },
     "class_type": "PrimitiveInt",
     "_meta": {
-      "title": "Height"
+      "title": "ENGINE_HEIGHT | Height"
     }
   },
   "267:201": {
@@ -310,7 +310,7 @@
     },
     "class_type": "PrimitiveInt",
     "_meta": {
-      "title": "Width"
+      "title": "ENGINE_WIDTH | Width"
     }
   },
   "267:231": {
@@ -360,7 +360,7 @@
     },
     "class_type": "PrimitiveStringMultiline",
     "_meta": {
-      "title": "Prompt"
+      "title": "ENGINE_PROMPT | Prompt"
     }
   },
   "267:280": {
@@ -439,7 +439,7 @@
     },
     "class_type": "INTConstant",
     "_meta": {
-      "title": "length (Seconds)"
+      "title": "ENGINE_DURATION | length (Seconds)"
     }
   },
   "267:283": {
@@ -508,7 +508,7 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "CLIP Text Encode (Prompt)"
+      "title": "ENGINE_NEGATIVE | CLIP Text Encode (Prompt)"
     }
   },
   "267:309": {

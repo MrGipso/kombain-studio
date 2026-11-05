@@ -5,6 +5,11 @@ repository workflows for one asset and stores the generated output in the
 project.  It deliberately has no UI dependency so web workers can import it
 in headless environments.
 
+Which node receives the prompt, the input image, the duration and so on is
+decided by the marker contract in :mod:`core.comfy_contract` (``ENGINE_*``
+markers in node titles, with a fallback to the bundled node ids), so any
+workflow can replace a bundled one without code changes.
+
 Callers that already opened a project should pass its ``Settings`` snapshot.
 That keeps workflow selection, LTX draft/resolution and FFmpeg normalization
 stable for the complete job.  When the argument is omitted the current global
@@ -23,7 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from core import continuity
+from core import comfy_contract, continuity
 from core.comfy import (
     DEFAULT_WORKFLOW_PATHS,
     comfy_collect_outputs,
@@ -48,9 +53,12 @@ DEFAULT_COMFY_ACE_WORKFLOW = DEFAULT_WORKFLOW_PATHS["music"]
 MAX_LTX_DURATION = 15
 MAX_ACE_DURATION = 120
 LTX_RESOLUTIONS = {"1920x1088": (1920, 1088), "1280x704": (1280, 704)}
-REFERENCE_NODE_TITLE = "ENGINE_REFERENCE_IMAGE"
-REFERENCE_PROMPT_TITLE = "ENGINE_PROMPT"
-REFERENCE_OUTPUT_TITLE = "ENGINE_OUTPUT"
+REFERENCE_NODE_TITLE = comfy_contract.REFERENCE_IMAGE
+REFERENCE_PROMPT_TITLE = comfy_contract.PROMPT
+REFERENCE_OUTPUT_TITLE = comfy_contract.OUTPUT
+# Seeds stay below 2**31: several ComfyUI cloud API nodes declare a signed
+# 32-bit seed input and reject larger values during prompt validation.
+_SEED_MODULUS = 2_147_000_000
 
 
 def _effective_settings(settings: object | None) -> object:
@@ -63,10 +71,18 @@ def _setting(settings: object, key: str, default: Any = "") -> Any:
     return getattr(settings, key, default)
 
 
-def set_workflow_seed_values(workflow: dict) -> None:
-    """Assign a fresh seed to every supported sampler input in a workflow."""
+def set_workflow_seed_values(
+    workflow: dict,
+    targets: tuple[comfy_contract.Binding, ...] | None = None,
+) -> None:
+    """Assign fresh seeds to ``targets`` or to every supported seed input."""
 
-    seed = int(time.time() * 1000) % 900000000000000
+    seed = int(time.time() * 1000) % _SEED_MODULUS
+    if targets is not None:
+        for target in targets:
+            workflow[target.node_id]["inputs"][target.key] = seed
+            seed += 1
+        return
     for node in workflow.values():
         if not isinstance(node, dict):
             continue
@@ -101,45 +117,22 @@ def _read_workflow(path: Path, *, label: str = "Workflow") -> dict:
     return workflow
 
 
-def _reference_contract_nodes(workflow: dict) -> tuple[dict, dict, dict, str]:
-    """Resolve explicit engine markers in a reference API workflow."""
+def _bind_workflow(
+    workflow: dict,
+    name: str,
+    path: Path,
+) -> comfy_contract.BoundWorkflow:
+    try:
+        return comfy_contract.bind_workflow(workflow, name)
+    except comfy_contract.WorkflowContractError as exc:
+        raise comfy_contract.WorkflowContractError(f"{exc} [{path}]") from None
 
-    marked: dict[str, list[dict]] = {
-        REFERENCE_NODE_TITLE: [],
-        REFERENCE_PROMPT_TITLE: [],
-        REFERENCE_OUTPUT_TITLE: [],
-    }
-    for node in workflow.values():
-        if not isinstance(node, dict):
-            continue
-        meta = node.get("_meta", {})
-        title = str(meta.get("title", "") if isinstance(meta, dict) else "").strip()
-        if title in marked:
-            marked[title].append(node)
-    invalid = [title for title, nodes in marked.items() if len(nodes) != 1]
-    if invalid:
-        raise ValueError(
-            "Reference workflow must contain exactly one node titled "
-            + ", ".join(invalid)
-        )
-    reference_node = marked[REFERENCE_NODE_TITLE][0]
-    prompt_node = marked[REFERENCE_PROMPT_TITLE][0]
-    output_node = marked[REFERENCE_OUTPUT_TITLE][0]
-    reference_inputs = reference_node.get("inputs")
-    prompt_inputs = prompt_node.get("inputs")
-    output_inputs = output_node.get("inputs")
-    if not isinstance(reference_inputs, dict) or "image" not in reference_inputs:
-        raise ValueError(f"{REFERENCE_NODE_TITLE} must expose inputs.image")
-    if not isinstance(prompt_inputs, dict):
-        raise ValueError(f"{REFERENCE_PROMPT_TITLE} has no inputs object")
-    prompt_keys = [key for key in ("text", "value", "prompt") if key in prompt_inputs]
-    if len(prompt_keys) != 1:
-        raise ValueError(
-            f"{REFERENCE_PROMPT_TITLE} must expose exactly one of text/value/prompt"
-        )
-    if not isinstance(output_inputs, dict) or "filename_prefix" not in output_inputs:
-        raise ValueError(f"{REFERENCE_OUTPUT_TITLE} must expose inputs.filename_prefix")
-    return reference_node, prompt_node, output_node, prompt_keys[0]
+
+def _apply_seeds(bound: comfy_contract.BoundWorkflow) -> None:
+    """Honour ENGINE_SEED markers, else randomise every seed input."""
+
+    targets = bound.targets(comfy_contract.SEED)
+    set_workflow_seed_values(bound.workflow, targets or None)
 
 
 def reference_workflow_status(settings: object | None = None) -> dict[str, Any]:
@@ -169,7 +162,7 @@ def reference_workflow_status(settings: object | None = None) -> dict[str, Any]:
     path = Path(configured).expanduser()
     try:
         workflow = _read_workflow(path, label="Reference workflow")
-        _reference_contract_nodes(workflow)
+        comfy_contract.bind_workflow(workflow, "reference")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         result["ok"] = False
         result["error"] = str(exc)
@@ -194,19 +187,16 @@ def prepare_reference_image_workflow(
         raise RuntimeError(
             str(status.get("error") or "Reference workflow is not configured")
         )
-    workflow = _read_workflow(
-        Path(str(status["path"])),
-        label="Reference workflow",
+    path = Path(str(status["path"]))
+    workflow = _read_workflow(path, label="Reference workflow")
+    bound = _bind_workflow(workflow, "reference", path)
+    bound.set(comfy_contract.REFERENCE_IMAGE, reference_image_name)
+    bound.set(comfy_contract.PROMPT, prompt)
+    bound.set(
+        comfy_contract.OUTPUT,
+        f"content_pipeline/shot_{shot_index:03d}_reference",
     )
-    reference_node, prompt_node, output_node, prompt_key = _reference_contract_nodes(
-        workflow
-    )
-    reference_node["inputs"]["image"] = reference_image_name
-    prompt_node["inputs"][prompt_key] = prompt
-    output_node["inputs"]["filename_prefix"] = (
-        f"content_pipeline/shot_{shot_index:03d}_reference"
-    )
-    set_workflow_seed_values(workflow)
+    _apply_seeds(bound)
     return workflow
 
 
@@ -232,16 +222,17 @@ def prepare_image_workflow(
         model = "krea2_turbo"
     workflow = _read_workflow(workflow_path)
     if model == "ideogram4":
-        workflow["98:24"]["inputs"]["text"] = prompt
-        workflow["158"]["inputs"]["filename_prefix"] = (
-            f"content_pipeline/shot_{shot_index:03d}_ideogram4"
-        )
+        bound = _bind_workflow(workflow, "ideogram", workflow_path)
+        suffix = "ideogram4"
     else:
-        workflow["30:19"]["inputs"]["value"] = prompt
-        workflow["29"]["inputs"]["filename_prefix"] = (
-            f"content_pipeline/shot_{shot_index:03d}_krea2"
-        )
-    set_workflow_seed_values(workflow)
+        bound = _bind_workflow(workflow, "krea", workflow_path)
+        suffix = "krea2"
+    bound.set(comfy_contract.PROMPT, prompt)
+    bound.set(
+        comfy_contract.OUTPUT,
+        f"content_pipeline/shot_{shot_index:03d}_{suffix}",
+    )
+    _apply_seeds(bound)
     return workflow
 
 
@@ -314,25 +305,29 @@ def prepare_ltx_workflow(
             settings=settings,
         )
     workflow = _read_workflow(workflow_path)
-    workflow["269"]["inputs"]["image"] = input_image_name
-    workflow["267:266"]["inputs"]["value"] = prompt
-    workflow["273"]["inputs"]["filename_prefix"] = (
-        f"content_pipeline/video/shot_{shot_index:03d}_ltx2_3"
+    bound = _bind_workflow(workflow, "ltx_draft" if draft else "ltx", workflow_path)
+    bound.set(comfy_contract.INPUT_IMAGE, input_image_name)
+    bound.set(comfy_contract.PROMPT, prompt)
+    bound.set(
+        comfy_contract.OUTPUT,
+        f"content_pipeline/video/shot_{shot_index:03d}_ltx2_3",
     )
-    workflow["267:290"]["inputs"]["value"] = max(
-        2.0, min(duration_seconds, MAX_LTX_DURATION)
+    # Without ENGINE_DURATION the clip length is whatever the workflow renders.
+    bound.set(
+        comfy_contract.DURATION,
+        max(2.0, min(duration_seconds, MAX_LTX_DURATION)),
     )
     width, height = ltx_render_resolution(settings)
-    if "267:257" in workflow:
-        workflow["267:257"]["inputs"]["value"] = width
-    if "267:258" in workflow:
-        workflow["267:258"]["inputs"]["value"] = height
+    bound.set(comfy_contract.WIDTH, width)
+    bound.set(comfy_contract.HEIGHT, height)
     if negative_extra:
-        negative = workflow.get("267:247", {}).get("inputs")
-        if isinstance(negative, dict) and isinstance(negative.get("text"), str):
-            base = negative["text"].strip().rstrip(",")
-            negative["text"] = f"{base}, {negative_extra}" if base else negative_extra
-    set_workflow_seed_values(workflow)
+
+        def append_negative(current: str) -> str:
+            base = current.strip().rstrip(",")
+            return f"{base}, {negative_extra}" if base else negative_extra
+
+        bound.transform(comfy_contract.NEGATIVE, append_negative)
+    _apply_seeds(bound)
     return workflow
 
 
@@ -473,18 +468,25 @@ def prepare_music_workflow(
         settings=settings,
     )
     workflow = _read_workflow(workflow_path, label="Music workflow")
+    bound = _bind_workflow(workflow, "music", workflow_path)
     seconds = int(max(15, min(seconds, MAX_ACE_DURATION)))
-    text_node = workflow["94"]["inputs"]
-    text_node["tags"] = tags.strip() or "cinematic ambient background, soft, unobtrusive"
-    text_node["lyrics"] = lyrics.strip() or "[instrumental]"
-    text_node["bpm"] = int(bpm) if bpm else text_node.get("bpm", 90)
-    text_node["duration"] = seconds
-    workflow["98"]["inputs"]["seconds"] = seconds
-    workflow["107"]["inputs"]["filename_prefix"] = "content_pipeline/music/track"
-    ksampler = workflow.get("3", {}).get("inputs")
-    if isinstance(ksampler, dict) and "steps" in ksampler:
-        ksampler["steps"] = 8
-    set_workflow_seed_values(workflow)
+    bound.set(
+        comfy_contract.PROMPT,
+        tags.strip() or "cinematic ambient background, soft, unobtrusive",
+    )
+    bound.set(comfy_contract.LYRICS, lyrics.strip() or "[instrumental]")
+    if bpm:
+        bound.set(comfy_contract.BPM, int(bpm))
+    bound.set(comfy_contract.DURATION, seconds)
+    bound.set(comfy_contract.OUTPUT, "content_pipeline/music/track")
+    if bound.mode == comfy_contract.MODE_LEGACY:
+        # Unmarked copies of the original ACE-Step file carry 16 steps; the
+        # bundled turbo checkpoint is tuned for 8.  A marked workflow is
+        # trusted to declare its own sampler settings.
+        ksampler = workflow.get("3", {}).get("inputs")
+        if isinstance(ksampler, dict) and "steps" in ksampler:
+            ksampler["steps"] = 8
+    _apply_seeds(bound)
     return workflow
 
 

@@ -1080,33 +1080,10 @@ def _material_workflow_preflight(pdir: Path, settings=None) -> dict[str, Any]:
             "workflows": {},
         }
     paths = comfy_client.configured_workflow_paths(settings)
-    workflows: dict[str, Any] = {}
-    for name in required:
-        path = paths[name]
-        if not path.is_file():
-            workflows[name] = {
-                "ok": False,
-                "path": str(path),
-                "error": "workflow file not found",
-            }
-            continue
-        try:
-            workflow = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(workflow, dict):
-                raise ValueError("workflow root must be an object")
-            workflows[name] = {
-                "path": str(path),
-                **comfy_client.validate_workflow_compatibility(
-                    workflow,
-                    object_info,
-                ),
-            }
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            workflows[name] = {
-                "ok": False,
-                "path": str(path),
-                "error": str(exc),
-            }
+    workflows: dict[str, Any] = {
+        name: comfy_client.validate_workflow_file(name, paths[name], object_info)
+        for name in required
+    }
     ok = all(item.get("ok") for item in workflows.values())
     return {
         "ok": ok,
