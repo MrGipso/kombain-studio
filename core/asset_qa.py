@@ -288,6 +288,8 @@ def _mode(value: Any) -> QAMode:
 
 def _vision_ttl(settings: Any) -> int | None:
     """Keep a QA batch warm briefly, then release its large VLM from VRAM."""
+    if not lm.is_lmstudio(settings):
+        return None  # a cloud provider has no TTL
     auto = getattr(settings, "lm_auto_unload", True)
     if isinstance(auto, str):
         auto = auto.strip().lower() not in {"0", "false", "no", "off"}

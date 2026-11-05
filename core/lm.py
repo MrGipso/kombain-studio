@@ -1,4 +1,4 @@
-"""LM Studio (OpenAI-compatible) client — the single home for chat calls.
+"""LM Studio / cloud OpenAI-compatible client — the single home for chat calls.
 
 Every caller that needs "POST /chat/completions, add TTL, strip markdown
 fences, dig JSON out of the reply" imports this module instead of growing its
@@ -23,6 +23,12 @@ from pydantic import TypeAdapter, ValidationError
 
 DEFAULT_URL = "http://127.0.0.1:1234/v1"
 JSON_SYSTEM = "Отвечай только валидным JSON. Не добавляй markdown."
+
+# ``lm_provider`` values. LM Studio is the local default; any other
+# OpenAI-compatible server (OpenAI, OpenRouter, Gemini, a LiteLLM proxy …)
+# gets the API key but none of LM Studio's extensions (TTL, load/unload, SDK).
+PROVIDER_LMSTUDIO = "lmstudio"
+PROVIDER_OPENAI_COMPATIBLE = "openai_compatible"
 
 T = TypeVar("T")
 Transport = Literal["auto", "sdk", "openai"]
@@ -55,25 +61,120 @@ class AssistantContentError(ValueError):
     """The server returned a completion envelope without usable text."""
 
 
+def _setting(settings: Any, name: str, default: Any = None) -> Any:
+    """Read one field from a Settings object or a plain settings mapping."""
+    if isinstance(settings, Mapping):
+        return settings.get(name, default)
+    return getattr(settings, name, default)
+
+
+def _normalize_provider(value: Any) -> str:
+    if str(value or "").strip().lower() == PROVIDER_OPENAI_COMPATIBLE:
+        return PROVIDER_OPENAI_COMPATIBLE
+    return PROVIDER_LMSTUDIO
+
+
+def _origin(url: Any) -> str:
+    """``scheme://host:port`` of an http(s) URL, or "" when it has none."""
+    try:
+        parts = urllib.parse.urlsplit(str(url or "").strip())
+        port = parts.port
+    except ValueError:
+        return ""
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if scheme not in {"http", "https"} or not host:
+        return ""
+    return f"{scheme}://{host}:{port or (443 if scheme == 'https' else 80)}"
+
+
+@dataclass(frozen=True)
+class _Endpoint:
+    origin: str
+    provider: str
+    api_key: str
+
+
+def _endpoint_from(settings: Any) -> _Endpoint | None:
+    origin = _origin(base_url(settings))
+    if not origin:
+        return None
+    provider = _normalize_provider(_setting(settings, "lm_provider"))
+    # The key is only ever attached in cloud mode: switching back to a local
+    # LM Studio must not keep sending a stored cloud key to another server.
+    api_key = ""
+    if provider == PROVIDER_OPENAI_COMPATIBLE:
+        api_key = str(_setting(settings, "lm_api_key", "") or "").strip()
+    return _Endpoint(origin=origin, provider=provider, api_key=api_key)
+
+
+# The configured LM endpoint. Many helpers receive only a base URL (scene and
+# shot planning, stock scoring, music brief), so credentials are resolved from
+# the last loaded settings by origin instead of being threaded through every
+# signature. Replaced as a whole, never mutated, so readers need no lock.
+_configured: _Endpoint | None = None
+
+
+def configure_endpoint(settings: Any) -> None:
+    """Remember the provider and API key of the configured LM endpoint.
+
+    Called whenever settings are loaded or saved. The key is attached only to
+    requests whose origin equals ``lm_url``'s, so it never reaches another host.
+    """
+    global _configured
+    _configured = _endpoint_from(settings)
+
+
+def _endpoint_for(url: str, settings: Any = None) -> _Endpoint | None:
+    if settings is not None and _setting(settings, "lm_provider") is not None:
+        endpoint = _endpoint_from(settings)
+    else:
+        endpoint = _configured
+    if endpoint is not None and endpoint.origin == _origin(url):
+        return endpoint
+    return None
+
+
+def request_headers(url: str, settings: Any = None) -> dict[str, str]:
+    """JSON headers for an LM request, plus Bearer auth for the cloud endpoint."""
+    headers = {"Content-Type": "application/json"}
+    endpoint = _endpoint_for(url, settings)
+    if endpoint is not None and endpoint.api_key:
+        headers["Authorization"] = f"Bearer {endpoint.api_key}"
+    return headers
+
+
+def is_lmstudio(settings: Any) -> bool:
+    """Whether the LM endpoint is LM Studio (TTL, load/unload, SDK available).
+
+    An explicit ``lm_provider`` wins; URL-only settings shims fall back to the
+    configured endpoint, and an unknown server keeps the historic LM Studio
+    behaviour.
+    """
+    explicit = _setting(settings, "lm_provider")
+    if explicit is not None:
+        return _normalize_provider(explicit) == PROVIDER_LMSTUDIO
+    endpoint = _endpoint_for(base_url(settings))
+    return endpoint is None or endpoint.provider == PROVIDER_LMSTUDIO
+
+
 def unload_delay_seconds(settings: Any) -> int | None:
     """The user's LM Studio auto-unload policy for the end of a stage.
 
     None = auto-unload disabled; 0 = unload explicitly right after the stage;
     positive int = idle seconds before LM Studio unloads the model. Accepts a
     Settings object or a plain settings mapping; an unparsable delay is 60 s.
+    A cloud provider manages its own models, so the policy is always None.
     """
-    def read(name: str, default: Any) -> Any:
-        if isinstance(settings, Mapping):
-            return settings.get(name, default)
-        return getattr(settings, name, default)
-
-    auto = read("lm_auto_unload", True)
+    if not is_lmstudio(settings):
+        return None
+    auto = _setting(settings, "lm_auto_unload", True)
     if isinstance(auto, str):
         auto = auto.strip().lower() not in {"0", "false", "no", "off"}
     if not auto:
         return None
     try:
-        return max(0, int(str(read("lm_unload_delay", "0")).strip() or "0"))
+        return max(0, int(str(_setting(settings, "lm_unload_delay", "0")).strip() or "0"))
     except (TypeError, ValueError):
         return 60
 
@@ -95,11 +196,11 @@ def add_ttl(payload: dict, ttl: int | None) -> None:
 
 
 def base_url(settings: Any) -> str:
-    return (getattr(settings, "lm_url", "") or DEFAULT_URL).rstrip("/")
+    return (str(_setting(settings, "lm_url", "") or "") or DEFAULT_URL).strip().rstrip("/")
 
 
 def model_name(settings: Any) -> str:
-    return (getattr(settings, "lm_model", "") or "local-model").strip() or "local-model"
+    return (str(_setting(settings, "lm_model", "") or "") or "local-model").strip() or "local-model"
 
 
 def strip_fences(content: str) -> str:
@@ -160,20 +261,25 @@ def _http_chat(
         if int(max_tokens) <= 0:
             raise ValueError("max_tokens должен быть положительным")
         payload["max_tokens"] = int(max_tokens)
+    lmstudio = is_lmstudio(settings)
     if response_schema is not None:
         payload["response_format"] = {
             "type": "json_schema",
             "json_schema": {
                 "name": schema_name,
-                "strict": True,
+                # OpenAI's strict mode rejects schemas with optional fields;
+                # replies are validated and repaired locally either way.
+                "strict": lmstudio,
                 "schema": response_schema,
             },
         }
-    add_ttl(payload, ttl if ttl is not None else ttl_seconds(settings))
+    if lmstudio:
+        add_ttl(payload, ttl if ttl is not None else ttl_seconds(settings))
+    url = base_url(settings) + "/chat/completions"
     request = urllib.request.Request(
-        base_url(settings) + "/chat/completions",
+        url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=request_headers(url, settings),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -213,11 +319,13 @@ def chat_with_metadata(
         if int(max_tokens) <= 0:
             raise ValueError("max_tokens должен быть положительным")
         payload["max_tokens"] = int(max_tokens)
-    add_ttl(payload, ttl if ttl is not None else ttl_seconds(settings))
+    if is_lmstudio(settings):
+        add_ttl(payload, ttl if ttl is not None else ttl_seconds(settings))
+    url = base_url(settings) + "/chat/completions"
     request = urllib.request.Request(
-        base_url(settings) + "/chat/completions",
+        url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=request_headers(url, settings),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -313,6 +421,10 @@ def _select_structured_transport(
 ) -> tuple[Literal["sdk", "openai"], Any | None, str | None]:
     if requested not in {"auto", "sdk", "openai"}:
         raise ValueError(f"Неизвестный LM transport: {requested}")
+    if not is_lmstudio(settings):
+        if requested == "sdk":
+            raise ValueError("LM Studio SDK недоступен для облачного API; используйте transport='openai'")
+        return "openai", None, None
     has_image = _contains_image(messages)
     if requested == "openai" or (requested == "auto" and has_image):
         return "openai", None, None
@@ -503,6 +615,16 @@ def explain_error(exc: Exception) -> str:
             message = f"{message}\n{body}"
         except Exception:
             pass
+        if exc.code in {401, 403}:
+            return (
+                f"Сервер LLM отклонил запрос (HTTP {exc.code}): проверьте API-ключ "
+                "и доступ к модели.\n" + message
+            )
+        if exc.code == 429:
+            return (
+                "Провайдер LLM ограничил частоту запросов или исчерпан баланс "
+                "(HTTP 429). Подождите и повторите.\n" + message
+            )
     lower = message.lower()
     if "exceeds the available context size" in lower or (
         "context" in lower and "exceeds" in lower
@@ -539,10 +661,11 @@ def load_model(openai_base_url: str, model: str, context_length: int) -> dict:
         "flash_attention": True,
         "echo_load_config": True,
     }
+    url = rest_base(openai_base_url) + "/models/load"
     request = urllib.request.Request(
-        rest_base(openai_base_url) + "/models/load",
+        url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=request_headers(url),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=600) as response:
@@ -550,10 +673,11 @@ def load_model(openai_base_url: str, model: str, context_length: int) -> dict:
 
 
 def unload_model(openai_base_url: str, instance_id: str) -> dict:
+    url = rest_base(openai_base_url) + "/models/unload"
     request = urllib.request.Request(
-        rest_base(openai_base_url) + "/models/unload",
+        url,
         data=json.dumps({"instance_id": str(instance_id).strip()}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=request_headers(url),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=120) as response:

@@ -6,9 +6,12 @@ import ThemeToggle from '../components/ThemeToggle'
 import type { Settings as SettingsType } from '../api/types'
 
 type DiagTarget = 'lm' | 'embed' | 'comfy' | 'ffmpeg' | 'whisper' | 'omnivoice' | 'woosh'
-const SECRET_FIELDS = new Set<keyof SettingsType>(['pexels_api_key', 'pixabay_api_key'])
+const SECRET_FIELDS = new Set<keyof SettingsType>(['lm_api_key', 'pexels_api_key', 'pixabay_api_key'])
+// Fields that only mean something for one LLM provider.
+const CLOUD_ONLY_FIELDS = new Set<keyof SettingsType>(['lm_api_key'])
+const LMSTUDIO_ONLY_FIELDS = new Set<keyof SettingsType>(['lm_context'])
 const DIAG_TARGETS: { key: DiagTarget; label: string }[] = [
-  { key: 'lm', label: 'LM Studio' },
+  { key: 'lm', label: 'LLM' },
   { key: 'embed', label: 'Embeddings' },
   { key: 'comfy', label: 'ComfyUI' },
   { key: 'ffmpeg', label: 'FFmpeg' },
@@ -62,10 +65,11 @@ export default function Settings() {
   if (!settings) return null
 
   const fields: { key: keyof SettingsType; label: string; type?: string }[] = [
-    { key: 'lm_url', label: 'LM Studio URL' },
-    { key: 'lm_model', label: 'LM Studio Model' },
-    { key: 'lm_embed_model', label: 'LM Studio Embedding Model (сегментация сцен)' },
-    { key: 'lm_context', label: 'Context Length' },
+    { key: 'lm_url', label: 'LLM URL (OpenAI-совместимый, …/v1)' },
+    { key: 'lm_api_key', label: 'API-ключ LLM' },
+    { key: 'lm_model', label: 'LLM Model' },
+    { key: 'lm_embed_model', label: 'Embedding Model (сегментация сцен)' },
+    { key: 'lm_context', label: 'Context Length (LM Studio)' },
     { key: 'comfy_url', label: 'ComfyUI URL' },
     { key: 'comfy_install_dir', label: 'Portable ComfyUI — каталог установки' },
     { key: 'comfy_krea_workflow', label: 'Krea Workflow Path' },
@@ -84,14 +88,14 @@ export default function Settings() {
     { key: 'image_model_preference', label: 'Image Model Preference' },
     { key: 'pexels_api_key', label: 'Pexels API Key (стоки)' },
     { key: 'pixabay_api_key', label: 'Pixabay API Key (стоки)' },
-    { key: 'lm_vision_model', label: 'LM Studio Vision Model (оценка стока)' },
+    { key: 'lm_vision_model', label: 'Vision Model (оценка стока)' },
   ]
 
   const settingGroups = [
     {
       title: 'Модели и сервисы',
-      description: 'Подключения к LM Studio и ComfyUI, а также модели, используемые в пайплайне.',
-      keys: ['lm_url', 'lm_model', 'lm_embed_model', 'lm_vision_model', 'lm_context', 'comfy_url', 'image_model_preference'],
+      description: 'Подключения к LLM (LM Studio или облачный API) и ComfyUI, а также модели, используемые в пайплайне.',
+      keys: ['lm_url', 'lm_api_key', 'lm_model', 'lm_embed_model', 'lm_vision_model', 'lm_context', 'comfy_url', 'image_model_preference'],
     },
     {
       title: 'Пути и инструменты',
@@ -113,11 +117,12 @@ export default function Settings() {
     { key: 'stock_candidates', label: 'Сток: кандидатов на кадр' },
   ]
 
-  const secretIsSet = (key: keyof SettingsType) => {
-    if (key === 'pexels_api_key') return !!settings.pexels_api_key_set
-    if (key === 'pixabay_api_key') return !!settings.pixabay_api_key_set
-    return false
-  }
+  const secretIsSet = (key: keyof SettingsType) =>
+    Boolean((settings as unknown as Record<string, unknown>)[`${String(key)}_set`])
+
+  const cloudLm = settings.lm_provider === 'openai_compatible'
+  const fieldVisible = (key: keyof SettingsType) =>
+    cloudLm ? !LMSTUDIO_ONLY_FIELDS.has(key) : !CLOUD_ONLY_FIELDS.has(key)
 
   return (
     <div className="min-h-screen bg-slate-950 px-4 py-6 sm:px-6 lg:px-8">
@@ -153,17 +158,41 @@ export default function Settings() {
                 <h2 className="text-base font-semibold text-white">{group.title}</h2>
                 <p className="mt-1 text-sm text-slate-500">{group.description}</p>
               </div>
+              {group.keys.includes('lm_url') && (
+                <div className="mb-4 space-y-2">
+                  <label htmlFor="settings-lm-provider" className="mb-1.5 block text-xs font-medium text-slate-500">Провайдер LLM</label>
+                  <select
+                    id="settings-lm-provider"
+                    value={settings.lm_provider || 'lmstudio'}
+                    onChange={(e) => setSettings({ ...settings, lm_provider: e.target.value as SettingsType['lm_provider'] })}
+                    className="min-h-10 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="lmstudio">LM Studio — локально, без ключа</option>
+                    <option value="openai_compatible">OpenAI-совместимый API — облако или прокси, по ключу</option>
+                  </select>
+                  {cloudLm && (
+                    <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                      Текст сценария, сцены и превью стока будут уходить провайдеру, а полный прогон — это сотни платных запросов.
+                      Адрес вида https://api.openai.com/v1 или https://openrouter.ai/api/v1; ключ отправляется только на этот адрес.
+                      Выгрузка моделей и Context Length в этом режиме не используются.
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="grid gap-4 md:grid-cols-2">
-                {fields.filter(({ key }) => group.keys.includes(String(key))).map(({ key, label }) => {
+                {fields.filter(({ key }) => group.keys.includes(String(key)) && fieldVisible(key)).map(({ key, label }) => {
                   const isSecret = SECRET_FIELDS.has(key)
                   const isSet = isSecret && secretIsSet(key)
+                  const inputId = `settings-field-${String(key)}`
                   return (
                     <div key={key} className={String(key).includes('workflow') || key === 'output_base' || key === 'comfy_install_dir' ? 'md:col-span-2' : ''}>
-                      <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                      <label htmlFor={inputId} className="mb-1.5 block text-xs font-medium text-slate-500">
                         {label}{isSet ? ' · ключ сохранён' : ''}
                       </label>
                       <input
+                        id={inputId}
                         type={isSecret ? 'password' : 'text'}
+                        autoComplete={isSecret ? 'off' : undefined}
                         value={(settings[key] as string) || ''}
                         placeholder={isSet ? 'Новый ключ или пусто без изменений' : ''}
                         onChange={(e) => setSettings({ ...settings, [key]: e.target.value })}

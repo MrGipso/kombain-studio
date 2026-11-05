@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from core import lm
 from core.files import preserve_corrupt_copy, read_text_with_retry, replace_with_retry
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,6 +29,12 @@ PRESETS_DIR = ROOT / "presets"
 @dataclass
 class Settings:
     lm_url: str = "http://127.0.0.1:1234/v1"
+    # "lmstudio" (local, default) or "openai_compatible": any cloud or proxy
+    # server speaking the OpenAI API. Only the latter receives lm_api_key, as a
+    # Bearer token and only on lm_url's own origin; it also skips LM Studio's
+    # TTL, model load/unload and SDK extensions.
+    lm_provider: Literal["lmstudio", "openai_compatible"] = "lmstudio"
+    lm_api_key: str = ""
     lm_model: str = "local-model"
     lm_embed_model: str = "text-embedding-nomic-embed-text-v1.5"
     lm_context: str = "32768"
@@ -176,7 +183,12 @@ def load_settings(path: Path | None = None) -> Settings:
     unreadable file must not quietly become defaults: a read error is raised,
     and corrupt JSON is preserved under ``.corrupt/`` before defaults are used.
     """
-    p = path or DEFAULT_SETTINGS_PATH
+    settings = _read_settings(path or DEFAULT_SETTINGS_PATH)
+    lm.configure_endpoint(settings)
+    return settings
+
+
+def _read_settings(p: Path) -> Settings:
     if not (p and p.exists()):
         return Settings()
     text = read_text_with_retry(p)
@@ -204,6 +216,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> None:
         replace_with_retry(temporary, p)
     finally:
         temporary.unlink(missing_ok=True)
+    lm.configure_endpoint(settings)
 
 
 def list_presets() -> list[PresetConfig]:

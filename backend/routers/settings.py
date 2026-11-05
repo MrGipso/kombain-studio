@@ -15,8 +15,8 @@ from core.instance_lock import InstanceAlreadyRunning
 
 router = APIRouter()
 
-SECRET_KEYS = {"pexels_api_key", "pixabay_api_key"}
-READ_ONLY_RESPONSE_KEYS = {"pexels_api_key_set", "pixabay_api_key_set"}
+SECRET_KEYS = {"lm_api_key", "pexels_api_key", "pixabay_api_key"}
+READ_ONLY_RESPONSE_KEYS = {f"{key}_set" for key in SECRET_KEYS}
 
 # Binary-path fields are the settings→execution chain (export/diagnostics run
 # them). Restrict what a network request may point them at: the basename must

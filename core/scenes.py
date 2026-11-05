@@ -214,7 +214,7 @@ def _lm_embeddings(
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=lm_client.request_headers(endpoint),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -1457,7 +1457,7 @@ def call_lm_studio(
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=lm_client.request_headers(endpoint),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=180) as response:
@@ -1565,7 +1565,7 @@ def call_lm_studio_for_segments(
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=lm_client.request_headers(endpoint),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=240) as response:

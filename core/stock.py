@@ -529,6 +529,8 @@ def _vision_ttl(settings: Any) -> int | None:
     user's unload delay is 0 (immediate) we still use a small positive TTL so a
     per-card batch doesn't reload the model each time — it then leaves VRAM
     shortly after the batch finishes."""
+    if not lm.is_lmstudio(settings):
+        return None  # a cloud provider has no TTL
     auto = getattr(settings, "lm_auto_unload", True)
     if isinstance(auto, str):
         auto = auto.strip().lower() not in {"0", "false", "no", "off"}
@@ -647,10 +649,11 @@ def _rephrase_query(description: str, tried: list[str], lm_url: str, model: str,
     if ttl is not None and ttl > 0:
         payload["ttl"] = ttl
     try:
+        endpoint = lm_url.rstrip("/") + "/chat/completions"
         req = urllib.request.Request(
-            lm_url.rstrip("/") + "/chat/completions",
+            endpoint,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers=lm.request_headers(endpoint), method="POST",
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))

@@ -180,10 +180,11 @@ def _lm_music_brief(base_url: str, model: str, notes: list[str], topic: str, ttl
         "temperature": 0.4,
     }
     lm_client.add_ttl(payload, ttl_seconds)
+    url = base_url.rstrip("/") + "/chat/completions"
     request = urllib.request.Request(
-        base_url.rstrip("/") + "/chat/completions",
+        url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=lm_client.request_headers(url),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=180) as response:

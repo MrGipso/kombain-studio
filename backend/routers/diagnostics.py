@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from core import lm as lm_client
 from core.config import load_settings
 from core.comfy import validate_configured_workflows
 
@@ -23,9 +24,9 @@ class CheckResult(BaseModel):
     detail: str = ""
 
 
-def _http_get(url: str, timeout: int = 5) -> tuple[bool, str]:
+def _http_get(url: str, timeout: int = 5, headers: dict[str, str] | None = None) -> tuple[bool, str]:
     try:
-        req = urllib.request.Request(url, method="GET")
+        req = urllib.request.Request(url, headers=headers or {}, method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read(4000).decode("utf-8", errors="replace")
             return True, body
@@ -36,20 +37,54 @@ def _http_get(url: str, timeout: int = 5) -> tuple[bool, str]:
         return False, str(exc)
 
 
+_AUTH_REJECTED = {"HTTP 401", "HTTP 403"}
+
+
+def _lm_label(settings) -> str:
+    return "LM Studio" if lm_client.is_lmstudio(settings) else "Облачный LLM API"
+
+
+def _lm_get_models(settings) -> tuple[bool, str]:
+    """GET ``/models`` with the configured credentials."""
+    url = lm_client.base_url(settings) + "/models"
+    return _http_get(url, headers=lm_client.request_headers(url, settings))
+
+
+def _auth_failure(target: str, settings, status: str) -> CheckResult:
+    return CheckResult(
+        target=target, ok=False,
+        message=f"{_lm_label(settings)}: запрос отклонён ({status}) — проверьте API-ключ",
+        detail=lm_client.base_url(settings),
+    )
+
+
 def _check_lm(settings) -> CheckResult:
-    base = (settings.lm_url or "http://127.0.0.1:1234/v1").rstrip("/")
-    ok, body = _http_get(f"{base}/models")
+    label = _lm_label(settings)
+    ok, body = _lm_get_models(settings)
     if not ok:
-        return CheckResult(target="lm", ok=False, message="LM Studio недоступен", detail=body)
+        return CheckResult(target="lm", ok=False, message=f"{label} недоступен", detail=body)
+    if body in _AUTH_REJECTED:
+        return _auth_failure("lm", settings, body)
     model_ids = []
     try:
         data = json.loads(body)
         model_ids = [m.get("id", "") for m in data.get("data", [])]
     except Exception:
         pass
-    msg = "LM Studio доступен"
+    msg = f"{label} доступен"
     if settings.lm_model and settings.lm_model != "local-model":
         if settings.lm_model not in model_ids:
+            if not lm_client.is_lmstudio(settings):
+                # Providers list models differently (Gemini prefixes ids with
+                # "models/"), so a miss is a hint, not a failure.
+                return CheckResult(
+                    target="lm", ok=True,
+                    message=(
+                        f"{label} доступен; модели '{settings.lm_model}' нет "
+                        "в списке провайдера — проверьте имя"
+                    ),
+                    detail=", ".join(model_ids[:10]),
+                )
             return CheckResult(
                 target="lm", ok=False,
                 message=f"LM Studio доступен, но модель '{settings.lm_model}' не загружена",
@@ -63,24 +98,25 @@ def _check_lm_inference(settings) -> CheckResult:
     availability = _check_lm(settings)
     if not availability.ok:
         return availability
-    base = (settings.lm_url or "http://127.0.0.1:1234/v1").rstrip("/")
     model = str(settings.lm_model or "").strip()
     if not model or model == "local-model":
         return CheckResult(
             target="lm", ok=False, message="LM model не настроена", detail=model,
         )
     try:
-        payload = json.dumps({
+        probe = {
             "model": model,
             "messages": [{"role": "user", "content": "Reply with OK"}],
             "temperature": 0,
             "max_tokens": 8,
-            "ttl": 5,
-        }).encode("utf-8")
+        }
+        if lm_client.is_lmstudio(settings):
+            probe["ttl"] = 5
+        url = lm_client.base_url(settings) + "/chat/completions"
         request = urllib.request.Request(
-            f"{base}/chat/completions",
-            data=payload,
-            headers={"Content-Type": "application/json"},
+            url,
+            data=json.dumps(probe).encode("utf-8"),
+            headers=lm_client.request_headers(url, settings),
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=120) as response:
@@ -97,7 +133,8 @@ def _check_lm_inference(settings) -> CheckResult:
         )
     except Exception as exc:
         return CheckResult(
-            target="lm", ok=False, message="LM inference недоступен", detail=str(exc),
+            target="lm", ok=False, message="LM inference недоступен",
+            detail=lm_client.explain_error(exc),
         )
 
 
@@ -223,15 +260,17 @@ def _check_omnivoice(settings) -> CheckResult:
 
 
 def _check_embed(settings) -> CheckResult:
-    base = (settings.lm_url or "http://127.0.0.1:1234/v1").rstrip("/")
     model = getattr(settings, "lm_embed_model", "") or "text-embedding-nomic-embed-text-v1.5"
     try:
-        # ttl makes LM Studio auto-unload the model shortly after this probe, so
-        # a connection test doesn't leave the embedding model resident for 60 min.
-        payload = json.dumps({"model": model, "input": ["test"], "ttl": 5}).encode("utf-8")
+        probe: dict = {"model": model, "input": ["test"]}
+        if lm_client.is_lmstudio(settings):
+            # ttl makes LM Studio auto-unload the model shortly after this probe,
+            # so a connection test doesn't leave the model resident for 60 min.
+            probe["ttl"] = 5
+        url = lm_client.base_url(settings) + "/embeddings"
         req = urllib.request.Request(
-            f"{base}/embeddings", data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
+            url, data=json.dumps(probe).encode("utf-8"),
+            headers=lm_client.request_headers(url, settings), method="POST",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
@@ -240,20 +279,28 @@ def _check_embed(settings) -> CheckResult:
             return CheckResult(target="embed", ok=True, message="Эмбеддинги работают", detail=f"{model}, dim={dim}")
         return CheckResult(target="embed", ok=False, message="Пустой ответ эмбеддингов", detail=model)
     except urllib.error.HTTPError as exc:
-        return CheckResult(target="embed", ok=False, message=f"Модель эмбеддингов недоступна (HTTP {exc.code})", detail=f"Загрузи '{model}' в LM Studio")
+        if f"HTTP {exc.code}" in _AUTH_REJECTED:
+            return _auth_failure("embed", settings, f"HTTP {exc.code}")
+        hint = (
+            f"Загрузи '{model}' в LM Studio"
+            if lm_client.is_lmstudio(settings)
+            else f"Проверьте, что провайдер поддерживает '{model}'"
+        )
+        return CheckResult(target="embed", ok=False, message=f"Модель эмбеддингов недоступна (HTTP {exc.code})", detail=hint)
     except Exception as exc:
         return CheckResult(target="embed", ok=False, message="Эмбеддинги недоступны", detail=str(exc))
 
 
 def _check_embed_available(settings) -> CheckResult:
     """Passive model-list probe that never submits an embedding request."""
-    base = (settings.lm_url or "http://127.0.0.1:1234/v1").rstrip("/")
     model = getattr(settings, "lm_embed_model", "") or "text-embedding-nomic-embed-text-v1.5"
-    ok, body = _http_get(f"{base}/models")
+    ok, body = _lm_get_models(settings)
     if not ok:
         return CheckResult(
-            target="embed", ok=False, message="LM Studio недоступен", detail=body,
+            target="embed", ok=False, message=f"{_lm_label(settings)} недоступен", detail=body,
         )
+    if body in _AUTH_REJECTED:
+        return _auth_failure("embed", settings, body)
     try:
         data = json.loads(body)
         model_ids = [str(item.get("id", "")) for item in data.get("data", [])]

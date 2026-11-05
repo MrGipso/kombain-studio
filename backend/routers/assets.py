@@ -726,10 +726,11 @@ def _lm_prompt(endpoint: str, model: str, prompt: str, ttl_seconds: int | None =
         "temperature": 0.35,
     }
     lm_client.add_ttl(payload, ttl_seconds)
+    url = endpoint.rstrip("/") + "/chat/completions"
     request = urllib.request.Request(
-        endpoint.rstrip("/") + "/chat/completions",
+        url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=lm_client.request_headers(url),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=180) as response:

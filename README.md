@@ -132,6 +132,17 @@ For an RC, the LM Studio endpoint is local-only: bind it to `127.0.0.1`, use
 sensitive request/prompt logging. Do not expose the unauthenticated endpoint to
 a LAN, overlay network, or the public Internet.
 
+A cloud LLM is an explicit opt-in: set **Провайдер LLM** to *OpenAI-совместимый
+API*, point the URL at the provider's `/v1` base (for example
+`https://api.openai.com/v1` or `https://openrouter.ai/api/v1`) and save the API
+key. The key is stored like the stock keys (never returned by the settings API)
+and is sent as a Bearer token only to the configured URL's origin, only in that
+mode. Cloud mode skips LM Studio's TTL, model load/unload and SDK transport and
+requests non-strict JSON Schema output, which the client validates and repairs
+locally. Script text, scenes and stock previews then leave the machine, and an
+unattended run makes hundreds of billable requests; scene segmentation also
+needs a provider with an `/embeddings` endpoint.
+
 Use `--output artifacts\integration-smoke.json` to atomically save the same
 structured report printed to stdout.
 

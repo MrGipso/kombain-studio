@@ -160,6 +160,9 @@ def _ensure_lm_context(
     settings: dict,
     log: Callable[[str], None],
 ) -> str | None:
+    if not lm_client.is_lmstudio(settings):
+        log("Облачный LLM API: установка контекста LM Studio пропущена")
+        return None
     base_url = settings.get("lm_url", "http://127.0.0.1:1234/v1")
     model = str(settings.get("lm_model", "local-model")).strip()
     ctx_raw = settings.get("lm_context", "32768")

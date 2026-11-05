@@ -47,7 +47,7 @@ def test_passive_lm_requires_exact_configured_model_id(
 ):
     requested_urls = []
 
-    def fake_get(url, timeout=5):
+    def fake_get(url, timeout=5, headers=None):
         requested_urls.append((url, timeout))
         return True, json.dumps({"data": [{"id": item} for item in available_ids]})
 
