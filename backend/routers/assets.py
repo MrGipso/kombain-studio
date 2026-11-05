@@ -727,14 +727,7 @@ def _lm_prompt(endpoint: str, model: str, prompt: str, ttl_seconds: int | None =
     }
     lm_client.add_ttl(payload, ttl_seconds)
     url = endpoint.rstrip("/") + "/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=lm_client.request_headers(url),
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=180) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    data = lm_client.post_json(url, payload, timeout=180)
     content = data["choices"][0]["message"]["content"]
     return _extract_json_object(content)
 

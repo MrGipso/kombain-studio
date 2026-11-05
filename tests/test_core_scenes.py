@@ -198,7 +198,7 @@ def test_embedding_client_sorts_vectors_and_applies_ttl(
         seen["timeout"] = timeout
         return Response()
 
-    monkeypatch.setattr(scenes.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(scenes.lm_client.urllib.request, "urlopen", urlopen)
 
     result = scenes._lm_embeddings(
         "http://lm/v1/", "embed-model", ["first", "second"], ttl_seconds=30
@@ -263,7 +263,7 @@ def test_embedding_client_rejects_malformed_vectors_before_segmentation(
             return json.dumps({"data": items}).encode("utf-8")
 
     monkeypatch.setattr(
-        scenes.urllib.request,
+        scenes.lm_client.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: Response(),
     )
@@ -314,7 +314,7 @@ def test_lm_segment_parsing_keeps_source_text_and_fills_uncovered_tail(
         seen["timeout"] = timeout
         return _response(raw)
 
-    monkeypatch.setattr(scenes.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(scenes.lm_client.urllib.request, "urlopen", urlopen)
 
     result = scenes.call_lm_studio_for_segments(
         "http://lm/v1/", "scene-model", segments, ttl_seconds=90
@@ -355,7 +355,7 @@ def test_lm_segment_parsing_repairs_initial_and_middle_gaps(
         },
     ]
     monkeypatch.setattr(
-        scenes.urllib.request,
+        scenes.lm_client.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: _response(raw),
     )
@@ -391,7 +391,7 @@ def test_lm_segment_parsing_repairs_duplicates_and_out_of_order_ids(
         },
     ]
     monkeypatch.setattr(
-        scenes.urllib.request,
+        scenes.lm_client.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: _response(raw),
     )
@@ -427,7 +427,7 @@ def test_lm_segment_parsing_rejects_sparse_range_with_distant_id(
         },
     ]
     monkeypatch.setattr(
-        scenes.urllib.request,
+        scenes.lm_client.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: _response(raw),
     )
@@ -529,7 +529,7 @@ def test_script_scene_analysis_preserves_transport_and_builds_timeline(
         seen["timeout"] = timeout
         return _response(raw)
 
-    monkeypatch.setattr(scenes.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(scenes.lm_client.urllib.request, "urlopen", urlopen)
 
     result = scenes.call_lm_studio(
         "http://lm/v1/",

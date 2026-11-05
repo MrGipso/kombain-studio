@@ -8,6 +8,7 @@ from dataclasses import asdict
 from fastapi import APIRouter, HTTPException
 from pydantic import TypeAdapter, ValidationError
 
+from core import lm
 from core.config import Settings, load_settings, save_settings, list_presets
 from core.project import is_within, list_projects, open_project
 from backend.services import jobs, runtime_locks
@@ -16,7 +17,8 @@ from core.instance_lock import InstanceAlreadyRunning
 router = APIRouter()
 
 SECRET_KEYS = {"lm_api_key", "pexels_api_key", "pixabay_api_key"}
-READ_ONLY_RESPONSE_KEYS = {f"{key}_set" for key in SECRET_KEYS}
+# Response-only fields: the UI sends the whole object back, so PUT ignores them.
+READ_ONLY_RESPONSE_KEYS = {f"{key}_set" for key in SECRET_KEYS} | {"lm_cloud_requests_today"}
 
 # Binary-path fields are the settings→execution chain (export/diagnostics run
 # them). Restrict what a network request may point them at: the basename must
@@ -107,6 +109,7 @@ async def get_settings():
             data[f"{f.name}_set"] = bool(value)
         else:
             data[f.name] = value
+    data["lm_cloud_requests_today"] = lm.cloud_requests_today()
     return data
 
 

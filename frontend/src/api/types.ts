@@ -459,6 +459,8 @@ export interface Settings {
   lm_provider: 'lmstudio' | 'openai_compatible'
   lm_api_key: string
   lm_api_key_set?: boolean
+  lm_cloud_daily_limit: number
+  lm_cloud_requests_today?: number
   lm_model: string
   lm_embed_model: string
   lm_context: string

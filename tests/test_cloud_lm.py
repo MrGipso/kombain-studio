@@ -21,8 +21,13 @@ CLOUD_URL = "https://api.example-llm.com/v1"
 
 @pytest.fixture(autouse=True)
 def _isolated_endpoint(monkeypatch):
-    # The configured endpoint is process-global; never leak it between tests.
+    # The configured endpoint, usage counter and format cache are
+    # process-global; never leak them between tests or really sleep.
     monkeypatch.setattr(lm, "_configured", None)
+    monkeypatch.setattr(lm, "_usage_day", None)
+    monkeypatch.setattr(lm, "_usage_count", 0)
+    monkeypatch.setattr(lm, "_format_modes", {})
+    monkeypatch.setattr(lm, "_sleep", lambda _seconds: None)
 
 
 def _cloud(**overrides) -> Settings:
@@ -159,7 +164,7 @@ def test_url_only_helpers_resolve_provider_and_key(monkeypatch):
         seen.append(request)
         return _Response({"data": [{"index": 0, "embedding": [0.1, 0.2]}]})
 
-    monkeypatch.setattr(scenes.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(scenes.lm_client.urllib.request, "urlopen", fake_urlopen)
 
     vectors = scenes._lm_embeddings(CLOUD_URL, "text-embedding-test", ["hello"])
 
@@ -271,3 +276,169 @@ def test_cloud_inference_probe_sends_no_ttl(monkeypatch):
 @pytest.mark.parametrize(("code", "fragment"), [(401, "API-ключ"), (403, "API-ключ"), (429, "HTTP 429")])
 def test_explain_error_names_cloud_failures(code, fragment):
     assert fragment in lm.explain_error(_http_error(code))
+
+
+# --- retries, daily cap, structured-output fallback -------------------------
+
+
+def _scripted(monkeypatch, steps):
+    """urlopen that replays ``steps``: an int is an HTTP error, a dict a reply."""
+    seen = []
+    queue = list(steps)
+
+    def fake_urlopen(request, timeout):
+        seen.append(request)
+        step = queue.pop(0)
+        if isinstance(step, tuple):
+            code, body, headers = step
+            raise urllib.error.HTTPError(request.full_url, code, "error", headers, io.BytesIO(body))
+        if isinstance(step, int):
+            raise urllib.error.HTTPError(request.full_url, step, "error", {}, io.BytesIO(b"{}"))
+        return _Response(step)
+
+    monkeypatch.setattr(lm.urllib.request, "urlopen", fake_urlopen)
+    return seen
+
+
+def _record_sleeps(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(lm, "_sleep", sleeps.append)
+    return sleeps
+
+
+def test_cloud_retries_rate_limit_honouring_retry_after(monkeypatch):
+    seen = _scripted(monkeypatch, [(429, b"{}", {"Retry-After": "3"}), CHAT_OK])
+    sleeps = _record_sleeps(monkeypatch)
+
+    assert lm.chat(_cloud(), [{"role": "user", "content": "hi"}]) == '{"answer": "ok"}'
+
+    assert len(seen) == 2
+    assert sleeps == [3.0]
+    # One logical request, however many attempts it took.
+    assert lm.cloud_requests_today() == 1
+
+
+def test_cloud_gives_up_after_bounded_backoff(monkeypatch):
+    seen = _scripted(monkeypatch, [503, 503, 503, 503])
+    sleeps = _record_sleeps(monkeypatch)
+
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        lm.chat(_cloud(), [{"role": "user", "content": "hi"}])
+
+    assert caught.value.code == 503
+    assert len(seen) == 4
+    assert sleeps == [2.0, 4.0, 8.0]
+
+
+def test_retry_after_is_capped_and_accepts_http_dates():
+    def error(value):
+        return urllib.error.HTTPError(CLOUD_URL, 429, "slow down", {"Retry-After": value}, io.BytesIO(b""))
+
+    assert lm._retry_delay(error("3600"), 1) == lm._MAX_RETRY_WAIT_SECONDS
+    assert lm._retry_delay(error("Wed, 21 Oct 2015 07:28:00 GMT"), 1) == 0.5  # in the past
+    assert lm._retry_delay(error("soon"), 2) == 4.0
+
+
+@pytest.mark.parametrize("code", [400, 401, 404])
+def test_client_errors_are_not_retried(monkeypatch, code):
+    seen = _scripted(monkeypatch, [code])
+
+    with pytest.raises(urllib.error.HTTPError):
+        lm.chat(_cloud(), [{"role": "user", "content": "hi"}])
+
+    assert len(seen) == 1
+
+
+def test_lmstudio_keeps_single_attempt_and_no_count(monkeypatch):
+    seen = _scripted(monkeypatch, [503])
+    local = _cloud(lm_provider="lmstudio", lm_url="http://127.0.0.1:1234/v1")
+
+    with pytest.raises(urllib.error.HTTPError):
+        lm.chat(local, [{"role": "user", "content": "hi"}])
+
+    assert len(seen) == 1
+    assert lm.cloud_requests_today() == 0
+
+
+def test_daily_limit_stops_requests_before_they_are_sent(monkeypatch):
+    seen = _scripted(monkeypatch, [CHAT_OK, CHAT_OK])
+    settings = _cloud(lm_cloud_daily_limit=2)
+
+    lm.chat(settings, [{"role": "user", "content": "1"}])
+    lm.chat(settings, [{"role": "user", "content": "2"}])
+    with pytest.raises(lm.CloudRequestLimitError) as caught:
+        lm.chat(settings, [{"role": "user", "content": "3"}])
+
+    assert len(seen) == 2
+    assert "лимит" in lm.explain_error(caught.value)
+
+
+def test_daily_limit_applies_to_url_only_helpers(monkeypatch):
+    lm.configure_endpoint(_cloud(lm_cloud_daily_limit=1))
+    _scripted(monkeypatch, [{"data": [{"index": 0, "embedding": [1.0]}]}])
+
+    scenes._lm_embeddings(CLOUD_URL, "embed", ["a"])
+    with pytest.raises(lm.CloudRequestLimitError):
+        scenes._lm_embeddings(CLOUD_URL, "embed", ["b"])
+
+
+class _Answer(BaseModel):
+    answer: str
+
+
+_SCHEMA_REJECTED = (400, b'{"error": {"message": "response_format json_schema is not supported"}}', {})
+
+
+def test_structured_output_falls_back_to_json_object_and_remembers(monkeypatch):
+    seen = _scripted(monkeypatch, [_SCHEMA_REJECTED, CHAT_OK, CHAT_OK])
+    messages = [{"role": "system", "content": "Будь краток."}, {"role": "user", "content": "hi"}]
+
+    first = lm.chat_structured(_cloud(), messages, _Answer)
+    second = lm.chat_structured(_cloud(), messages, _Answer)
+
+    assert first.value.answer == second.value.answer == "ok"
+    assert len(seen) == 3  # the rejected mode is not retried on the next call
+    fallback = json.loads(seen[1].data)
+    assert fallback["response_format"] == {"type": "json_object"}
+    system = fallback["messages"][0]
+    assert system["role"] == "system"
+    assert system["content"].startswith("Будь краток.")
+    assert "JSON Schema" in system["content"]
+    assert json.loads(seen[2].data)["response_format"] == {"type": "json_object"}
+
+
+def test_array_schema_skips_json_object_mode(monkeypatch):
+    reply = {"choices": [{"message": {"content": '[{"answer": "ok"}]'}}]}
+    seen = _scripted(monkeypatch, [_SCHEMA_REJECTED, reply])
+
+    result = lm.chat_structured(_cloud(), [{"role": "user", "content": "hi"}], list[_Answer])
+
+    assert [item.answer for item in result.value] == ["ok"]
+    fallback = json.loads(seen[1].data)
+    assert "response_format" not in fallback
+    assert fallback["messages"][0]["role"] == "system"
+
+
+def test_unrelated_bad_request_is_raised_with_its_body(monkeypatch):
+    _scripted(monkeypatch, [(400, b'{"error": "model gpt-test does not exist"}', {})])
+
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        lm.chat_structured(_cloud(), [{"role": "user", "content": "hi"}], _Answer)
+
+    assert "does not exist" in lm.explain_error(caught.value)
+
+
+def test_settings_route_reports_usage_as_read_only(tmp_path, monkeypatch):
+    current = _cloud(output_base=str(tmp_path))
+    saved = []
+    monkeypatch.setattr(settings_router, "load_settings", lambda: current)
+    monkeypatch.setattr(settings_router, "save_settings", saved.append)
+    monkeypatch.setattr(settings_router, "list_projects", lambda _path: [])
+    monkeypatch.setattr(lm, "cloud_requests_today", lambda: 7)
+
+    shown = asyncio.run(settings_router.get_settings())
+    assert shown["lm_cloud_requests_today"] == 7
+
+    shown["lm_cloud_daily_limit"] = "500"  # the number input may send a string
+    assert asyncio.run(settings_router.update_settings(shown)) == {"ok": True}
+    assert saved[-1].lm_cloud_daily_limit == 500

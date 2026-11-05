@@ -35,6 +35,9 @@ class Settings:
     # TTL, model load/unload and SDK extensions.
     lm_provider: Literal["lmstudio", "openai_compatible"] = "lmstudio"
     lm_api_key: str = ""
+    # Cap on cloud LLM requests per local day (0 = unlimited). Counted in
+    # memory by core.lm, so a server restart also resets it.
+    lm_cloud_daily_limit: Annotated[int, Field(ge=0, le=1_000_000)] = 0
     lm_model: str = "local-model"
     lm_embed_model: str = "text-embedding-nomic-embed-text-v1.5"
     lm_context: str = "32768"

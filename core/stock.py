@@ -650,13 +650,7 @@ def _rephrase_query(description: str, tried: list[str], lm_url: str, model: str,
         payload["ttl"] = ttl
     try:
         endpoint = lm_url.rstrip("/") + "/chat/completions"
-        req = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=lm.request_headers(endpoint), method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        data = lm.post_json(endpoint, payload, timeout=timeout)
         content = data["choices"][0]["message"]["content"]
         s, e = content.find("{"), content.rfind("}")
         obj = json.loads(content[s:e + 1]) if s >= 0 and e > s else {}

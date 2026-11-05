@@ -12,7 +12,6 @@ import logging
 import math
 import re
 import statistics
-import urllib.request
 from types import SimpleNamespace
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -211,14 +210,7 @@ def _lm_embeddings(
     endpoint = base_url.rstrip("/") + "/embeddings"
     payload: dict = {"model": model, "input": texts}
     lm_client.add_ttl(payload, ttl_seconds)
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=lm_client.request_headers(endpoint),
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    data = lm_client.post_json(endpoint, payload, timeout=timeout)
     raw_items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(raw_items, list):
         raise ValueError("embedding response must contain a data array")
@@ -1454,14 +1446,7 @@ def call_lm_studio(
         "temperature": 0.3,
     }
     lm_client.add_ttl(payload, ttl_seconds)
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=lm_client.request_headers(endpoint),
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=180) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    data = lm_client.post_json(endpoint, payload, timeout=180)
 
     raw_scenes = parse_lm_json_array(
         data["choices"][0]["message"]["content"].strip(),
@@ -1562,14 +1547,7 @@ def call_lm_studio_for_segments(
         "temperature": 0.4,
     }
     lm_client.add_ttl(payload, ttl_seconds)
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=lm_client.request_headers(endpoint),
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=240) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    data = lm_client.post_json(endpoint, payload, timeout=240)
 
     content = data["choices"][0]["message"]["content"].strip()
     raw_scenes = parse_lm_json_array(content, "LM Studio segment analysis")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
@@ -181,14 +180,7 @@ def _lm_music_brief(base_url: str, model: str, notes: list[str], topic: str, ttl
     }
     lm_client.add_ttl(payload, ttl_seconds)
     url = base_url.rstrip("/") + "/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=lm_client.request_headers(url),
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=180) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    data = lm_client.post_json(url, payload, timeout=180)
     content = data["choices"][0]["message"]["content"].strip()
     start, end = content.find("{"), content.rfind("}")
     obj = json.loads(content[start:end + 1]) if start >= 0 and end > start else {}

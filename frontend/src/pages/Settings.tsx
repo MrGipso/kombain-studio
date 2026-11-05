@@ -177,6 +177,25 @@ export default function Settings() {
                       Выгрузка моделей и Context Length в этом режиме не используются.
                     </p>
                   )}
+                  {cloudLm && (
+                    <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+                      <div>
+                        <label htmlFor="settings-lm-cloud-daily-limit" className="mb-1.5 block text-xs font-medium text-slate-500">Лимит облачных запросов в сутки (0 = без лимита)</label>
+                        <input
+                          id="settings-lm-cloud-daily-limit"
+                          type="number"
+                          min={0}
+                          step={100}
+                          value={settings.lm_cloud_daily_limit ?? 0}
+                          onChange={(e) => setSettings({ ...settings, lm_cloud_daily_limit: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+                          className="min-h-10 w-40 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 font-mono text-sm text-white focus:border-indigo-500 focus:outline-none"
+                        />
+                      </div>
+                      <p className="pb-2 text-xs text-slate-500">
+                        Сегодня отправлено: {settings.lm_cloud_requests_today ?? 0}. Счётчик сбрасывается в полночь и при перезапуске сервера; повторы после 429/5xx не считаются.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
               <div className="grid gap-4 md:grid-cols-2">

@@ -10,13 +10,19 @@ This module must stay dependency-light: no imports from ``backend``.
 from __future__ import annotations
 
 import base64
+import io
 import json
+import logging
 import re
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
+from email.utils import parsedate_to_datetime
 from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import TypeAdapter, ValidationError
@@ -93,6 +99,7 @@ class _Endpoint:
     origin: str
     provider: str
     api_key: str
+    daily_limit: int = 0  # cloud requests per local day; 0 = unlimited
 
 
 def _endpoint_from(settings: Any) -> _Endpoint | None:
@@ -105,7 +112,11 @@ def _endpoint_from(settings: Any) -> _Endpoint | None:
     api_key = ""
     if provider == PROVIDER_OPENAI_COMPATIBLE:
         api_key = str(_setting(settings, "lm_api_key", "") or "").strip()
-    return _Endpoint(origin=origin, provider=provider, api_key=api_key)
+    try:
+        daily_limit = max(0, int(_setting(settings, "lm_cloud_daily_limit", 0) or 0))
+    except (TypeError, ValueError):
+        daily_limit = 0
+    return _Endpoint(origin=origin, provider=provider, api_key=api_key, daily_limit=daily_limit)
 
 
 # The configured LM endpoint. Many helpers receive only a base URL (scene and
@@ -156,6 +167,95 @@ def is_lmstudio(settings: Any) -> bool:
         return _normalize_provider(explicit) == PROVIDER_LMSTUDIO
     endpoint = _endpoint_for(base_url(settings))
     return endpoint is None or endpoint.provider == PROVIDER_LMSTUDIO
+
+
+class CloudRequestLimitError(RuntimeError):
+    """The user's daily cap on cloud LLM requests is reached."""
+
+
+# Rate limits and transient gateway/overload errors (529 = Anthropic-style
+# "overloaded"). Other 4xx are the caller's fault and are never replayed.
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504, 529})
+_MAX_ATTEMPTS = 4
+_MAX_RETRY_WAIT_SECONDS = 30.0
+_sleep = time.sleep
+_log = logging.getLogger(__name__)
+
+# In-memory, per local day: reset at midnight and when the server restarts.
+_usage_lock = threading.Lock()
+_usage_day: date | None = None
+_usage_count = 0
+
+
+def cloud_requests_today() -> int:
+    """Cloud LLM requests sent today by this server process."""
+    with _usage_lock:
+        return _usage_count if _usage_day == date.today() else 0
+
+
+def _consume_cloud_request(limit: int) -> None:
+    global _usage_day, _usage_count
+    with _usage_lock:
+        today = date.today()
+        if _usage_day != today:
+            _usage_day, _usage_count = today, 0
+        if limit > 0 and _usage_count >= limit:
+            raise CloudRequestLimitError(
+                f"Достигнут суточный лимит облачных LLM-запросов ({limit}). "
+                "Увеличьте лимит в настройках или продолжите завтра."
+            )
+        _usage_count += 1
+
+
+def _retry_delay(exc: urllib.error.HTTPError, attempt: int) -> float:
+    """Seconds to wait before retry ``attempt``: Retry-After, else 2/4/8 s."""
+    raw = exc.headers.get("Retry-After") if exc.headers is not None else None
+    delay: float | None = None
+    if raw:
+        text = str(raw).strip()
+        try:
+            delay = float(text)
+        except ValueError:
+            try:
+                delay = parsedate_to_datetime(text).timestamp() - time.time()
+            except (TypeError, ValueError, IndexError, OverflowError):
+                delay = None
+    if delay is None:
+        delay = 2.0 ** attempt
+    return min(max(delay, 0.5), _MAX_RETRY_WAIT_SECONDS)
+
+
+def post_json(url: str, payload: Any, *, timeout: float, settings: Any = None) -> Any:
+    """POST JSON to an LM endpoint and return the decoded JSON reply.
+
+    Every LLM request goes through here. Cloud endpoints count against the
+    daily cap (one count per call, however many retries) and replay rate
+    limits and transient server errors, honouring Retry-After. LM Studio keeps
+    a single attempt: its 5xx are usually deterministic (context too long).
+    """
+    endpoint = _endpoint_for(url, settings)
+    cloud = endpoint is not None and endpoint.provider == PROVIDER_OPENAI_COMPATIBLE
+    if cloud:
+        _consume_cloud_request(endpoint.daily_limit)
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = request_headers(url, settings)
+    attempts = _MAX_ATTEMPTS if cloud else 1
+    for attempt in range(1, attempts + 1):
+        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            if attempt == attempts or exc.code not in _RETRY_STATUSES:
+                raise
+            delay = _retry_delay(exc, attempt)
+            exc.close()
+            _log.warning(
+                "LLM %s: HTTP %s, повтор %s/%s через %.1f с",
+                url, exc.code, attempt, attempts - 1, delay,
+            )
+            _sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def unload_delay_seconds(settings: Any) -> int | None:
@@ -262,29 +362,101 @@ def _http_chat(
             raise ValueError("max_tokens должен быть положительным")
         payload["max_tokens"] = int(max_tokens)
     lmstudio = is_lmstudio(settings)
-    if response_schema is not None:
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": schema_name,
-                # OpenAI's strict mode rejects schemas with optional fields;
-                # replies are validated and repaired locally either way.
-                "strict": lmstudio,
-                "schema": response_schema,
-            },
-        }
     if lmstudio:
         add_ttl(payload, ttl if ttl is not None else ttl_seconds(settings))
     url = base_url(settings) + "/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=request_headers(url, settings),
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    if response_schema is None:
+        data = post_json(url, payload, timeout=timeout, settings=settings)
+    elif lmstudio:
+        payload["response_format"] = _response_format(
+            "json_schema", schema_name, response_schema, strict=True
+        )
+        data = post_json(url, payload, timeout=timeout, settings=settings)
+    else:
+        data = _post_cloud_structured(
+            url, payload, response_schema, schema_name, timeout=timeout, settings=settings
+        )
     return _assistant_content(data)
+
+
+# Structured-output modes, strongest first. Providers differ: OpenAI and
+# Gemini accept json_schema, DeepSeek only json_object, some proxies neither.
+# The reply is validated locally in every mode, so a weaker mode only costs
+# reliability, never correctness.
+_FORMAT_MODES = ("json_schema", "json_object", "prompt")
+# (origin, model) -> the strongest mode the provider accepted.
+_format_modes: dict[tuple[str, str], str] = {}
+_FORMAT_REJECTION_MARKERS = ("response_format", "json_schema", "json_object", "structured output")
+
+
+def _response_format(mode: str, name: str, schema: dict[str, Any], *, strict: bool) -> dict | None:
+    if mode == "json_schema":
+        return {
+            "type": "json_schema",
+            "json_schema": {"name": name, "strict": strict, "schema": schema},
+        }
+    if mode == "json_object":
+        return {"type": "json_object"}
+    return None
+
+
+def _with_schema_hint(messages: list[dict], schema: dict[str, Any]) -> list[dict]:
+    """Put the schema into the system prompt when the API can't enforce it."""
+    hint = (
+        "Ответ — только JSON без markdown, строго по этой JSON Schema:\n"
+        + json.dumps(schema, ensure_ascii=False)
+    )
+    copied = [dict(message) for message in messages]
+    first = copied[0] if copied else None
+    if first is not None and first.get("role") == "system" and isinstance(first.get("content"), str):
+        first["content"] = first["content"].rstrip() + "\n\n" + hint
+    else:
+        copied.insert(0, {"role": "system", "content": hint})
+    return copied
+
+
+def _post_cloud_structured(
+    url: str,
+    payload: dict[str, Any],
+    schema: dict[str, Any],
+    schema_name: str,
+    *,
+    timeout: float,
+    settings: Any,
+) -> Any:
+    """POST a structured request, stepping down modes the provider rejects."""
+    # json_object can only describe an object; array schemas go to the prompt.
+    modes = [m for m in _FORMAT_MODES if m != "json_object" or schema.get("type") == "object"]
+    key = (_origin(url), str(payload.get("model", "")))
+    start = _format_modes.get(key, modes[0])
+    modes = modes[modes.index(start):] if start in modes else modes
+    for index, mode in enumerate(modes):
+        attempt = dict(payload)
+        # OpenAI's strict mode rejects schemas with optional fields; replies
+        # are validated and repaired locally either way.
+        response_format = _response_format(mode, schema_name, schema, strict=False)
+        if response_format is not None:
+            attempt["response_format"] = response_format
+        if mode != "json_schema":
+            attempt["messages"] = _with_schema_hint(payload["messages"], schema)
+        try:
+            data = post_json(url, attempt, timeout=timeout, settings=settings)
+        except urllib.error.HTTPError as exc:
+            if index == len(modes) - 1 or exc.code not in {400, 422}:
+                raise
+            body = exc.read().decode("utf-8", errors="replace")
+            if not any(marker in body.lower() for marker in _FORMAT_REJECTION_MARKERS):
+                # Not about response_format: surface it with the body intact.
+                raise urllib.error.HTTPError(
+                    exc.url, exc.code, exc.msg, exc.headers, io.BytesIO(body.encode("utf-8"))
+                ) from None
+            _log.warning(
+                "LLM %s отклонил response_format=%s, пробую %s", url, mode, modes[index + 1]
+            )
+            continue
+        _format_modes[key] = mode
+        return data
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def chat(settings: Any, messages: list[dict], temperature: float = 0.5,
@@ -321,15 +493,9 @@ def chat_with_metadata(
         payload["max_tokens"] = int(max_tokens)
     if is_lmstudio(settings):
         add_ttl(payload, ttl if ttl is not None else ttl_seconds(settings))
-    url = base_url(settings) + "/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=request_headers(url, settings),
-        method="POST",
+    data = post_json(
+        base_url(settings) + "/chat/completions", payload, timeout=timeout, settings=settings
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
     content = _assistant_content(data)
     choice = data.get("choices", [{}])[0] if isinstance(data.get("choices"), list) else {}
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
