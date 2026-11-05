@@ -71,6 +71,25 @@ def _setting(settings: object, key: str, default: Any = "") -> Any:
     return getattr(settings, key, default)
 
 
+def comfy_api_key(settings: object | None = None) -> str:
+    """The comfy.org key for partner/API nodes, or ``""`` when not configured."""
+
+    return str(_setting(_effective_settings(settings), "comfy_api_key", "") or "").strip()
+
+
+def _queue_prompt(base_url: str, workflow: dict, settings: object | None) -> str:
+    """Queue ``workflow`` with the snapshot's comfy.org key, if one is set.
+
+    Without a key this is the plain two-argument call, so local-only setups
+    send the same payload as before the key existed.
+    """
+
+    api_key = comfy_api_key(settings)
+    if api_key:
+        return comfy_queue_prompt(base_url, workflow, api_key=api_key)
+    return comfy_queue_prompt(base_url, workflow)
+
+
 def set_workflow_seed_values(
     workflow: dict,
     targets: tuple[comfy_contract.Binding, ...] | None = None,
@@ -377,7 +396,7 @@ def generate_comfy_image(
             card.shot_index,
             settings=settings,
         )
-    prompt_id = comfy_queue_prompt(base_url, workflow)
+    prompt_id = _queue_prompt(base_url, workflow, settings)
     history = comfy_wait_for_history(base_url, prompt_id, cancel_check=cancel_check)
     outputs = comfy_collect_outputs(history, ("images",))
     if not outputs:
@@ -433,7 +452,7 @@ def generate_comfy_ltx_video(
         negative_extra=style_negative_for_clip(style.negative_prompt),
         settings=settings,
     )
-    prompt_id = comfy_queue_prompt(base_url, workflow)
+    prompt_id = _queue_prompt(base_url, workflow, settings)
     history = comfy_wait_for_history(
         base_url,
         prompt_id,
@@ -560,7 +579,7 @@ def generate_comfy_music(
         lyrics,
         settings=settings,
     )
-    prompt_id = comfy_queue_prompt(base_url, workflow)
+    prompt_id = _queue_prompt(base_url, workflow, settings)
     history = comfy_wait_for_history(
         base_url,
         prompt_id,
@@ -597,6 +616,7 @@ __all__ = [
     "REFERENCE_NODE_TITLE",
     "REFERENCE_OUTPUT_TITLE",
     "REFERENCE_PROMPT_TITLE",
+    "comfy_api_key",
     "configured_workflow_path",
     "generate_comfy_image",
     "generate_comfy_ltx_video",

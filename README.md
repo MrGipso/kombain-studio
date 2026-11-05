@@ -122,8 +122,11 @@ reference) can be replaced by your own API-format export, including workflows
 built from ComfyUI's cloud API nodes, without code changes. Mark the nodes the
 engine fills by putting markers in their titles (`_meta.title`), for example
 `ENGINE_PROMPT`, `ENGINE_INPUT_IMAGE`, `ENGINE_DURATION` or `ENGINE_OUTPUT`.
-Workflows without markers fall back to the bundled node ids. The roles per
-workflow, the syntax and the current limits for cloud nodes are documented in
+Workflows without markers fall back to the bundled node ids. Cloud
+(partner/API) nodes need a comfy.org API key: set it in Settings
+(`comfy_api_key`) and the engine sends it with every queued prompt as
+`extra_data.api_key_comfy_org`. The roles per workflow, the syntax and the
+notes on cloud nodes are documented in
 [docs/COMFY_WORKFLOWS.md](docs/COMFY_WORKFLOWS.md).
 
 Use active mode only when chat and embedding inference must be verified:

@@ -15,7 +15,7 @@ from core.instance_lock import InstanceAlreadyRunning
 
 router = APIRouter()
 
-SECRET_KEYS = {"lm_api_key", "pexels_api_key", "pixabay_api_key"}
+SECRET_KEYS = {"lm_api_key", "comfy_api_key", "pexels_api_key", "pixabay_api_key"}
 READ_ONLY_RESPONSE_KEYS = {f"{key}_set" for key in SECRET_KEYS}
 
 # Binary-path fields are the settings→execution chain (export/diagnostics run
@@ -194,6 +194,8 @@ async def update_settings(data: dict[str, Any]):
                     "image_model_preference", "reference_enable", "reference_density",
                     "stock_variable_rhythm",
                 }
+                # comfy_api_key is deliberately absent: it authenticates cloud
+                # nodes but never changes what a workflow renders.
                 asset_inputs = {
                     "comfy_url", "comfy_krea_workflow", "comfy_reference_workflow",
                     "reference_conditioning_mode", "comfy_ideogram_workflow",

@@ -6,7 +6,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import type { Settings as SettingsType } from '../api/types'
 
 type DiagTarget = 'lm' | 'embed' | 'comfy' | 'ffmpeg' | 'whisper' | 'omnivoice' | 'woosh'
-const SECRET_FIELDS = new Set<keyof SettingsType>(['lm_api_key', 'pexels_api_key', 'pixabay_api_key'])
+const SECRET_FIELDS = new Set<keyof SettingsType>(['lm_api_key', 'comfy_api_key', 'pexels_api_key', 'pixabay_api_key'])
 // Fields that only mean something for one LLM provider.
 const CLOUD_ONLY_FIELDS = new Set<keyof SettingsType>(['lm_api_key'])
 const LMSTUDIO_ONLY_FIELDS = new Set<keyof SettingsType>(['lm_context'])
@@ -71,6 +71,7 @@ export default function Settings() {
     { key: 'lm_embed_model', label: 'Embedding Model (сегментация сцен)' },
     { key: 'lm_context', label: 'Context Length (LM Studio)' },
     { key: 'comfy_url', label: 'ComfyUI URL' },
+    { key: 'comfy_api_key', label: 'API-ключ comfy.org (облачные API-ноды ComfyUI)' },
     { key: 'comfy_install_dir', label: 'Portable ComfyUI — каталог установки' },
     { key: 'comfy_krea_workflow', label: 'Krea Workflow Path' },
     { key: 'comfy_reference_workflow', label: 'Canonical Reference Workflow Path (API JSON)' },
@@ -94,8 +95,8 @@ export default function Settings() {
   const settingGroups = [
     {
       title: 'Модели и сервисы',
-      description: 'Подключения к LLM (LM Studio или облачный API) и ComfyUI, а также модели, используемые в пайплайне.',
-      keys: ['lm_url', 'lm_api_key', 'lm_model', 'lm_embed_model', 'lm_vision_model', 'lm_context', 'comfy_url', 'image_model_preference'],
+      description: 'Подключения к LLM (LM Studio или облачный API) и ComfyUI, а также модели, используемые в пайплайне. Ключ comfy.org нужен только workflow на облачных API-нодах и отправляется лишь на ComfyUI URL.',
+      keys: ['lm_url', 'lm_api_key', 'lm_model', 'lm_embed_model', 'lm_vision_model', 'lm_context', 'comfy_url', 'comfy_api_key', 'image_model_preference'],
     },
     {
       title: 'Пути и инструменты',
