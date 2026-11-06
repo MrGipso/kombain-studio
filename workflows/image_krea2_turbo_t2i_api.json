@@ -9,7 +9,7 @@
     },
     "class_type": "SaveImage",
     "_meta": {
-      "title": "Save Image"
+      "title": "ENGINE_OUTPUT | Save Image"
     }
   },
   "49": {
@@ -217,7 +217,7 @@
     },
     "class_type": "PrimitiveStringMultiline",
     "_meta": {
-      "title": "Text String (User Prompt)"
+      "title": "ENGINE_PROMPT | Text String (User Prompt)"
     }
   },
   "30:20": {

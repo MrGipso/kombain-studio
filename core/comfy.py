@@ -19,8 +19,13 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from core import comfy_contract
+
 
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
+# ComfyUI's extra_data field for the comfy.org key used by partner/API nodes:
+# https://docs.comfy.org/development/comfyui-server/api-key-integration
+COMFY_ORG_API_KEY_FIELD = "api_key_comfy_org"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORKFLOW_PATHS = {
     "krea": PROJECT_ROOT / "workflows" / "image_krea2_turbo_t2i_api.json",
@@ -97,31 +102,42 @@ def validate_workflow_compatibility(
     }
 
 
+def validate_workflow_file(name: str, path: Path, object_info: dict) -> dict:
+    """Check one configured workflow file against a live Comfy install.
+
+    Besides the node types, the engine's marker contract
+    (:mod:`core.comfy_contract`) is resolved, so a custom workflow without the
+    required ``ENGINE_*`` markers is reported here instead of failing mid-render.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return {"ok": False, "path": str(path), "error": "workflow file not found"}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("workflow root must be an object")
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "path": str(path), "error": str(exc)}
+    report = {"path": str(path), **validate_workflow_compatibility(raw, object_info)}
+    if name in comfy_contract.CONTRACTS:
+        contract = comfy_contract.contract_report(raw, name)
+        report["contract"] = contract
+        if not contract["ok"]:
+            report["ok"] = False
+            report["error"] = contract["error"]
+    return report
+
+
 def validate_configured_workflows(base_url: str, settings: object) -> dict:
     """Read-only live compatibility probe; never queues a Comfy prompt."""
     object_info = comfy_request_json(
         f"{comfy_base_url(base_url)}/object_info",
         timeout=20,
     )
-    workflows: dict[str, dict] = {}
-    for name, path in configured_workflow_paths(settings).items():
-        if not path.is_file():
-            workflows[name] = {
-                "ok": False,
-                "path": str(path),
-                "error": "workflow file not found",
-            }
-            continue
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("workflow root must be an object")
-            workflows[name] = {
-                "path": str(path),
-                **validate_workflow_compatibility(raw, object_info),
-            }
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            workflows[name] = {"ok": False, "path": str(path), "error": str(exc)}
+    workflows: dict[str, dict] = {
+        name: validate_workflow_file(name, path, object_info)
+        for name, path in configured_workflow_paths(settings).items()
+    }
     return {
         "ok": all(item.get("ok") for item in workflows.values()),
         "available_node_types": len(object_info),
@@ -129,14 +145,34 @@ def validate_configured_workflows(base_url: str, settings: object) -> dict:
     }
 
 
-def comfy_queue_prompt(base_url: str, workflow: dict) -> str:
-    """Queue an API-format workflow and return its ComfyUI prompt id."""
+def _redact(text: str, secret: str) -> str:
+    return text.replace(secret, "***") if secret else text
 
-    payload = {"prompt": workflow, "client_id": str(uuid.uuid4())}
-    result = comfy_request_json(f"{comfy_base_url(base_url)}/prompt", payload, timeout=60)
+
+def comfy_queue_prompt(base_url: str, workflow: dict, *, api_key: str = "") -> str:
+    """Queue an API-format workflow and return its ComfyUI prompt id.
+
+    ``api_key`` is the comfy.org account key. Partner/API ("cloud") nodes read
+    it from ``extra_data.api_key_comfy_org`` when a prompt arrives over HTTP
+    instead of from the signed-in ComfyUI frontend. It is sent only when set,
+    so local-only workflows queue exactly the payload they always did, and it
+    is scrubbed from every error raised here, so it cannot reach a job error
+    or a run log.
+    """
+
+    payload: dict = {"prompt": workflow, "client_id": str(uuid.uuid4())}
+    key = str(api_key or "").strip()
+    if key:
+        payload["extra_data"] = {COMFY_ORG_API_KEY_FIELD: key}
+    try:
+        result = comfy_request_json(f"{comfy_base_url(base_url)}/prompt", payload, timeout=60)
+    except Exception as exc:
+        if key and key in str(exc):
+            raise RuntimeError(_redact(str(exc), key)) from None
+        raise
     prompt_id = result.get("prompt_id")
     if not prompt_id:
-        raise RuntimeError(f"ComfyUI did not return prompt_id: {result}")
+        raise RuntimeError(_redact(f"ComfyUI did not return prompt_id: {result}", key))
     return prompt_id
 
 
@@ -338,8 +374,8 @@ class ComfyClient:
         url = path_or_url if "://" in path_or_url else f"{self.base_url}/{path_or_url.lstrip('/')}"
         return comfy_request_json(url, payload, timeout)
 
-    def queue_prompt(self, workflow: dict) -> str:
-        return comfy_queue_prompt(self.base_url, workflow)
+    def queue_prompt(self, workflow: dict, *, api_key: str = "") -> str:
+        return comfy_queue_prompt(self.base_url, workflow, api_key=api_key)
 
     def cancel_prompt(self, prompt_id: str) -> dict:
         return comfy_cancel_prompt(self.base_url, prompt_id)
@@ -375,6 +411,7 @@ class ComfyClient:
 
 
 __all__ = [
+    "COMFY_ORG_API_KEY_FIELD",
     "ComfyCancelledError",
     "ComfyClient",
     "DEFAULT_WORKFLOW_PATHS",
@@ -391,4 +428,5 @@ __all__ = [
     "configured_workflow_paths",
     "validate_configured_workflows",
     "validate_workflow_compatibility",
+    "validate_workflow_file",
 ]

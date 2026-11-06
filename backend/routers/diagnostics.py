@@ -158,9 +158,11 @@ def _check_comfy(settings) -> CheckResult:
             if item.get("ok"):
                 continue
             missing = item.get("missing_node_types") or []
-            problems.append(
-                f"{name}: {', '.join(missing) if missing else item.get('error', 'invalid workflow')}"
-            )
+            details = [", ".join(missing)] if missing else []
+            if item.get("error"):
+                # Includes marker-contract errors for custom workflows.
+                details.append(str(item["error"]))
+            problems.append(f"{name}: {'; '.join(details) or 'invalid workflow'}")
         if problems:
             return CheckResult(
                 target="comfy",

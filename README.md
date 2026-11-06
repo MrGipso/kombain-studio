@@ -112,8 +112,22 @@ requests, trigger LM Studio JIT model loading, modify projects, or queue
 generation jobs. Passive `lm` and `embed` checks inspect `/v1/models`; they
 confirm reachability and that the configured models are loaded, but do not
 prove inference. The ComfyUI check reads `/object_info` and verifies that all
-five bundled workflows use node types supported by the connected instance,
-without queueing a render.
+configured workflows use node types supported by the connected instance and
+satisfy the engine's marker contract, without queueing a render.
+
+## Custom ComfyUI workflows
+
+Every ComfyUI workflow (Krea, Ideogram, LTX, LTX draft, ACE-Step, canonical
+reference) can be replaced by your own API-format export, including workflows
+built from ComfyUI's cloud API nodes, without code changes. Mark the nodes the
+engine fills by putting markers in their titles (`_meta.title`), for example
+`ENGINE_PROMPT`, `ENGINE_INPUT_IMAGE`, `ENGINE_DURATION` or `ENGINE_OUTPUT`.
+Workflows without markers fall back to the bundled node ids. Cloud
+(partner/API) nodes need a comfy.org API key: set it in Settings
+(`comfy_api_key`) and the engine sends it with every queued prompt as
+`extra_data.api_key_comfy_org`. The roles per workflow, the syntax and the
+notes on cloud nodes are documented in
+[docs/COMFY_WORKFLOWS.md](docs/COMFY_WORKFLOWS.md).
 
 Use active mode only when chat and embedding inference must be verified:
 

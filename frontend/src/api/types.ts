@@ -465,6 +465,8 @@ export interface Settings {
   lm_embed_model: string
   lm_context: string
   comfy_url: string
+  comfy_api_key: string
+  comfy_api_key_set?: boolean
   comfy_watchdog_enabled: boolean
   comfy_install_dir: string
   comfy_watchdog_listen_address: string

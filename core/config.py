@@ -42,6 +42,11 @@ class Settings:
     lm_embed_model: str = "text-embedding-nomic-embed-text-v1.5"
     lm_context: str = "32768"
     comfy_url: str = "http://127.0.0.1:8188"
+    # comfy.org account API key for ComfyUI partner/API ("cloud") nodes. The
+    # signed-in ComfyUI frontend supplies it itself; a headless POST /prompt
+    # must carry it in extra_data.api_key_comfy_org. Sent only to comfy_url,
+    # only when set; never part of any settings hash or manifest.
+    comfy_api_key: str = ""
     # Optional ComfyUI process supervisor. It targets the portable layout and
     # never executes an arbitrary shell command: executable and main.py are
     # resolved below this directory.
