@@ -3,6 +3,7 @@ name = "pipeline-studio"
 version = "1.0.0rc1"
 description = "Universal content production pipeline (transcription -> scenes -> shots -> stock/AI media -> export)."
 requires-python = ">=3.12"  # supported and tested project baseline
+license = "MIT"
 
 # Web server (backend/) runtime dependencies.
 # The supported application is headless and does not require Tk or Qt.

@@ -230,3 +230,10 @@ record can be downloaded from Preview alongside the MP4.
 
 Machine-specific settings, generated projects, models, logs, and built frontend
 assets are intentionally ignored by Git.
+
+## License
+
+Pipeline Studio is released under the [MIT License](LICENSE). External tools
+and models it drives (LM Studio, ComfyUI and its models, whisper.cpp, FFmpeg,
+OmniVoice, Woosh, stock providers) are installed separately and keep their own
+licenses and terms of use.
