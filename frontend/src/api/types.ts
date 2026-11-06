@@ -522,6 +522,8 @@ export interface Settings {
   stock_variable_rhythm: boolean
   ltx_draft_mode: string
   comfy_ltx_draft_workflow: string
+  video_engine: 'ltx' | 'minimax_h3'
+  comfy_h3_workflow: string
   ltx_resolution: string
   ai_frame_qa: boolean
   ai_qa_mode: 'shadow' | 'review'

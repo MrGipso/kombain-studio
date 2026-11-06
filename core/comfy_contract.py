@@ -44,6 +44,8 @@ WIDTH = "ENGINE_WIDTH"
 HEIGHT = "ENGINE_HEIGHT"
 LYRICS = "ENGINE_LYRICS"
 BPM = "ENGINE_BPM"
+FRAMES = "ENGINE_FRAMES"
+TURBO = "ENGINE_TURBO"
 
 SEED_KEYS = ("seed", "noise_seed", "sampling_mode.seed")
 
@@ -52,6 +54,7 @@ MODE_LEGACY = "legacy_ids"
 
 _TEXT = "text"
 _NUMBER = "number"
+_BOOL = "boolean"
 
 _MARKER_RE = re.compile(
     r"(?<![A-Za-z0-9_])(ENGINE_[A-Za-z0-9_]+)(?::([A-Za-z0-9_.]+))?",
@@ -197,6 +200,60 @@ def _ltx_contract(name: str, label: str) -> WorkflowContract:
     )
 
 
+def _h3_contract() -> WorkflowContract:
+    # Legacy ids are those of ComfyUI's official "MiniMax H3 Image to Video"
+    # template exported in API format (ComfyUI 0.37), so an unmarked export of
+    # that template works as is.
+    return WorkflowContract(
+        "h3",
+        "MiniMax H3 video",
+        (
+            Role(
+                INPUT_IMAGE,
+                ("image",),
+                _TEXT,
+                "first frame (LoadImage); the engine uploads the shot image",
+                required=True,
+                legacy=(("114", "image"),),
+            ),
+            _prompt_role("105:104", "prompt"),
+            Role(
+                FRAMES,
+                ("length", "frames", "num_frames", "value"),
+                _NUMBER,
+                "clip length in frames at 24 fps on the 17k+5 grid (124-362)",
+                multiple=True,
+                legacy=(("105:104", "length"),),
+            ),
+            Role(
+                WIDTH,
+                ("width", "value"),
+                _NUMBER,
+                "render width, chosen from the shot image's aspect ratio",
+                multiple=True,
+                legacy=(("105:104", "width"),),
+            ),
+            Role(
+                HEIGHT,
+                ("height", "value"),
+                _NUMBER,
+                "render height, chosen from the shot image's aspect ratio",
+                multiple=True,
+                legacy=(("105:104", "height"),),
+            ),
+            Role(
+                TURBO,
+                ("value", "boolean", "enabled"),
+                _BOOL,
+                "turbo LoRA switch; on for draft renders, off for final ones",
+                legacy=(("105:126", "value"),),
+            ),
+            _output_role("92"),
+            _seed_role(),
+        ),
+    )
+
+
 CONTRACTS: dict[str, WorkflowContract] = {
     "krea": WorkflowContract(
         "krea",
@@ -210,6 +267,7 @@ CONTRACTS: dict[str, WorkflowContract] = {
     ),
     "ltx": _ltx_contract("ltx", "LTX video"),
     "ltx_draft": _ltx_contract("ltx_draft", "LTX draft video"),
+    "h3": _h3_contract(),
     "music": WorkflowContract(
         "music",
         "Music",
@@ -308,6 +366,8 @@ def _type_ok(value: Any, value_type: str) -> bool:
         return isinstance(value, str)
     if value_type == _NUMBER:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if value_type == _BOOL:
+        return isinstance(value, bool)
     return True
 
 
@@ -410,7 +470,9 @@ def _pick_keys(
     chosen = literal if role.all_keys else literal[:1]
     for key in chosen:
         if not _type_ok(inputs[key], role.value_type):
-            expected = "a number" if role.value_type == _NUMBER else "text"
+            expected = {_NUMBER: "a number", _BOOL: "a boolean"}.get(
+                role.value_type, "text"
+            )
             errors.append(
                 f"{where}: input {key!r} must be {expected}, got "
                 f"{_describe(inputs[key])}"
@@ -592,6 +654,7 @@ __all__ = [
     "BoundWorkflow",
     "CONTRACTS",
     "DURATION",
+    "FRAMES",
     "HEIGHT",
     "INPUT_IMAGE",
     "KNOWN_MARKERS",
@@ -605,6 +668,7 @@ __all__ = [
     "Role",
     "SEED",
     "SEED_KEYS",
+    "TURBO",
     "WIDTH",
     "WorkflowContract",
     "WorkflowContractError",

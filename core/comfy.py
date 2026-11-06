@@ -32,8 +32,31 @@ DEFAULT_WORKFLOW_PATHS = {
     "ideogram": PROJECT_ROOT / "workflows" / "image_ideogram4_t2i_api.json",
     "ltx": PROJECT_ROOT / "workflows" / "LTX23_GGUF_i2v_api.json",
     "ltx_draft": PROJECT_ROOT / "workflows" / "LTX23_GGUF_i2v_draft_api.json",
+    "h3": PROJECT_ROOT / "workflows" / "minimax_h3_i2v_api.json",
     "music": PROJECT_ROOT / "workflows" / "ace_step_1_5_api.json",
 }
+
+
+VIDEO_ENGINE_LTX = "ltx"
+VIDEO_ENGINE_H3 = "minimax_h3"
+# Workflows that only one video engine runs; the other engine's are skipped by
+# diagnostics and preflight, so an H3-only install is not reported broken for
+# missing LTX nodes and vice versa.
+_VIDEO_ENGINE_WORKFLOWS = {
+    VIDEO_ENGINE_LTX: frozenset({"ltx", "ltx_draft"}),
+    VIDEO_ENGINE_H3: frozenset({"h3"}),
+}
+
+
+def video_engine(settings: object | None) -> str:
+    """The configured image-to-video engine, ``"ltx"`` unless set otherwise."""
+
+    if isinstance(settings, dict):
+        value = settings.get("video_engine", "")
+    else:
+        value = getattr(settings, "video_engine", "")
+    value = str(value or "").strip().lower()
+    return value if value in _VIDEO_ENGINE_WORKFLOWS else VIDEO_ENGINE_LTX
 
 
 class ComfyCancelledError(RuntimeError):
@@ -67,10 +90,17 @@ def configured_workflow_paths(settings: object) -> dict[str, Path]:
         "ideogram": "comfy_ideogram_workflow",
         "ltx": "comfy_ltx_workflow",
         "ltx_draft": "comfy_ltx_draft_workflow",
+        "h3": "comfy_h3_workflow",
         "music": "comfy_ace_workflow",
     }
+    engine = video_engine(settings)
+    inactive = set().union(
+        *(names for key, names in _VIDEO_ENGINE_WORKFLOWS.items() if key != engine)
+    )
     resolved: dict[str, Path] = {}
     for name, default in DEFAULT_WORKFLOW_PATHS.items():
+        if name in inactive:
+            continue
         configured = str(getattr(settings, setting_names.get(name, ""), "") or "").strip()
         path = Path(configured).expanduser() if configured else default
         resolved[name] = path.resolve()
@@ -143,6 +173,29 @@ def validate_configured_workflows(base_url: str, settings: object) -> dict:
         "available_node_types": len(object_info),
         "workflows": workflows,
     }
+
+
+def comfy_free_memory(base_url: str, timeout: int = 30) -> bool:
+    """Ask ComfyUI to unload every model and free cached VRAM.
+
+    Used before a model too large to share VRAM with whatever ran last (the
+    MiniMax H3 transformer plus its 32B text encoder). Best effort: returns
+    ``False`` instead of raising, because ComfyUI's own offloading may still
+    cope and the render itself reports a real out-of-memory error.
+    """
+
+    payload = json.dumps({"unload_models": True, "free_memory": True}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{comfy_base_url(base_url)}/free",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response.read()
+        return True
+    except Exception:
+        return False
 
 
 def _redact(text: str, secret: str) -> str:
@@ -416,11 +469,14 @@ __all__ = [
     "ComfyClient",
     "DEFAULT_WORKFLOW_PATHS",
     "DEFAULT_COMFY_URL",
+    "VIDEO_ENGINE_H3",
+    "VIDEO_ENGINE_LTX",
     "comfy_base_url",
     "comfy_cancel_prompt",
     "comfy_collect_outputs",
     "comfy_download_file",
     "comfy_download_output",
+    "comfy_free_memory",
     "comfy_queue_prompt",
     "comfy_request_json",
     "comfy_upload_image",
@@ -429,4 +485,5 @@ __all__ = [
     "validate_configured_workflows",
     "validate_workflow_compatibility",
     "validate_workflow_file",
+    "video_engine",
 ]

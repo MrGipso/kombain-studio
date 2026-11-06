@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -31,12 +34,16 @@ from typing import Any, Callable
 from core import comfy_contract, continuity
 from core.comfy import (
     DEFAULT_WORKFLOW_PATHS,
+    VIDEO_ENGINE_H3,
+    comfy_base_url,
     comfy_collect_outputs,
     comfy_download_file,
     comfy_download_output,
+    comfy_free_memory,
     comfy_queue_prompt,
     comfy_upload_image,
     comfy_wait_for_history,
+    video_engine,
 )
 from core.config import load_settings
 from core.models import AssetCard, timecode_to_seconds
@@ -49,10 +56,38 @@ DEFAULT_COMFY_IDEOGRAM_WORKFLOW = DEFAULT_WORKFLOW_PATHS["ideogram"]
 DEFAULT_COMFY_LTX_WORKFLOW = DEFAULT_WORKFLOW_PATHS["ltx"]
 DEFAULT_COMFY_LTX_DRAFT_WORKFLOW = DEFAULT_WORKFLOW_PATHS["ltx_draft"]
 DEFAULT_COMFY_ACE_WORKFLOW = DEFAULT_WORKFLOW_PATHS["music"]
+DEFAULT_COMFY_H3_WORKFLOW = DEFAULT_WORKFLOW_PATHS["h3"]
 
 MAX_LTX_DURATION = 15
 MAX_ACE_DURATION = 120
 LTX_RESOLUTIONS = {"1920x1088": (1920, 1088), "1280x704": (1280, 704)}
+
+# card.video_model values recorded for each image-to-video engine.
+LTX_VIDEO_MODEL = "ltx2.3_i2v"
+H3_VIDEO_MODEL = "minimax_h3_i2v"
+
+# MiniMax H3 (open-weights H3-Base): 24 fps, frame counts on a 17k+5 grid.
+# 124 frames (~5.2 s) is the template default and 362 (~15.1 s) the top of the
+# node's trained range, both on the grid.  Open weights render 768p.
+H3_FPS = 24
+H3_MIN_FRAMES = 124
+H3_MAX_FRAMES = 362
+H3_RESOLUTIONS = {
+    "landscape": (1344, 768),
+    "portrait": (768, 1344),
+    "square": (1024, 1024),
+}
+# Fixed I2VA alignment line from MiniMax's official prompt-writing guide
+# (MiniMaxAI/MiniMax-H3, docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md).
+H3_FIRST_FRAME_LINE = (
+    "For the target video, at 0.00 seconds into the target video, "
+    "<Picture 1> (from [Shot 1]) is fully referenced."
+)
+H3_DEFAULT_MOTION = (
+    "The camera pushes in with small amplitude at slow speed while light and "
+    "air move softly through the scene."
+)
+H3_DEFAULT_SOUNDSCAPE = "quiet natural ambience of this place"
 REFERENCE_NODE_TITLE = comfy_contract.REFERENCE_IMAGE
 REFERENCE_PROMPT_TITLE = comfy_contract.PROMPT
 REFERENCE_OUTPUT_TITLE = comfy_contract.OUTPUT
@@ -77,13 +112,45 @@ def comfy_api_key(settings: object | None = None) -> str:
     return str(_setting(_effective_settings(settings), "comfy_api_key", "") or "").strip()
 
 
-def _queue_prompt(base_url: str, workflow: dict, settings: object | None) -> str:
+# VRAM families: MiniMax H3 (33B transformer plus a 32B text encoder) does not
+# share VRAM with the image/LTX/music models, so ComfyUI is asked to unload
+# everything whenever a render switches into or out of H3.  Consecutive H3
+# clips keep the model loaded.  Tracked per ComfyUI URL for this process.
+_H3_FAMILY = "h3"
+_OTHER_FAMILY = "other"
+_vram_lock = threading.Lock()
+_last_vram_family: dict[str, str] = {}
+
+
+def _prepare_vram(base_url: str, family: str) -> None:
+    key = comfy_base_url(base_url)
+    with _vram_lock:
+        previous = _last_vram_family.get(key)
+        _last_vram_family[key] = family
+    if previous is None:
+        # Unknown state after a restart: models loaded earlier may still sit
+        # in VRAM, which only matters for the big model.
+        switch = family == _H3_FAMILY
+    else:
+        switch = (previous == _H3_FAMILY) != (family == _H3_FAMILY)
+    if switch:
+        comfy_free_memory(base_url)
+
+
+def _queue_prompt(
+    base_url: str,
+    workflow: dict,
+    settings: object | None,
+    *,
+    family: str = _OTHER_FAMILY,
+) -> str:
     """Queue ``workflow`` with the snapshot's comfy.org key, if one is set.
 
     Without a key this is the plain two-argument call, so local-only setups
     send the same payload as before the key existed.
     """
 
+    _prepare_vram(base_url, family)
     api_key = comfy_api_key(settings)
     if api_key:
         return comfy_queue_prompt(base_url, workflow, api_key=api_key)
@@ -471,6 +538,271 @@ def generate_comfy_ltx_video(
     )
 
 
+def video_model_id(settings: object | None = None) -> str:
+    """The ``card.video_model`` value of the configured video engine."""
+
+    engine = video_engine(_effective_settings(settings))
+    return H3_VIDEO_MODEL if engine == VIDEO_ENGINE_H3 else LTX_VIDEO_MODEL
+
+
+def generate_comfy_video(
+    base_url: str,
+    project_dir: Path,
+    card: AssetCard,
+    draft: bool | None = None,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    settings: object | None = None,
+) -> Path:
+    """Render the card's clip with the configured image-to-video engine.
+
+    ``card.video_model`` records which engine rendered it.  ``draft`` follows
+    ``ltx_draft_mode`` when ``None``; ``False`` forces final quality.
+    """
+
+    effective = _effective_settings(settings)
+    card.video_model = video_model_id(effective)
+    render = (
+        generate_comfy_h3_video
+        if card.video_model == H3_VIDEO_MODEL
+        else generate_comfy_ltx_video
+    )
+    return render(
+        base_url,
+        project_dir,
+        card,
+        draft,
+        cancel_check=cancel_check,
+        settings=effective,
+    )
+
+
+def h3_frames_for(seconds: float) -> int:
+    """Frame count for a clip covering ``seconds`` on H3's 17k+5 grid."""
+
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        value = 0.0
+    if not math.isfinite(value):
+        value = 0.0
+    frames = max(H3_MIN_FRAMES, math.ceil(max(0.0, value) * H3_FPS - 1e-6))
+    frames += (5 - frames) % 17
+    return min(frames, H3_MAX_FRAMES)
+
+
+def h3_render_resolution(image_path: Path | None) -> tuple[int, int]:
+    """H3 render size matching the first frame's orientation.
+
+    H3 follows the input image's aspect ratio, so a portrait still renders
+    768x1344 and a landscape one 1344x768.  Unreadable images get landscape.
+    """
+
+    try:
+        from PIL import Image
+
+        with Image.open(Path(image_path)) as image:
+            width, height = image.size
+    except Exception:
+        return H3_RESOLUTIONS["landscape"]
+    if width <= 0 or height <= 0:
+        return H3_RESOLUTIONS["landscape"]
+    ratio = width / height
+    if ratio >= 1.15:
+        return H3_RESOLUTIONS["landscape"]
+    if ratio <= 1 / 1.15:
+        return H3_RESOLUTIONS["portrait"]
+    return H3_RESOLUTIONS["square"]
+
+
+_H3_QUOTES_RE = re.compile(r'["\u201c\u201d\u201e\u00ab\u00bb]')
+_H3_TAG_RE = re.compile(r"<[^<>]{0,40}>")
+_H3_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+_H3_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?])")
+
+
+def _h3_clean(text: str) -> str:
+    # Double quotes are H3's syntax for visible on-screen text and <...> tags
+    # are its control tokens, so neither may leak in from planner text.
+    text = _H3_TAG_RE.sub(" ", str(text or ""))
+    text = _H3_QUOTES_RE.sub("", text)
+    text = " ".join(text.split()).strip()
+    return _H3_SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
+
+
+def _h3_sentence(text: str) -> str:
+    text = text.strip()
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def compose_h3_prompt(
+    motion: str,
+    *,
+    first_frame: str = "",
+    soundscape: str = "",
+) -> str:
+    """Build an I2VA prompt in the format of MiniMax's official H3 guide.
+
+    Layout: the fixed alignment line, a blank line, then the three core
+    fields.  The description is one ``[Shot 1]`` with no timestamp (H3 cuts
+    between shots unless the prompt describes a single one): a short
+    first-frame anchor, then the motion, then the consistency lock.  The
+    soundscape is filled explicitly because an empty audio prompt invites
+    invented speech; non-diegetic music is ``N/A`` (the edit adds music).
+    The export drops the clip's own audio, so the soundscape only steers what
+    happens on screen.
+    """
+
+    anchor = _h3_clean(first_frame)
+    if anchor:
+        anchor = _H3_SENTENCE_RE.split(anchor, maxsplit=1)[0]
+        if len(anchor) > 240:
+            anchor = anchor[:240].rsplit(" ", 1)[0]
+        anchor = anchor.rstrip(" ,;:.")
+    opening = (
+        f"The video opens exactly on the first frame: {anchor}."
+        if anchor
+        else "The video opens exactly on the first frame."
+    )
+    action = _h3_sentence(_h3_clean(motion) or H3_DEFAULT_MOTION)
+    lock = (
+        "It is one continuous shot from start to end, and every identity, "
+        "clothing, colour, key object and the layout of the scene stay as in "
+        "the first frame."
+    )
+    ambience = _h3_clean(soundscape).rstrip(" .") or H3_DEFAULT_SOUNDSCAPE
+    return (
+        f"{H3_FIRST_FRAME_LINE}\n\n"
+        f"integrated_multimodal_description: [Shot 1] {opening} {action} {lock}\n\n"
+        f"overall_soundscape: The only sound is {ambience}.\n\n"
+        "non_diegetic_music: N/A"
+    )
+
+
+def _bind_h3_workflow(
+    prompt: str,
+    input_image_name: str,
+    shot_index: int,
+    *,
+    frames: int,
+    width: int,
+    height: int,
+    turbo: bool,
+    settings: object | None,
+) -> comfy_contract.BoundWorkflow:
+    workflow_path = configured_workflow_path(
+        "comfy_h3_workflow",
+        DEFAULT_COMFY_H3_WORKFLOW,
+        settings=settings,
+    )
+    workflow = _read_workflow(workflow_path, label="MiniMax H3 workflow")
+    bound = _bind_workflow(workflow, "h3", workflow_path)
+    bound.set(comfy_contract.INPUT_IMAGE, input_image_name)
+    bound.set(comfy_contract.PROMPT, prompt)
+    bound.set(
+        comfy_contract.OUTPUT,
+        f"content_pipeline/video/shot_{shot_index:03d}_minimax_h3",
+    )
+    bound.set(comfy_contract.FRAMES, int(frames))
+    bound.set(comfy_contract.WIDTH, int(width))
+    bound.set(comfy_contract.HEIGHT, int(height))
+    bound.set(comfy_contract.TURBO, bool(turbo))
+    _apply_seeds(bound)
+    return bound
+
+
+def prepare_h3_workflow(
+    prompt: str,
+    input_image_name: str,
+    shot_index: int,
+    *,
+    frames: int = H3_MIN_FRAMES,
+    width: int = 1344,
+    height: int = 768,
+    turbo: bool = False,
+    settings: object | None = None,
+) -> dict:
+    """Load the MiniMax H3 workflow and inject one shot's inputs."""
+
+    return _bind_h3_workflow(
+        prompt,
+        input_image_name,
+        shot_index,
+        frames=frames,
+        width=width,
+        height=height,
+        turbo=turbo,
+        settings=settings,
+    ).workflow
+
+
+def generate_comfy_h3_video(
+    base_url: str,
+    project_dir: Path,
+    card: AssetCard,
+    draft: bool | None = None,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    settings: object | None = None,
+) -> Path:
+    """Render one image-to-video clip with MiniMax H3."""
+
+    if not card.image_output or not Path(card.image_output).exists():
+        raise FileNotFoundError("Для MiniMax H3 сначала нужна готовая картинка в image_output.")
+    motion = continuity.compile_generation_prompt(
+        card.video_prompt.strip() or H3_DEFAULT_MOTION,
+        card,
+        target="video",
+        context_bible=continuity.load_context_bible(project_dir),
+    )
+    prompt = compose_h3_prompt(
+        motion,
+        first_frame=card.image_prompt,
+        soundscape=getattr(card, "sfx_query", "") or "",
+    )
+    seconds = timecode_to_seconds(card.end) - timecode_to_seconds(card.start)
+    frames = h3_frames_for(seconds)
+    width, height = h3_render_resolution(Path(card.image_output))
+    use_draft = ltx_draft_for_card(card, settings) if draft is None else bool(draft)
+    upload_name = comfy_upload_image(
+        base_url,
+        Path(card.image_output),
+        f"shot_{card.shot_index:03d}_h3_input",
+    )
+    bound = _bind_h3_workflow(
+        prompt,
+        upload_name,
+        card.shot_index,
+        frames=frames,
+        width=width,
+        height=height,
+        turbo=use_draft,
+        settings=settings,
+    )
+    # A custom workflow without ENGINE_TURBO always renders at its own
+    # quality, so it never produces a draft that needs finalising.
+    card.ltx_draft = use_draft and bool(bound.targets(comfy_contract.TURBO))
+    prompt_id = _queue_prompt(base_url, bound.workflow, settings, family=_H3_FAMILY)
+    history = comfy_wait_for_history(
+        base_url,
+        prompt_id,
+        timeout_seconds=3600,
+        cancel_check=cancel_check,
+    )
+    outputs = comfy_collect_outputs(history, ("videos", "gifs", "images"))
+    if not outputs:
+        raise RuntimeError("ComfyUI finished, but no video output was found")
+    return comfy_download_output(
+        base_url,
+        outputs[-1],
+        Path(project_dir) / "assets" / "videos",
+        card.shot_index,
+        "minimax_h3",
+    )
+
+
 def prepare_music_workflow(
     tags: str,
     bpm: int,
@@ -606,23 +938,38 @@ def generate_comfy_music(
 
 __all__ = [
     "DEFAULT_COMFY_ACE_WORKFLOW",
+    "DEFAULT_COMFY_H3_WORKFLOW",
     "DEFAULT_COMFY_IDEOGRAM_WORKFLOW",
     "DEFAULT_COMFY_KREA_WORKFLOW",
     "DEFAULT_COMFY_LTX_DRAFT_WORKFLOW",
     "DEFAULT_COMFY_LTX_WORKFLOW",
+    "H3_DEFAULT_MOTION",
+    "H3_FIRST_FRAME_LINE",
+    "H3_FPS",
+    "H3_MAX_FRAMES",
+    "H3_MIN_FRAMES",
+    "H3_RESOLUTIONS",
+    "H3_VIDEO_MODEL",
     "LTX_RESOLUTIONS",
+    "LTX_VIDEO_MODEL",
     "MAX_ACE_DURATION",
     "MAX_LTX_DURATION",
     "REFERENCE_NODE_TITLE",
     "REFERENCE_OUTPUT_TITLE",
     "REFERENCE_PROMPT_TITLE",
     "comfy_api_key",
+    "compose_h3_prompt",
     "configured_workflow_path",
+    "generate_comfy_h3_video",
     "generate_comfy_image",
     "generate_comfy_ltx_video",
     "generate_comfy_music",
+    "generate_comfy_video",
+    "h3_frames_for",
+    "h3_render_resolution",
     "ltx_draft_for_card",
     "ltx_render_resolution",
+    "prepare_h3_workflow",
     "prepare_image_workflow",
     "prepare_ltx_workflow",
     "prepare_music_workflow",
@@ -631,4 +978,5 @@ __all__ = [
     "reference_workflow_status",
     "set_workflow_seed_values",
     "style_negative_for_clip",
+    "video_model_id",
 ]

@@ -74,7 +74,7 @@ function findWeakSpots(cards: AssetCard[], qa: AssetQASummary | null): WeakSpot[
       out.push({ cardIndex: i, shotIndex: c.shot_index, reason: `Ken Burns ${dur}с — статика дольше 8с скучает, подумай про LTX или разрез`, severity: 'info' })
     }
     if (c.ltx_draft && c.video_output) {
-      out.push({ cardIndex: i, shotIndex: c.shot_index, reason: 'LTX-черновик в финале — для hero-кадра прогони «Финал»', severity: 'info' })
+      out.push({ cardIndex: i, shotIndex: c.shot_index, reason: 'Черновик видео в финале — для hero-кадра прогони «Финал»', severity: 'info' })
     }
     if (!c.video_output && !c.image_output) {
       out.push({ cardIndex: i, shotIndex: c.shot_index, reason: 'Нет медиа — кадр выпадет из финала', severity: 'warn' })

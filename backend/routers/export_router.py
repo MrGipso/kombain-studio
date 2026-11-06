@@ -261,7 +261,7 @@ def evaluate_export_gate(
         if bool(card.get("ltx_draft", False)):
             reasons.append(ExportGateReason(
                 code="ltx_draft",
-                message=f"{label}: LTX-черновик нужно перерендерить в финальном качестве",
+                message=f"{label}: черновик видео нужно перерендерить в финальном качестве",
                 card_index=card_index,
                 shot_index=shot_index,
             ))

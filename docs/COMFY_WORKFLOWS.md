@@ -1,11 +1,11 @@
 # Свои ComfyUI workflow: контракт маркеров ENGINE_*
 
-Любой из workflow движка — Krea, Ideogram, LTX, LTX draft, ACE-Step и
-canonical reference — можно заменить своим, в том числе собранным на облачных
+Любой из workflow движка — Krea, Ideogram, LTX, LTX draft, MiniMax H3, ACE-Step
+и canonical reference — можно заменить своим, в том числе собранным на облачных
 API-нодах ComfyUI. Код править не нужно: укажите путь к файлу в настройках
 (`comfy_krea_workflow`, `comfy_ideogram_workflow`, `comfy_ltx_workflow`,
-`comfy_ltx_draft_workflow`, `comfy_ace_workflow`, `comfy_reference_workflow`)
-и отметьте в нём узлы, которые движок заполняет.
+`comfy_ltx_draft_workflow`, `comfy_h3_workflow`, `comfy_ace_workflow`,
+`comfy_reference_workflow`) и отметьте в нём узлы, которые движок заполняет.
 
 Реализация — `core/comfy_contract.py`. Подстановку выполняет
 `core/comfy_generation.py`, проверку — `core/comfy.py`.
@@ -86,6 +86,66 @@ API-нодах ComfyUI. Код править не нужно: укажите п
 `ENGINE_DURATION` длина клипа определяется самим workflow. Если у облачной
 ноды диапазон длительности уже 2–15 с, ComfyUI отклонит значение вне диапазона.
 В таком случае не ставьте маркер или ограничьте значение узлом-калькулятором.
+
+### MiniMax H3 (видео из картинки)
+
+Используется вместо LTX, когда в *Настройки → Генерация материалов →
+Видео-движок* выбран MiniMax H3 (`video_engine = "minimax_h3"`). Тогда
+диагностика и preflight проверяют этот workflow, а LTX-workflow пропускают, и
+наоборот. Бандл `workflows/minimax_h3_i2v_api.json` — официальный шаблон
+ComfyUI «MiniMax H3 Image to Video» в API-формате с проставленными маркерами.
+Неразмеченный экспорт того же шаблона тоже подойдёт: id его узлов указаны в
+столбце «id-фолбэк».
+
+| Маркер | Обяз. | Что пишет движок | Входы-кандидаты | id-фолбэк |
+|---|---|---|---|---|
+| `ENGINE_INPUT_IMAGE` | да | имя загруженной в ComfyUI картинки кадра (первый кадр) | `image` | `114.image` |
+| `ENGINE_PROMPT` | да | структурированный промпт H3 (см. ниже) | `text`, `value`, `prompt`, `prompt_text` | `105:104.prompt` |
+| `ENGINE_FRAMES` | нет | длина клипа **в кадрах** при 24 fps на сетке 17k+5, 124–362 | `length`, `frames`, `num_frames`, `value` | `105:104.length` |
+| `ENGINE_WIDTH` | нет | ширина: 1344, 768 или 1024 по пропорциям картинки | `width`, `value` | `105:104.width` |
+| `ENGINE_HEIGHT` | нет | высота: 768, 1344 или 1024 | `height`, `value` | `105:104.height` |
+| `ENGINE_TURBO` | нет | `true` для черновика (турбо-LoRA, 8 шагов), `false` для финала | `value`, `boolean`, `enabled` | `105:126.value` |
+| `ENGINE_OUTPUT` | да | `content_pipeline/video/shot_NNN_minimax_h3` | `filename_prefix` | `92` |
+| `ENGINE_SEED` | нет | новый сид | `seed`, `noise_seed`, `sampling_mode.seed` | — |
+
+- **Длина.** Длина слота округляется вверх до сетки 17k+5: 124 кадра (≈5,2 с)
+  минимум, 362 (≈15,1 с) — верх обученного диапазона ноды. Слот короче 5 с
+  всё равно получает 124 кадра, монтаж обрезает лишнее.
+- **Разрешение.** Open weights рендерят 768p, а H3 следует пропорциям первого
+  кадра: горизонтальная картинка → 1344×768, вертикальная → 768×1344, близкая
+  к квадрату → 1024×1024. Настройка «LTX: разрешение» на H3 не влияет.
+- **Черновик.** Политика `ltx_draft_mode` (off/auto/all) общая для обоих
+  движков. Для H3 черновик — это турбо-LoRA; «Финал» перерендеривает клип
+  полными 20 шагами. Workflow без `ENGINE_TURBO` всегда рендерит со своими
+  настройками и черновиков не даёт.
+- **VRAM.** H3 (трансформер 33B плюс текстовый энкодер Qwen3-VL-32B) не делит
+  видеопамять с Krea, LTX и ACE-Step. При переходе на H3 и обратно движок
+  вызывает `POST /free`, а серия H3-клипов подряд модель не перезагружает.
+- **Промпт.** Движок сам собирает формат I2VA из официального гайда MiniMax
+  ([VIDEO_PROMPT_WRITING_GUIDE_base_en.md](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md)):
+
+  ```text
+  For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+
+  integrated_multimodal_description: [Shot 1] The video opens exactly on the first frame: <первое предложение image_prompt>. <video_prompt кадра> It is one continuous shot from start to end, ...
+
+  overall_soundscape: The only sound is <sfx_query кадра или тихий фон места>.
+
+  non_diegetic_music: N/A
+  ```
+
+  Один `[Shot 1]` без тайм-кода даёт один непрерывный план: без описания
+  единственного плана H3 склеивает несколько. Двойные кавычки и теги `<…>`
+  из текста планировщика вырезаются: в H3 текст в кавычках рисуется на
+  экране, а теги — служебные токены. Негатива у H3 нет (cfg 1), поэтому
+  стилевой негатив не передаётся. Звук клипа экспорт всё равно выбрасывает,
+  поле `overall_soundscape` заполняется, чтобы модель не придумывала речь.
+- **Правила для LLM.** При H3 планировщик кадров пишет `video_prompt` по
+  правилам из того же гайда: начало действия → развитие → результат, одно
+  движение камеры словами H3 (`push in`, `pan left`, `truck right`, `tilt up`,
+  `arc shot`…, с `with small amplitude` / `at slow speed`), без склеек, реплик
+  и экранного текста. Уже спланированные кадры при смене движка не
+  перепланируются: их `video_prompt` оборачивается в формат H3 при рендере.
 
 ### ACE-Step (музыка)
 

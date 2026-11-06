@@ -117,8 +117,8 @@ satisfy the engine's marker contract, without queueing a render.
 
 ## Custom ComfyUI workflows
 
-Every ComfyUI workflow (Krea, Ideogram, LTX, LTX draft, ACE-Step, canonical
-reference) can be replaced by your own API-format export, including workflows
+Every ComfyUI workflow (Krea, Ideogram, LTX, LTX draft, MiniMax H3, ACE-Step,
+canonical reference) can be replaced by your own API-format export, including workflows
 built from ComfyUI's cloud API nodes, without code changes. Mark the nodes the
 engine fills by putting markers in their titles (`_meta.title`), for example
 `ENGINE_PROMPT`, `ENGINE_INPUT_IMAGE`, `ENGINE_DURATION` or `ENGINE_OUTPUT`.
@@ -128,6 +128,13 @@ Workflows without markers fall back to the bundled node ids. Cloud
 `extra_data.api_key_comfy_org`. The roles per workflow, the syntax and the
 notes on cloud nodes are documented in
 [docs/COMFY_WORKFLOWS.md](docs/COMFY_WORKFLOWS.md).
+
+AI shots are animated by LTX 2.3 by default. Settings → *Видео-движок* switches
+image-to-video to MiniMax H3 (open weights in the same local ComfyUI, 768p,
+5–15 s clips). For H3 the engine builds the prompt in the structured format of
+MiniMax's official prompt-writing guide, converts the slot length to H3's
+frame grid, picks the render size from the shot image and asks ComfyUI to free
+VRAM when switching to or from H3. The draft mode uses H3's 8-step turbo LoRA.
 
 Use active mode only when chat and embedding inference must be verified:
 

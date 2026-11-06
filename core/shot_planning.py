@@ -1563,6 +1563,55 @@ def build_reference_block(reference_density: str = "normal") -> str:
     )
 
 
+LTX_VIDEO_PROMPT_RULES = (
+    "ПРАВИЛА ДЛЯ video_prompt (LTX 2.3 image-to-video):\n"
+    "- Опиши ДВИЖЕНИЕ, которое реально подходит ЭТОМУ кадру. Картинка уже задаёт вид — не описывай внешность.\n"
+    "- ГЛАВНОЕ ПРАВИЛО: если в кадре есть субъект/объект, который логично что-то делает — дай ОДНО маленькое конкретное действие "
+    "(вязаная кукла наклоняет голову; индикатор загрузки крутится; рука поправляет предмет; лампа мигает). "
+    "Если кадр по смыслу статичный (пейзаж, общий план, объект без действия) — НЕ выдумывай действие: опиши движение среды "
+    "(свет, ткань, вода, частицы, пар) и лёгкое движение камеры. И то и другое — правильный ответ.\n"
+    "- Всегда добавляй ОДНО движение среды и ОДНО движение камеры (present tense): "
+    "'the camera slowly pushes in', 'gentle pan left', 'subtle tracking shot', 'slow dolly in'.\n"
+    "- Движение маленькое и естественное: избегай резких жестов, бега, прыжков, сильной деформации объекта и всего, что может вызвать морфинг или плавление деталей.\n"
+    "- НЕ оставляй video_prompt пустым и не пиши общими словами вроде 'brings the shot to life' — привяжи движение к тому, что видно в кадре.\n"
+    "- НЕ описывай звук в video_prompt — для звука есть отдельное поле sfx_query.\n"
+    "- 2-4 предложения в одном абзаце, на английском.\n\n"
+)
+
+H3_VIDEO_PROMPT_RULES = (
+    "ПРАВИЛА ДЛЯ video_prompt (MiniMax H3 image-to-video, по официальному гайду MiniMax):\n"
+    "- Картинка — это ПЕРВЫЙ кадр видео. Не пересказывай её внешность: опиши, что с этого кадра "
+    "начинает происходить, как это развивается и чем заканчивается (начало действия → развитие → результат).\n"
+    "- ГЛАВНОЕ ПРАВИЛО: если в кадре есть субъект/объект, который логично что-то делает — дай ОДНО маленькое конкретное действие "
+    "(вязаная кукла наклоняет голову; индикатор загрузки крутится; рука поправляет предмет; лампа мигает). "
+    "Если кадр по смыслу статичный (пейзаж, общий план, объект без действия) — НЕ выдумывай действие: опиши движение среды "
+    "(свет, ткань, вода, частицы, пар) и движение камеры. И то и другое — правильный ответ.\n"
+    "- Ровно ОДНО движение камеры, встроенное в предложение обычным английским, словами из словаря H3: "
+    "push in / pull out, pan left / pan right, truck left / truck right, tilt up / tilt down, "
+    "pedestal up / pedestal down, arc shot, tracking shot, static shot. Малую амплитуду и скорость называй явно: "
+    "'with small amplitude', 'at slow speed'; не пиши 'medium amplitude' и 'normal speed'. "
+    "Пример: 'The camera pushes in with small amplitude at slow speed toward the folded letter in her hands.'\n"
+    "- Один непрерывный план: без склеек и смены плана ('cuts to', 'the shot changes to'). Смену крупности делай движением камеры.\n"
+    "- Никто в кадре не говорит и не поёт. Не пиши реплик, кавычек и экранного текста: текст в двойных кавычках H3 рисует на экране.\n"
+    "- Движение маленькое и естественное: избегай резких жестов, бега, прыжков, сильной деформации объекта и всего, что может вызвать морфинг или плавление деталей.\n"
+    "- НЕ оставляй video_prompt пустым и не пиши общими словами вроде 'brings the shot to life' — привяжи движение к тому, что видно в кадре.\n"
+    "- НЕ описывай звук в video_prompt — для звука есть отдельное поле sfx_query.\n"
+    "- 2-4 предложения в одном абзаце, на английском, в present tense.\n\n"
+)
+
+
+def video_prompt_block(video_engine: str = "ltx") -> str:
+    """Planner rules for ``video_prompt`` written for the configured engine.
+
+    The H3 rules follow MiniMax's official prompt-writing guide; the prompt
+    itself is wrapped into H3's structured format at render time.
+    """
+
+    if (video_engine or "").strip().lower() == "minimax_h3":
+        return H3_VIDEO_PROMPT_RULES
+    return LTX_VIDEO_PROMPT_RULES
+
+
 def build_shot_instructions(
     image_preference: str = "Auto",
     style_anchor: str = "",
@@ -1571,6 +1620,7 @@ def build_shot_instructions(
     route_priority: str = "balanced",
     ai_route_mix: bool = False,
     reference_density: str = "normal",
+    video_engine: str = "ltx",
 ) -> str:
     selected_style = get_video_style(video_style)
     route_block = build_route_block(hybrid, route_priority, ai_route_mix)
@@ -1621,18 +1671,7 @@ def build_shot_instructions(
         "rough concrete wall texture visible behind him, documentary realism.\"\n\n"
         "ПРИМЕР ПЛОХОГО image_prompt (абстрактный, начинается с жанра — НЕ ДЕЛАЙ ТАК):\n"
         "\"Cinematic documentary scene of a man working at his desk, moody lighting, photorealistic.\"\n\n"
-        "ПРАВИЛА ДЛЯ video_prompt (LTX 2.3 image-to-video):\n"
-        "- Опиши ДВИЖЕНИЕ, которое реально подходит ЭТОМУ кадру. Картинка уже задаёт вид — не описывай внешность.\n"
-        "- ГЛАВНОЕ ПРАВИЛО: если в кадре есть субъект/объект, который логично что-то делает — дай ОДНО маленькое конкретное действие "
-        "(вязаная кукла наклоняет голову; индикатор загрузки крутится; рука поправляет предмет; лампа мигает). "
-        "Если кадр по смыслу статичный (пейзаж, общий план, объект без действия) — НЕ выдумывай действие: опиши движение среды "
-        "(свет, ткань, вода, частицы, пар) и лёгкое движение камеры. И то и другое — правильный ответ.\n"
-        "- Всегда добавляй ОДНО движение среды и ОДНО движение камеры (present tense): "
-        "'the camera slowly pushes in', 'gentle pan left', 'subtle tracking shot', 'slow dolly in'.\n"
-        "- Движение маленькое и естественное: избегай резких жестов, бега, прыжков, сильной деформации объекта и всего, что может вызвать морфинг или плавление деталей.\n"
-        "- НЕ оставляй video_prompt пустым и не пиши общими словами вроде 'brings the shot to life' — привяжи движение к тому, что видно в кадре.\n"
-        "- НЕ описывай звук в video_prompt — для звука есть отдельное поле sfx_query.\n"
-        "- 2-4 предложения в одном абзаце, на английском.\n\n"
+        f"{video_prompt_block(video_engine)}"
         "ПРАВИЛА МАРШРУТИЗАЦИИ:\n"
         "- screen_text — ПО УМОЛЧАНИЮ ПУСТАЯ СТРОКА (\"\"). Заполняй ТОЛЬКО "
         "для явной цифры, суммы, процента, даты или измеримого значения, которое "
@@ -1961,6 +2000,7 @@ def call_lm_studio_for_shots(
     route_priority: str = "balanced",
     ai_route_mix: bool = False,
     reference_density: str | None = "normal",
+    video_engine: str = "ltx",
     on_visual_plan: Callable[[list[dict[str, object]]], None] | None = None,
     precomputed_global_visual_plan: list[dict[str, object]] | None = None,
     resume_shots: list[Shot] | None = None,
@@ -1985,6 +2025,7 @@ def call_lm_studio_for_shots(
         route_priority=route_priority,
         ai_route_mix=ai_route_mix,
         reference_density=density,
+        video_engine=video_engine,
     )
     if on_progress:
         on_progress("global_plan", 0.02)
@@ -2440,6 +2481,7 @@ __all__ = [
     "build_reference_block",
     "build_route_block",
     "build_shot_instructions",
+    "video_prompt_block",
     "call_lm_studio_for_shots",
     "clamp_shots_to_scenes",
     "clean_lm_json_content",

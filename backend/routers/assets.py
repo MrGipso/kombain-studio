@@ -334,7 +334,7 @@ def _generate_sync(
 ) -> dict[str, Any]:
     """Blocking generation logic, runs in thread pool. When skip_stock is True,
     a stock-routed card is generated with AI directly (no stock lookup). When
-    force_full is True, the LTX video is rendered with the full workflow even if
+    force_full is True, the video is rendered at final quality even if
     draft mode is on — used by the "Финал" action to finalize a drafted clip."""
     project = open_project(pdir, load_settings())
     if not project:
@@ -589,7 +589,7 @@ def _generate_sync(
         if not card.image_model:
             card.image_model = asset_board.preferred_realistic_image_model(project.settings.image_model_preference)
         if not card.video_model:
-            card.video_model = "ltx2.3_i2v"
+            card.video_model = comfy_generation.video_model_id(project.settings)
         if card.image_model:
             img_path = comfy_generation.generate_comfy_image(
                 comfy_url,
@@ -601,7 +601,7 @@ def _generate_sync(
             )
             card.image_output = str(img_path)
         if card.video_model:
-            vid_path = comfy_generation.generate_comfy_ltx_video(
+            vid_path = comfy_generation.generate_comfy_video(
                 comfy_url,
                 pdir,
                 card,
@@ -646,8 +646,8 @@ def _generate_sync(
         return {"ok": True, "card": card.__dict__, "variants": variants, "qa": qa}
     elif mode == "video":
         if not card.video_model:
-            card.video_model = "ltx2.3_i2v"
-        vid_path = comfy_generation.generate_comfy_ltx_video(
+            card.video_model = comfy_generation.video_model_id(project.settings)
+        vid_path = comfy_generation.generate_comfy_video(
             comfy_url,
             pdir,
             card,
@@ -1041,8 +1041,12 @@ def _required_material_workflows(
         ):
             # The unattended Material action always passes force_full=True for
             # video operations. Preflight must validate the workflow that will
-            # actually run, regardless of the manual LTX draft preference.
-            required.add("ltx")
+            # actually run, regardless of the manual draft preference.
+            required.add(
+                "h3"
+                if comfy_client.video_engine(settings) == comfy_client.VIDEO_ENGINE_H3
+                else "ltx"
+            )
     reference_status = comfy_generation.reference_workflow_status(settings)
     if (
         reference_status.get("enabled")

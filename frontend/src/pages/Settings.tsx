@@ -78,6 +78,7 @@ export default function Settings() {
     { key: 'comfy_ideogram_workflow', label: 'Ideogram Workflow Path' },
     { key: 'comfy_ltx_workflow', label: 'LTX Workflow Path' },
     { key: 'comfy_ltx_draft_workflow', label: 'LTX Draft Workflow Path (пусто = workflows/LTX23_GGUF_i2v_draft_api.json)' },
+    { key: 'comfy_h3_workflow', label: 'MiniMax H3 Workflow Path (пусто = workflows/minimax_h3_i2v_api.json)' },
     { key: 'comfy_ace_workflow', label: 'ACE-Step Workflow Path (музыка)' },
     { key: 'whisper_cli', label: 'Whisper CLI Path' },
     { key: 'whisper_model', label: 'Whisper Model Path' },
@@ -101,7 +102,7 @@ export default function Settings() {
     {
       title: 'Пути и инструменты',
       description: 'ComfyUI workflow, Whisper, FFmpeg и папка для результатов. Свой workflow (в т.ч. на облачных API-нодах) подключается по маркерам ENGINE_* в названиях узлов — см. docs/COMFY_WORKFLOWS.md.',
-      keys: ['comfy_install_dir', 'comfy_krea_workflow', 'comfy_reference_workflow', 'comfy_ideogram_workflow', 'comfy_ltx_workflow', 'comfy_ltx_draft_workflow', 'comfy_ace_workflow', 'whisper_cli', 'whisper_model', 'ffmpeg', 'whisper_language', 'omnivoice_cli', 'omnivoice_model', 'output_base'],
+      keys: ['comfy_install_dir', 'comfy_krea_workflow', 'comfy_reference_workflow', 'comfy_ideogram_workflow', 'comfy_ltx_workflow', 'comfy_ltx_draft_workflow', 'comfy_h3_workflow', 'comfy_ace_workflow', 'whisper_cli', 'whisper_model', 'ffmpeg', 'whisper_language', 'omnivoice_cli', 'omnivoice_model', 'output_base'],
     },
     {
       title: 'Источники стоков',
@@ -357,7 +358,7 @@ export default function Settings() {
           <section className="space-y-4 border-b border-slate-800 pb-8">
             <div>
               <h2 className="text-base font-semibold text-white">Генерация материалов</h2>
-              <p className="mt-1 text-sm text-slate-500">Canonical references, качество LTX, управление моделью и параметры подбора стоков.</p>
+              <p className="mt-1 text-sm text-slate-500">Canonical references, видео-движок и его качество, управление моделью и параметры подбора стоков.</p>
             </div>
 
           <div>
@@ -376,6 +377,23 @@ export default function Settings() {
           </div>
 
           <div>
+            <label htmlFor="settings-video-engine" className="block text-xs text-slate-500 mb-1">Видео-движок (image-to-video для AI-кадров)</label>
+            <select
+              id="settings-video-engine"
+              value={settings.video_engine || 'ltx'}
+              onChange={(e) => setSettings({ ...settings, video_engine: e.target.value as SettingsType['video_engine'] })}
+              className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white text-sm focus:outline-none focus:border-indigo-500"
+            >
+              <option value="ltx">LTX 2.3 — по умолчанию</option>
+              <option value="minimax_h3">MiniMax H3 — open weights в том же локальном ComfyUI</option>
+            </select>
+            {settings.video_engine === 'minimax_h3' && (
+              <p className="mt-1 text-xs leading-5 text-slate-500">H3 рендерит 768p: 1344×768, 768×1344 или 1024×1024 по пропорциям картинки кадра; длина клипа 5–15 с. Промпт собирается по официальному гайду MiniMax, перед рендером ComfyUI выгружает прочие модели из VRAM.</p>
+            )}
+          </div>
+
+          {settings.video_engine !== 'minimax_h3' && (
+          <div>
             <label htmlFor="settings-ltx-resolution" className="block text-xs text-slate-500 mb-1">LTX: разрешение генерации (экспорт масштабирует под выбранный delivery-профиль)</label>
             <select
               id="settings-ltx-resolution"
@@ -387,9 +405,10 @@ export default function Settings() {
               <option value="1280x704">1280×704 — ~720p, заметно быстрее (LTX требует кратность 32, поэтому не ровно 720)</option>
             </select>
           </div>
+          )}
 
           <div>
-            <label htmlFor="settings-ltx-draft-mode" className="block text-xs text-slate-500 mb-1">LTX: черновой режим (draft ~2-3x быстрее, чуть мягче картинка)</label>
+            <label htmlFor="settings-ltx-draft-mode" className="block text-xs text-slate-500 mb-1">Черновой режим видео (LTX — один проход, ~2-3x быстрее; H3 — турбо-LoRA, 8 шагов вместо 20)</label>
             <select
               id="settings-ltx-draft-mode"
               value={settings.ltx_draft_mode || 'off'}

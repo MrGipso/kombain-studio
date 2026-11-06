@@ -450,6 +450,8 @@ def run_shot_generation(
             # selector (no stock — the style stays fully generated).
             ai_route_mix=(shot_mode == "ai"),
             reference_density=reference_density,
+            # video_prompt rules follow the configured image-to-video engine.
+            video_engine=str(settings.get("video_engine") or "ltx"),
             on_visual_plan=capture_visual_plan,
             precomputed_global_visual_plan=cached_global_visual_plan,
             resume_shots=pipeline_resume_shots,

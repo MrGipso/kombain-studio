@@ -129,6 +129,12 @@ class Settings:
     # priority=high hero shots. Draft is ~2-3x faster, slightly softer picture.
     ltx_draft_mode: str = "off"
     comfy_ltx_draft_workflow: str = ""
+    # Image-to-video engine for AI shots: "ltx" (LTX 2.3, default) or
+    # "minimax_h3" (MiniMax H3 open weights, run by the same local ComfyUI).
+    # Draft renders follow ltx_draft_mode for both: LTX switches to its
+    # single-pass workflow, H3 to its 8-step turbo LoRA.
+    video_engine: Literal["ltx", "minimax_h3"] = "ltx"
+    comfy_h3_workflow: str = ""
     # Hash-bound QA of generated media.  The model reports typed visual
     # observations; a deterministic policy chooses a recommendation.  Shadow
     # records evidence only, review additionally flags the card needs_review.

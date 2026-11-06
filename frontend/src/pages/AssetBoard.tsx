@@ -1198,7 +1198,7 @@ export default function AssetBoard() {
     // 4) All LTX renders last (LTX loaded once)
     if (!stopped) {
       await runPhase(
-        'Очередь 4/4: видео (LTX)',
+        'Очередь 4/4: видео',
         eligible.filter((i) => vt(i) === 'ai_image_then_i2v' && live[i].image_output && !live[i].video_output),
         (i) => runGenerateCard(i, 'video', false, false, deferQa),
       )
@@ -1592,8 +1592,8 @@ export default function AssetBoard() {
             <div className="flex flex-wrap gap-2">
               <BatchButton label="Только сток" targets={batchTargets.video} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={batchStock} hint="Искать сток-видео для кадров без видео, игнорируя назначенный им способ." />
               <BatchButton label="Только картинки" targets={batchTargets.image} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={() => batchGenerate('image')} hint="Создать только изображения в Krea, без анимации." />
-              <BatchButton label="Только видео" targets={batchTargets.video} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={() => batchGenerate('video')} hint="Создать LTX-видео из уже готовых изображений." />
-              <BatchButton label="Финальное качество" targets={batchTargets.finalize} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={batchFinalize} hint="Перерендерить черновые LTX-клипы в полном качестве." />
+              <BatchButton label="Только видео" targets={batchTargets.video} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={() => batchGenerate('video')} hint="Создать видео (LTX или MiniMax H3, см. настройки) из уже готовых изображений." />
+              <BatchButton label="Финальное качество" targets={batchTargets.finalize} busy={Boolean(busy)} blocked={hasUnsavedChanges} onClick={batchFinalize} hint="Перерендерить черновые видеоклипы в полном качестве." />
             </div>
           </div>
           <div className="border-t border-slate-800 pt-4 lg:col-span-2">
@@ -1834,7 +1834,7 @@ export default function AssetBoard() {
                           {card.description || card.image_prompt || 'Без описания'}
                         </span>
                         <span className="flex shrink-0 items-center gap-1.5">
-                          {card.ltx_draft && <span className="text-amber-400" title="Черновой рендер LTX">черн.</span>}
+                          {card.ltx_draft && <span className="text-amber-400" title="Черновой рендер видео">черн.</span>}
                           {isWeakQa(card) && <span className="text-amber-300" title={`Оценка качества ${(card.qa_score ?? 0).toFixed(2)}`}>QA</span>}
                           {card.text_overlay_enabled && <span className="text-cyan-300" title="Есть текст поверх видео">текст</span>}
                           {isConflict ? <span className="text-rose-300" title="Конфликт правок">конфликт</span> : isDirty && <span className="text-amber-300" title="Есть несохранённые правки">не сохр.</span>}
@@ -1916,7 +1916,7 @@ export default function AssetBoard() {
                         <span className="truncate text-slate-400" title={`Способ: ${routeCode}`}>{routeLabel}</span>
                         <span aria-hidden="true" className="text-slate-800">•</span>
                         <span className={media ? 'text-emerald-400' : 'text-slate-600'}>{mediaLabel}</span>
-                        {card.ltx_draft && <span className="text-amber-400" title="Отрендерено черновым workflow LTX">Черновик</span>}
+                        {card.ltx_draft && <span className="text-amber-400" title="Отрендерено в черновом режиме (LTX — один проход, H3 — турбо-LoRA)">Черновик</span>}
                         {(card.visual_type === 'web_reference_card' || card.route === 'reference') && <span className="text-sky-300" title={card.reference_url || card.reference_query || 'Карточка источника'}>Источник</span>}
                         {card.text_overlay_enabled && <span className="text-cyan-300" title={card.text_overlay_text || card.screen_text || 'Текст поверх видео'}>Есть текст</span>}
                         {isConflict ? <span className="font-medium text-rose-300">Конфликт правок</span> : isDirty && <span className="font-medium text-amber-300">Не сохранено</span>}
@@ -1932,7 +1932,7 @@ export default function AssetBoard() {
                         <div className="flex flex-wrap justify-end gap-1.5">
                           <button type="button" onClick={() => generate(index, 'route')} disabled={Boolean(busy)} className="min-h-9 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-45" title="Создать материал по назначенному способу">Создать</button>
                           {card.ltx_draft ? (
-                            <button type="button" onClick={() => finalize(index)} disabled={Boolean(busy)} title="Перерендерить в финальном качестве (полный LTX)" className="min-h-9 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45">Финал</button>
+                            <button type="button" onClick={() => finalize(index)} disabled={Boolean(busy)} title="Перерендерить в финальном качестве" className="min-h-9 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45">Финал</button>
                           ) : (
                             <button type="button" onClick={() => pickStock(index)} disabled={Boolean(busy)} title="Подобрать сток-видео" className="min-h-9 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-45">Сток</button>
                           )}
