@@ -17,8 +17,8 @@ def test_release_candidate_version_is_consistent_across_surfaces():
         (ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8")
     )
 
-    assert __version__ == "1.0.0-rc.1"
-    assert pyproject["project"]["version"] == "1.0.0rc1"
+    assert __version__ == "1.0.0-rc.2"
+    assert pyproject["project"]["version"] == "1.0.0rc2"
     assert frontend["version"] == __version__
     assert frontend_lock["version"] == __version__
     assert frontend_lock["packages"][""]["version"] == __version__
