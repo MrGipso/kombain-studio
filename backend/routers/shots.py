@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from core import lm as lm_client
 from core.config import load_settings
 from core import continuity
 from core.board import write_asset_board
@@ -248,7 +249,7 @@ async def generate_shots(project_id: str):
             except (jobs.ProjectBusy, jobs.JobCancelled) as exc:
                 loop.call_soon_threadsafe(sse.emit_to, sub_id, "error", {"message": str(exc)})
             except Exception as exc:
-                loop.call_soon_threadsafe(sse.emit_to, sub_id, "error", {"message": str(exc)})
+                loop.call_soon_threadsafe(sse.emit_to, sub_id, "error", {"message": lm_client.explain_error(exc)})
 
         loop.run_in_executor(None, run_sync)
 

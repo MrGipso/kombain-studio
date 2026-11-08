@@ -800,6 +800,18 @@ def explain_error(exc: Exception) -> str:
             "Увеличьте контекст модели минимум до 32768 и повторите."
         )
     if (
+        "model_load_failed" in lower
+        or "failed to load model" in lower
+        or "unable to allocate" in lower
+        or "out of memory" in lower
+    ):
+        return (
+            "LM Studio не смог загрузить модель — скорее всего, не хватает памяти "
+            "видеокарты. Модели ComfyUI выгружаются автоматически; закройте другие "
+            "программы, занимающие GPU, или уменьшите контекст или размер модели.\n"
+            + message
+        )
+    if (
         "connection refused" in lower
         or "actively refused" in lower
         or "urlopen error" in lower

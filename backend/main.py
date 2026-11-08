@@ -17,7 +17,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from backend.routers import projects, transcription, scenes, shots, assets, export_router, settings, media, diagnostics, music, sfx, script, system, voice
 from core.config import DEFAULT_SETTINGS_PATH, load_settings
 from core.version import __version__
-from backend.services import comfy_watchdog, runtime_locks
+from backend.services import comfy_watchdog, gpu_handoff, runtime_locks
 
 
 @asynccontextmanager
@@ -53,6 +53,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         loop.set_exception_handler(previous)
         raise
+    # Unload ComfyUI models before LLM jobs so LM Studio can load its model.
+    remove_gpu_hook = gpu_handoff.install()
     try:
         comfy_watchdog.start_watchdog(
             resume_callback=assets.resume_interrupted_material_runs
@@ -75,6 +77,7 @@ async def lifespan(app: FastAPI):
         ).start()
         yield
     finally:
+        remove_gpu_hook()
         comfy_watchdog.stop_watchdog()
         runtime_locks.release()
         loop.set_exception_handler(previous)
