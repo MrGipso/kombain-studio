@@ -283,6 +283,22 @@ export interface DiagnosticResult { target: string; ok: boolean; message: string
 export const runDiagnostic = (target: 'lm' | 'embed' | 'comfy' | 'ffmpeg' | 'whisper' | 'omnivoice' | 'woosh') =>
   r<DiagnosticResult>(`/diagnostics/${target}`)
 
+// First-run setup wizard — read-only discovery of tools and local services
+export interface SetupToolCandidates { current: string; current_ok: boolean; candidates: string[] }
+export interface SetupServiceProbe { url: string; reachable: boolean; models: string[]; detail: string }
+export interface SetupDetection {
+  platform: 'windows' | 'linux' | 'macos'
+  project_root: string
+  output_base: SetupToolCandidates
+  ffmpeg: SetupToolCandidates
+  whisper_cli: SetupToolCandidates
+  whisper_model: SetupToolCandidates
+  omnivoice_cli: SetupToolCandidates
+  lm: SetupServiceProbe[]
+  comfy: SetupServiceProbe[]
+}
+export const detectSetup = () => r<SetupDetection>('/setup/detect')
+
 // Validation
 export const validateProject = (id: string) => r<ValidationReport>(`/projects/${encodeURIComponent(id)}/validate`, { method: 'POST' })
 

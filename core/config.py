@@ -151,6 +151,10 @@ class Settings:
     # scales/crops every clip to the chosen export profile (1920x1080 by default),
     # so lower-resolution LTX renders can still ship in the requested frame.
     ltx_resolution: str = "1920x1088"
+    # First-run setup wizard. False only for a fresh install (no settings file
+    # yet); an existing settings file written before the wizard existed is
+    # treated as already set up, see _read_settings.
+    setup_completed: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "Settings":
@@ -213,6 +217,9 @@ def _read_settings(p: Path) -> Settings:
     if not isinstance(data, dict):
         preserve_corrupt_copy(p)
         return Settings()
+    # Installs configured before the setup wizard existed must not be sent
+    # through it again: a settings file without the flag means "done".
+    data.setdefault("setup_completed", True)
     return Settings.from_dict(data)
 
 
