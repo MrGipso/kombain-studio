@@ -17,6 +17,7 @@ const Script = lazy(() => import('./pages/Script'))
 const Voice = lazy(() => import('./pages/Voice'))
 const Preview = lazy(() => import('./pages/Preview'))
 const Settings = lazy(() => import('./pages/Settings'))
+const SetupWizard = lazy(() => import('./pages/SetupWizard'))
 
 function PageLoader() {
   return (
@@ -56,6 +57,7 @@ const router = createBrowserRouter(createRoutesFromElements(
       <Route path="preview" element={<Preview />} />
     </Route>
     <Route path="/settings" element={<Settings />} />
+    <Route path="/setup" element={<SetupWizard />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Route>,
 ))

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from backend.routers import projects, transcription, scenes, shots, assets, export_router, settings, media, diagnostics, music, sfx, script, system, voice
+from backend.routers import projects, transcription, scenes, shots, assets, export_router, settings, media, diagnostics, music, sfx, script, system, voice, setup
 from core.config import DEFAULT_SETTINGS_PATH, load_settings
 from core.version import __version__
 from backend.services import comfy_watchdog, runtime_locks
@@ -162,6 +162,7 @@ app.include_router(export_router.router, prefix="/api/projects", tags=["Export"]
 app.include_router(settings.router, prefix="/api", tags=["Settings"])
 app.include_router(media.router, prefix="/api", tags=["Media"])
 app.include_router(diagnostics.router, prefix="/api", tags=["Diagnostics"])
+app.include_router(setup.router, prefix="/api", tags=["Setup"])
 app.include_router(music.router, prefix="/api/projects", tags=["Music"])
 app.include_router(sfx.router, prefix="/api/projects", tags=["Sfx"])
 app.include_router(script.router, prefix="/api/projects", tags=["Script"])

@@ -138,6 +138,13 @@ export default function Settings() {
           <div className="flex flex-wrap items-center gap-2">
             <ThemeToggle />
             <button
+              type="button"
+              onClick={() => navigate('/setup')}
+              className="min-h-10 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white cursor-pointer"
+            >
+              Мастер настройки
+            </button>
+            <button
               onClick={() => navigate(-1)}
               className="min-h-10 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white cursor-pointer"
             >

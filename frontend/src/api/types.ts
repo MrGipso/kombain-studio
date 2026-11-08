@@ -525,6 +525,7 @@ export interface Settings {
   video_engine: 'ltx' | 'minimax_h3'
   comfy_h3_workflow: string
   ltx_resolution: string
+  setup_completed: boolean
   ai_frame_qa: boolean
   ai_qa_mode: 'shadow' | 'review'
   ai_qa_timing: 'per_card' | 'after_queue'

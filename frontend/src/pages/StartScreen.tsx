@@ -128,6 +128,17 @@ export default function StartScreen() {
     }
   }, [reloadToken, toast])
 
+  // First launch: send a fresh install through the setup wizard once.
+  useEffect(() => {
+    let active = true
+    api.getSettings()
+      .then((settings) => {
+        if (active && settings.setup_completed === false) navigate('/setup', { replace: true })
+      })
+      .catch(() => { /* the projects request reports connectivity problems */ })
+    return () => { active = false }
+  }, [navigate])
+
   const filteredProjects = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase()
     if (!normalizedQuery) return projects
