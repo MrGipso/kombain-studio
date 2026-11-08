@@ -58,6 +58,45 @@ _background_threads: dict[str, threading.Thread] = {}
 _initialized_db_path: Path | None = None
 
 _GPU_LEASE_RESOURCES = frozenset({"gpu", "llm", "comfy", "stock", "tts"})
+# Callbacks run right after a job acquires its resource lease, while it still
+# holds it (see add_acquire_hook).
+_acquire_hooks: dict[str, list[Callable[[], None]]] = {}
+
+
+def add_acquire_hook(resource: str, hook: Callable[[], None]) -> Callable[[], None]:
+    """Run ``hook`` each time a job for ``resource`` has acquired its lease.
+
+    Used to hand the GPU over between engines, e.g. to unload ComfyUI models
+    before an ``llm`` job: the shared ``gpu`` lease guarantees no ComfyUI job
+    of this application runs at that moment.  The running application
+    registers hooks at startup, never at import, so unit tests that exercise
+    jobs do not reach external services.  Hooks are best effort; an exception
+    is swallowed and never fails the job.  Returns a function that removes
+    the hook again.
+    """
+    key = resource.strip().lower()
+    with _meta:
+        _acquire_hooks.setdefault(key, []).append(hook)
+
+    def remove() -> None:
+        with _meta:
+            hooks = _acquire_hooks.get(key, [])
+            if hook in hooks:
+                hooks.remove(hook)
+
+    return remove
+
+
+def _run_acquire_hooks(resource: str | None) -> None:
+    if not resource:
+        return
+    with _meta:
+        hooks = list(_acquire_hooks.get(resource, ()))
+    for hook in hooks:
+        try:
+            hook()
+        except Exception:
+            pass
 
 
 def _utc_now() -> str:
@@ -300,6 +339,7 @@ class project_job:
                         self.name,
                         self.resource,
                     )
+            _run_acquire_hooks(self.resource)
             return event
         except BaseException:
             if resource_acquired and self._resource_lock is not None:

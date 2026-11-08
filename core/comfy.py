@@ -198,6 +198,27 @@ def comfy_free_memory(base_url: str, timeout: int = 30) -> bool:
         return False
 
 
+def comfy_vram_reserved(base_url: str, timeout: float = 3.0) -> int | None:
+    """Bytes of GPU memory ComfyUI currently holds, or ``None`` if unreachable.
+
+    Sums ``torch_vram_total`` (memory reserved by ComfyUI's torch allocator:
+    loaded models plus cache) over the CUDA devices in ``/system_stats``.
+    """
+
+    try:
+        stats = comfy_request_json(f"{comfy_base_url(base_url)}/system_stats", timeout=timeout)
+    except Exception:
+        return None
+    total = 0
+    for device in stats.get("devices") or []:
+        if isinstance(device, dict) and device.get("type") == "cuda":
+            try:
+                total += int(device.get("torch_vram_total") or 0)
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
 def _redact(text: str, secret: str) -> str:
     return text.replace(secret, "***") if secret else text
 
@@ -477,6 +498,7 @@ __all__ = [
     "comfy_download_file",
     "comfy_download_output",
     "comfy_free_memory",
+    "comfy_vram_reserved",
     "comfy_queue_prompt",
     "comfy_request_json",
     "comfy_upload_image",
