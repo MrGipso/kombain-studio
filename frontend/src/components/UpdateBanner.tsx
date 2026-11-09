@@ -45,6 +45,8 @@ export default function UpdateBanner() {
           У вас {status.current}.{' '}
           {status.install === 'git' ? (
             <>Закройте приложение и запустите <code className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-slate-200">{updateCommand(status)}</code> в папке программы.</>
+          ) : status.install === 'installer' ? (
+            <>Скачайте установщик новой версии и запустите его — он обновит программу, настройки и проекты сохранятся.</>
           ) : (
             <>Скачайте новую версию и распакуйте в новую папку; настройки сохранятся, папку projects перенесите вручную.</>
           )}
@@ -57,7 +59,7 @@ export default function UpdateBanner() {
           rel="noreferrer"
           className="inline-flex min-h-10 items-center rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500"
         >
-          Что нового
+          {status.install === 'installer' ? 'Скачать' : 'Что нового'}
         </a>
         <button
           type="button"

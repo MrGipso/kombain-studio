@@ -51,6 +51,9 @@ def test_windows_finds_bundled_release_and_skips_vad_models(tmp_path, monkeypatc
     root = tmp_path / "streamer"
     monkeypatch.setattr(setup_detect, "ROOT", root)
     cli = _touch(root / "wishper" / "whisper-cli.exe")
+    # Projects default to "projects" in the working directory (the checkout,
+    # or Documents for the installed app).
+    monkeypatch.chdir(cli.parent.parent)
     _touch(root / "models" / "ggml-silero-v6.2.0.bin")
     small = _touch(root / "models" / "ggml-small.bin")
     turbo = _touch(root / "models" / "ggml-large-v3-turbo-q8_0.bin")

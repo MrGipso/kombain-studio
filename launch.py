@@ -30,6 +30,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+# Установленная программа (PyInstaller): ресурсы только для чтения, Python,
+# uv и npm на машине не нужны.
+FROZEN = bool(getattr(sys, "frozen", False))
+SMOKE = "--smoke" in sys.argv[1:]
 
 APP_TITLE = "Комбайн Studio"
 # Ниже этого окно становится бесполезным: доска материалов — двухколоночная.
@@ -75,6 +79,70 @@ def prepare_environment() -> Path:
     return data_dir
 
 
+def _documents_dir() -> Path:
+    """Папка «Документы» пользователя (на Windows — с учётом её переноса)."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            CSIDL_PERSONAL = 5
+            buffer = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+            if ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, 0, buffer) == 0 and buffer.value:
+                return Path(buffer.value)
+        except Exception:  # noqa: BLE001 - запасной путь ниже
+            pass
+    documents = Path.home() / "Documents"
+    return documents if documents.is_dir() else Path.home()
+
+
+def frozen_workspace() -> Path:
+    """Рабочая папка установленной программы: здесь лежат проекты.
+
+    Код по умолчанию хранит проекты в ``projects`` относительно текущей
+    папки. В установленной программе текущей папкой иначе был бы каталог
+    установки — его нельзя трогать: он стирается при обновлении и удалении.
+    """
+    configured = os.environ.get("PIPELINE_WORKSPACE_DIR", "").strip()
+    workspace = Path(configured).expanduser() if configured else _documents_dir() / APP_TITLE
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+def configure_frozen_process(data_dir: Path) -> Path:
+    """Подготовить процесс программы без консоли. Возвращает путь к журналу.
+
+    * stdout/stderr у оконной программы равны None — пишем их в журнал, иначе
+      uvicorn и print падают;
+    * дочерние процессы (ffmpeg, whisper) без этого открывали бы по окну
+      консоли на каждый вызов, а унаследованные пустые дескрипторы приводят
+      к WinError 6 — поэтому по умолчанию CREATE_NO_WINDOW и DEVNULL.
+    """
+    log_dir = data_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "app.log"
+    if sys.stdout is None or sys.stderr is None:
+        stream = open(log_path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 - живёт до выхода
+        sys.stdout = sys.stdout or stream
+        sys.stderr = sys.stderr or stream
+
+    if sys.platform == "win32":
+        import subprocess
+
+        original_init = subprocess.Popen.__init__
+        create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+        def quiet_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | create_no_window
+            for name in ("stdin", "stdout", "stderr"):
+                if kwargs.get(name) is None:
+                    kwargs[name] = subprocess.DEVNULL
+            original_init(self, *args, **kwargs)
+
+        subprocess.Popen.__init__ = quiet_init  # type: ignore[method-assign]
+    return log_path
+
+
 def frontend_is_built() -> bool:
     return (ROOT / "backend" / "static" / "index.html").is_file()
 
@@ -103,8 +171,12 @@ class ServerThread:
     def start(self) -> None:
         import uvicorn
 
+        # Объект, а не строка "backend.main:app": так PyInstaller видит пакет
+        # backend и кладёт его в установленную программу.
+        from backend.main import app
+
         config = uvicorn.Config(
-            "backend.main:app",
+            app,
             host=self._host,
             port=self._port,
             log_level="info",
@@ -273,6 +345,27 @@ def focus_existing_window() -> bool:
         return False
 
 
+def smoke_check(base_url: str, server: ServerThread) -> int:
+    """Проверка сборки без окна: сервер поднялся и отдаёт интерфейс и API.
+
+    Запускается в CI на собранной программе (``--smoke``), чтобы установщик не
+    выходил с программой, которая не стартует.
+    """
+    import urllib.request
+
+    try:
+        for path in ("/api/build-info", "/api/readiness", "/"):
+            with urllib.request.urlopen(f"{base_url}{path}", timeout=10) as response:
+                body = response.read()
+                print(f"smoke {path}: {response.status} {body[:200]!r}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - сообщаем причину и выходим с ошибкой
+        print(f"smoke failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    finally:
+        server.stop()
+    return 0
+
+
 def fail(message: str) -> int:
     """Сообщить о невозможности запуска.
 
@@ -281,7 +374,8 @@ def fail(message: str) -> int:
     """
     text = f"{APP_TITLE}: {message}"
     print(f"\n{text}\n", file=sys.stderr)
-    if os.environ.get("PIPELINE_DESKTOP_SILENT") == "1" and sys.platform == "win32":
+    silent = FROZEN or os.environ.get("PIPELINE_DESKTOP_SILENT") == "1"
+    if silent and not SMOKE and sys.platform == "win32":
         try:
             import ctypes
 
@@ -293,11 +387,15 @@ def fail(message: str) -> int:
 
 
 def main() -> int:
-    os.chdir(ROOT)
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
     data_dir = prepare_environment()
+    if FROZEN:
+        configure_frozen_process(data_dir)
+        os.chdir(frozen_workspace())
+    else:
+        os.chdir(ROOT)
 
     try:
         import webview
@@ -310,9 +408,12 @@ def main() -> int:
 
     # Пересобираем интерфейс, если его исходники изменились (git pull, новая
     # версия поверх старой) — иначе окно показало бы прежний интерфейс.
-    from tools.frontend_build import ensure_built
+    # В установленной программе интерфейс уже собран и исходников нет.
+    if not FROZEN:
+        from tools.frontend_build import ensure_built
 
-    if not ensure_built() or not frontend_is_built():
+        ensure_built()
+    if not frontend_is_built():
         return fail(
             "интерфейс не собран (нет backend/static/index.html).\n"
             "  Установите Node.js и соберите:  python tools/frontend_build.py"
@@ -343,6 +444,9 @@ def main() -> int:
             # же каталог проектов намеренно падает, а не портит общее состояние.
             return fail(f"сервер не запустился: {server.error}")
         return fail("сервер не ответил вовремя. Подробности в выводе выше.")
+
+    if SMOKE:
+        return smoke_check(base_url, server)
 
     screen = _screen_size(webview)
     # Осознанно выбранный пользователем размер важнее расчётного: если окно уже

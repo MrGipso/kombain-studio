@@ -65,7 +65,8 @@ class UpdateStatus:
     published_at: str = ""
     checked_at: float = 0.0
     error: str = ""
-    # "git": update with update.bat / update.sh; "archive": download a new copy.
+    # "git": update with update.bat / update.sh; "installer": run the new
+    # installer over this one; "archive": download a new copy.
     install: str = "archive"
     platform: str = sys.platform
 
@@ -112,6 +113,8 @@ def _data_dir() -> Path:
 
 
 def _install_kind(root: Path = ROOT) -> str:
+    if getattr(sys, "frozen", False):
+        return "installer"
     return "git" if (root / ".git").exists() else "archive"
 
 

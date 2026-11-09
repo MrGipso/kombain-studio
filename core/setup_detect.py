@@ -288,7 +288,10 @@ def detect(
     model_found = _unique_existing(_whisper_model_paths(platform, home, cli_found))
     omni_found = _unique_existing(_omnivoice_paths(platform, environ, home, which))
 
-    default_projects = ROOT / "projects"
+    # Same place the app uses when output_base is empty: "projects" relative to
+    # the working directory (the repo for a checkout, Documents for the
+    # installed app — see launch.py).
+    default_projects = Path("projects")
     output_candidates = [str(default_projects.resolve())]
 
     provider = settings.lm_provider or "lmstudio"
