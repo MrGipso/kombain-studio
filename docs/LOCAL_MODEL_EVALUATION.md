@@ -1,124 +1,132 @@
-# Local model evaluation
+# Оценка локальных моделей
 
-Date: 2026-07-14  
-Host: RTX 5090 32 GB, 96 GB RAM, LM Studio 0.4.19+2, llama.cpp b9851 CUDA 12.8
+Дата: 2026-07-14  
+Хост: RTX 5090 32 GB, 96 GB RAM, LM Studio 0.4.19+2, llama.cpp b9851 CUDA 12.8
 
-## Decision
+## Решение
 
-Use **Gemma4-26B-A4B QAT Q4_0** as the production default for the current
-LM Studio/OpenAI-compatible integration. It is the faster and more predictable
-drop-in model for route selection, prompt rewriting, structured output and
-basic tool calls.
+Использовать **Gemma4-26B-A4B QAT Q4_0** как production-модель по умолчанию для
+текущей интеграции LM Studio/OpenAI-compatible. Это более быстрая и
+предсказуемая модель для прямой замены в задачах выбора маршрута, переписывания
+промптов, структурированного вывода и базовых вызовов инструментов.
 
-Do not switch the current backend directly to **Qwen3.6-27B Q4_K_M**. Its
-semantic planning is strong, but LM Studio's `/v1/chat/completions` ignored the
-requested `thinking=off` setting in every measured request. Use it only after
-the application moves that role to the native LM Studio Python SDK (or another
-runtime where no-thinking behavior is verified).
+Не переключать текущий backend напрямую на **Qwen3.6-27B Q4_K_M**. Её
+смысловое планирование сильное, но `/v1/chat/completions` в LM Studio
+игнорировал запрошенную настройку `thinking=off` во всех измеренных запросах.
+Использовать её только после того, как приложение переведёт эту роль на нативный
+LM Studio Python SDK (или другой runtime, где отключение thinking проверено).
 
-Neither model should directly decide whether an image or video is accepted.
-The model should report observable defects in a validated structure; a
-deterministic policy engine should select `accept`, `needs_review` or `retry`.
+Ни одна из моделей не должна напрямую решать, принимается ли изображение или
+видео. Модель должна сообщать наблюдаемые дефекты в валидируемой структуре, а
+детерминированный policy engine — выбирать `accept`, `needs_review` или `retry`.
 
-## Evaluated model artifacts
+## Оценённые артефакты моделей
 
-Upstream model cards:
+Исходные карточки моделей:
 
 - [Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B)
 - [Qwen3.6-27B LM Studio GGUF](https://huggingface.co/lmstudio-community/Qwen3.6-27B-GGUF)
 - [Gemma4-26B-A4B-it](https://huggingface.co/google/gemma-4-26B-A4B-it)
-- [Gemma4-26B-A4B-it official QAT GGUF](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)
+- [Официальный QAT GGUF для Gemma4-26B-A4B-it](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)
 
-| Artifact | Bytes | SHA-256 |
+| Артефакт | Байт | SHA-256 |
 |---|---:|---|
 | Qwen3.6 Q4_K_M | 16,547,398,784 | `33625D8DC3A5DD8D88C324D47DB58561B11F7072816287078BFE58B4C55782F9` |
-| Qwen3.6 BF16 projector | 931,145,856 | `B5D6D9C7063068CE85130BAE1D7851EADAE1F81F9ECFAE82112ADFFD4B736B45` |
+| Проектор Qwen3.6 BF16 | 931,145,856 | `B5D6D9C7063068CE85130BAE1D7851EADAE1F81F9ECFAE82112ADFFD4B736B45` |
 | Gemma4 QAT Q4_0 | 14,439,362,752 | `9B96AA267521008235F8792590CB8E2DC47A8A236C6FF1767964CBBE32510873` |
-| Gemma4 QAT BF16 projector | 1,194,827,776 | `A823A84619622B7B3132BA760E97BCF959FB13D2213CCCAEF5317DF388D35C3C` |
+| Проектор Gemma4 QAT BF16 | 1,194,827,776 | `A823A84619622B7B3132BA760E97BCF959FB13D2213CCCAEF5317DF388D35C3C` |
 
-Both models were loaded with 32,768 context, parallelism 1 and full GPU
-offload. The practical Qwen file is a community GGUF quant of the official
-checkpoint; production deployments must pin the exact file hash above.
+Обе модели загружались с контекстом 32 768, параллелизмом 1 и полной выгрузкой
+на GPU. Практически используемый файл Qwen — community-квантизация GGUF
+официального чекпойнта; production-развёртывания должны закреплять точный хеш
+файла, указанный выше.
 
-## Full application-shaped A/B
+## Полное A/B-сравнение в условиях приложения
 
-The full v2 run used 16 real project-derived cases. JSON Schema was visible to
-the endpoint, route labels were removed from model-visible IDs and input, and
-manual cases were excluded from automated totals. Each case was run once, so
-these values are regression measurements rather than multi-seed statistics.
+Полный прогон v2 использовал 16 реальных кейсов, взятых из проектов. JSON Schema
+передавалась endpoint'у, метки маршрутов были удалены из видимых модели ID и
+входных данных, а ручные кейсы исключены из автоматических итогов. Каждый кейс
+запускался один раз, поэтому эти значения — регрессионные измерения, а не
+статистика по нескольким seed.
 
-| Metric | Gemma4 QAT | Qwen3.6 Q4_K_M |
+| Метрика | Gemma4 QAT | Qwen3.6 Q4_K_M |
 |---|---:|---:|
-| Full-suite inference time | 26.36 s | 348.50 s |
-| Median case latency | 1.71 s | 24.27 s |
-| Median generation rate | 79.51 tok/s | 46.52 tok/s |
-| Route policy | 4/4 | 4/4 |
-| Prompt rewrite | 2/3 + one scorer false negative | 0/3 |
-| Tool behavior | 2/3 | 1/3 |
-| Reasoning tokens | 0 | 15,362 / 16,317 completion tokens |
-| `thinking=off` ignored | 0/16 | 16/16 |
+| Время inference всего набора | 26.36 с | 348.50 с |
+| Медианная задержка кейса | 1.71 с | 24.27 с |
+| Медианная скорость генерации | 79.51 ток/с | 46.52 ток/с |
+| Политика маршрутизации | 4/4 | 4/4 |
+| Переписывание промптов | 2/3 + один ложноотрицательный результат оценщика | 0/3 |
+| Работа с инструментами | 2/3 | 1/3 |
+| Токены рассуждений | 0 | 15 362 / 16 317 токенов ответа |
+| `thinking=off` проигнорирован | 0/16 | 16/16 |
 
-Qwen spent 94.15% of completion tokens on hidden reasoning and took 13.22x
-longer overall. Several final answers and tool calls were never emitted because
-the reasoning consumed the 1,200-token output budget. The same Qwen model did
-call tools correctly in a separate native-SDK test with thinking disabled,
-which identifies the adapter as the immediate blocker rather than tool-use
-training alone.
+Qwen потратила 94,15% токенов ответа на скрытые рассуждения, а в целом работала
+в 13,22 раза дольше. Несколько финальных ответов и вызовов инструментов так и не
+были выданы, потому что рассуждения исчерпали бюджет вывода в 1 200 токенов.
+Та же модель Qwen корректно вызывала инструменты в отдельном тесте через нативный
+SDK с отключённым thinking; это указывает, что непосредственное препятствие —
+адаптер, а не только обучение использованию инструментов.
 
-## Vision QA findings
+## Результаты vision QA
 
-The v3 QA subset added an explicit action rubric and a matched/swapped image
-control. It also moved disputed and culturally sensitive fixtures to manual
-review.
+Подмножество QA v3 добавило явную рубрику действий и контроль с совпадающим и
+подменённым изображением. Кроме того, спорные и культурно чувствительные
+фикстуры были переведены на ручную проверку.
 
-| Metric (automated QA cases) | Gemma4 QAT | Qwen3.6 Q4_K_M |
+| Метрика (автоматические QA-кейсы) | Gemma4 QAT | Qwen3.6 Q4_K_M |
 |---|---:|---:|
-| Structured contract pass rate | 4/4 | 2/4 |
-| Matched city image | Correct accept | Correct accept |
-| Swapped crane blueprint | Correct retry_image | Correct retry_image |
-| Still-QA behavioral passes | 2/3 | 2/3 |
-| `thinking=off` ignored | 0/6 | 6/6 |
+| Доля прохождения структурного контракта | 4/4 | 2/4 |
+| Совпадающее изображение города | Верный accept | Верный accept |
+| Подменённый чертёж крана | Верный retry_image | Верный retry_image |
+| Поведенческие проверки still-QA | 2/3 | 2/3 |
+| `thinking=off` проигнорирован | 0/6 | 6/6 |
 
-Gemma also rejected the garbled-code image, but classified the defect as
-`semantic_mismatch` instead of the narrower `garbled_text` category. Qwen
-exhausted its reasoning budget on that image and on the equivalent tool call.
+Gemma также отклонила изображение с искажённым кодом, но классифицировала дефект
+как `semantic_mismatch` вместо более узкой категории `garbled_text`. Qwen
+исчерпала бюджет рассуждений на этом изображении и на эквивалентном вызове
+инструмента.
 
-On generated videos, FFmpeg freeze detection and human review found that the
-eight-second typing clip was mostly frozen. Gemma correctly requested a retry;
-Qwen falsely accepted it. Gemma was safer but over-conservative on a separate
-moving Hadza clip. This is why a VLM cannot be the sole gate.
+На сгенерированных видео детектор застывания FFmpeg и ручная проверка показали,
+что восьмисекундный клип с набором текста почти целиком застывший. Gemma
+корректно запросила повтор; Qwen ошибочно его приняла. Gemma оказалась
+безопаснее, но излишне осторожной на отдельном клипе с движущимися хадза. Именно
+поэтому VLM не может быть единственным фильтром.
 
-## Implementation status
+## Статус реализации
 
-The first safe production slice is implemented; see
-[`docs/ASSET_QA.md`](ASSET_QA.md) for its contracts and rollout procedure.
+Первый безопасный production-срез реализован; контракты и процедура
+развёртывания описаны в [`docs/ASSET_QA.md`](ASSET_QA.md).
 
-1. `core/lm.py` now provides Pydantic/JSON Schema structured responses, a
-   scoped optional [LM Studio Python SDK](https://lmstudio.ai/docs/python)
-   transport, explicit prediction config and an OpenAI-compatible fallback.
-   Vision input remains on the validated HTTP transport for this slice.
-2. Keep Gemma as the synchronous production model. Optionally route difficult
-   planning/research cases to Qwen only through an adapter proven to disable
-   thinking. The native `/api/v1/chat` supports `reasoning: "off"`, but custom
-   tools require the SDK or a compatible endpoint.
-3. Vision output is now observational and the versioned engine maps it to
-   actions. Schema/range failures get one repair attempt and then fail safe.
-4. Pillow, FFprobe, full decode, `freezedetect`, `blackdetect` and duration
-   checks now run deterministically. Sampled temporal VLM checks remain future
-   calibration work.
-5. Web `llm`, `comfy`, `stock` and `gpu` jobs now share one VRAM lease. Never
-   run a 26/27B VLM and LTX/Comfy simultaneously on the 32 GB card; use
-   `nvidia-smi` as the operational source of truth.
-6. Change the local endpoint from the stale LAN address to
-   `http://127.0.0.1:1234/v1`. Bind LM Studio and ComfyUI to loopback or enable
-   firewall/API-token protection; both currently listen on `0.0.0.0`.
-7. Roll out `ai_frame_qa` in `shadow` mode first. Reports are append-only and
-   hash-bound; `review` may flag `needs_review`, but neither mode regenerates.
-   The legacy stock scalar now rejects out-of-range scores instead of clamping.
+1. `core/lm.py` теперь предоставляет структурированные ответы через
+   Pydantic/JSON Schema, ограниченный по области опциональный транспорт
+   [LM Studio Python SDK](https://lmstudio.ai/docs/python), явную конфигурацию
+   предсказания и фолбэк на OpenAI-compatible. Vision-вход в этом срезе остаётся
+   на проверенном HTTP-транспорте.
+2. Gemma остаётся синхронной production-моделью. Опционально сложные кейсы
+   планирования/исследования можно направлять в Qwen только через адаптер, для
+   которого доказано отключение thinking. Нативный `/api/v1/chat` поддерживает
+   `reasoning: "off"`, но пользовательские инструменты требуют SDK или
+   совместимого endpoint'а.
+3. Vision-вывод теперь только наблюдательный, а версионируемый движок
+   сопоставляет его с действиями. При ошибках схемы/диапазона делается одна
+   попытка исправления, после чего срабатывает безопасный отказ.
+4. Pillow, FFprobe, полное декодирование, `freezedetect`, `blackdetect` и
+   проверки длительности теперь выполняются детерминированно. Выборочные
+   временные проверки VLM остаются задачей будущей калибровки.
+5. Веб-задачи `llm`, `comfy`, `stock` и `gpu` теперь используют общую
+   VRAM-аренду. Никогда не запускайте VLM на 26/27B и LTX/Comfy одновременно на
+   карте 32 GB; источником истины в эксплуатации служит `nvidia-smi`.
+6. Замените локальный endpoint с устаревшего LAN-адреса на
+   `http://127.0.0.1:1234/v1`. Привяжите LM Studio и ComfyUI к loopback или
+   включите защиту firewall/API-токеном; сейчас оба слушают `0.0.0.0`.
+7. Сначала разворачивайте `ai_frame_qa` в режиме `shadow`. Отчёты только
+   дописываются и привязаны к хешам; `review` может выставлять `needs_review`,
+   но ни один из режимов не перегенерирует. Устаревший скалярный показатель для
+   стока теперь отклоняет оценки вне диапазона, а не обрезает их.
 
-## Reproduction
+## Воспроизведение
 
-The default immutable suite is `tools/local_model_eval_cases.v3.json`.
+Неизменяемый набор по умолчанию — `tools/local_model_eval_cases.v3.json`.
 
 ```powershell
 .\.venv\Scripts\python.exe tools\local_model_eval.py `
@@ -127,5 +135,5 @@ The default immutable suite is `tools/local_model_eval_cases.v3.json`.
   --thinking-mode off
 ```
 
-Harness verification on this host: 40 tests passed, Ruff passed, all fixture
-hashes passed. LM Studio models were unloaded after the evaluation.
+Проверка harness на этом хосте: 40 тестов пройдено, Ruff пройден, все хеши
+фикстур совпали. После оценки модели LM Studio были выгружены.

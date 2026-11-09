@@ -1,104 +1,111 @@
-# Комбайн Studio — release checklist
+# Комбайн Studio — чеклист релиза
 
-## 1. Legal and source review
+## 1. Юридическая проверка и проверка исходников
 
-- Select the licence for Комбайн Studio and add the approved root `LICENSE`.
-  The repository intentionally does not choose one automatically.
-- Review `docs/THIRD_PARTY.md`, asset credits and the immutable Master manifest.
-- Disable Woosh and every other non-commercial integration in commercial builds.
-- Record the source revision and confirm the working tree contains only intended
-  release changes.
+- Выберите лицензию для Комбайн Studio и добавьте утверждённый файл `LICENSE`
+  в корень репозитория. Репозиторий намеренно не выбирает её автоматически.
+- Проверьте `docs/THIRD_PARTY.md`, атрибуцию материалов и неизменяемый манифест Master.
+- В коммерческих сборках отключите Woosh и все прочие некоммерческие интеграции.
+- Зафиксируйте ревизию исходников и убедитесь, что рабочее дерево содержит
+  только изменения, предназначенные для релиза.
 
-## 2. Reproducible dependency inventory
+## 2. Воспроизводимая инвентаризация зависимостей
 
-From the repository root, run:
+Из корня репозитория выполните:
 
 ```powershell
 python tools/generate_sbom.py --output artifacts/pipeline-studio.cdx.json
 ```
 
-The command is a Python-standard-library-only, offline generator. It reads
-`pyproject.toml`, `uv.lock` and `frontend/package-lock.json`, then atomically
-writes CycloneDX 1.5 JSON. Components are sorted, npm SRI values are converted
-to hexadecimal hashes, and Python source-archive hashes come from `uv.lock`.
-The document contains no wall-clock timestamp; its UUID is derived from the
-exact input bytes, so unchanged lockfiles produce byte-identical output.
+Команда — офлайн-генератор, использующий только стандартную библиотеку Python.
+Он читает `pyproject.toml`, `uv.lock` и `frontend/package-lock.json`, после чего
+атомарно записывает CycloneDX 1.5 JSON. Компоненты сортируются, значения npm SRI
+преобразуются в шестнадцатеричные хеши, а хеши архивов исходников Python берутся
+из `uv.lock`. Документ не содержит отметки текущего времени; его UUID выводится
+из точных байтов входных данных, поэтому неизменные lock-файлы дают побайтно
+идентичный результат.
 
-The SBOM covers locked Python and npm packages only. Before distribution, add a
-separate signed inventory for external executables, services and model weights
-(including FFmpeg, whisper.cpp, LM Studio, ComfyUI and any local models), with
-their versions, hashes, licences and acquisition sources.
+SBOM охватывает только зафиксированные в lock-файлах пакеты Python и npm. Перед
+распространением добавьте отдельную подписанную инвентаризацию внешних
+исполняемых файлов, сервисов и весов моделей (включая FFmpeg, whisper.cpp,
+LM Studio, ComfyUI и любые локальные модели) с указанием их версий, хешей,
+лицензий и источников получения.
 
-The lockfiles do not provide complete licence metadata for every Python
-distribution. Generate and review a separate dependency-licence report against
-the exact locked environment; do not treat the CycloneDX inventory as legal
-clearance by itself.
+Lock-файлы не содержат полных метаданных о лицензиях для каждого дистрибутива
+Python. Сформируйте и проверьте отдельный отчёт о лицензиях зависимостей для
+точного зафиксированного окружения; не считайте инвентаризацию CycloneDX
+юридическим подтверждением сама по себе.
 
-## 3. Verification and packaging
+## 3. Проверка и упаковка
 
-Run the passive local integration preflight for release-critical tooling:
+Запустите пассивный локальный integration preflight для инструментов,
+критичных для релиза:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\integration_smoke.py --targets ffmpeg whisper comfy --require ffmpeg whisper comfy --output artifacts\integration-smoke.json
 ```
 
-Supported targets are `ffmpeg`, `whisper`, `comfy`, `lm`, `embed`, and `woosh`.
-Passive mode is the default. It uses the configured local paths and endpoints
-without starting services, submitting inference requests, triggering LM Studio
-JIT model loading, modifying projects, or submitting generation jobs. Passive
-`lm` and `embed` checks read `/v1/models`; they verify availability and model
-residency, not inference. The ComfyUI smoke reads `/object_info` and validates
-node compatibility for all five bundled workflows without queueing a render.
+Поддерживаемые targets: `ffmpeg`, `whisper`, `comfy`, `lm`, `embed` и `woosh`.
+По умолчанию используется пассивный режим. Он работает с настроенными локальными
+путями и endpoint'ами, не запуская сервисы, не отправляя inference-запросы, не
+вызывая JIT-загрузку моделей LM Studio, не изменяя проекты и не ставя задачи
+генерации. Пассивные проверки `lm` и `embed` читают `/v1/models`; они
+подтверждают доступность и загруженность моделей, но не inference. Smoke для
+ComfyUI читает `/object_info` и проверяет совместимость нод всех пяти
+поставляемых workflow, не ставя рендер в очередь.
 
-After freeing enough VRAM and while no render is running, verify LM inference
-explicitly when it is part of the release acceptance scope:
+Освободив достаточно VRAM и при отсутствии запущенного рендера, явно проверьте
+LM inference, если он входит в объём приёмки релиза:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\integration_smoke.py --targets lm embed --require lm embed --active --output artifacts\integration-smoke-active.json
 ```
 
-`--active` sends minimal chat and embedding requests. It may JIT-load the
-configured models, consume substantial VRAM, and contend with ComfyUI. The
-requests include a short TTL, but release operators must still check model
-residency if GPU memory needs to be reclaimed immediately.
+`--active` отправляет минимальные запросы chat и embedding. При этом могут
+JIT-загрузиться настроенные модели, занять значительный объём VRAM и
+конкурировать с ComfyUI. Запросы содержат короткий TTL, но выпускающему релиз
+всё равно нужно проверить загруженные модели, если GPU-память требуется
+освободить немедленно.
 
-Before recording RC evidence, verify that LM Studio binds only to `127.0.0.1`,
-the application uses `http://127.0.0.1:1234/v1`, and CORS plus sensitive
-request/prompt logging are disabled. Do not accept an RC with the
-unauthenticated LM endpoint exposed to a LAN, overlay network, or the public
-Internet.
+Перед фиксацией evidence для RC убедитесь, что LM Studio слушает только
+`127.0.0.1`, приложение использует `http://127.0.0.1:1234/v1`, а CORS и
+логирование чувствительных запросов/промптов отключены. Не принимайте RC, если
+неаутентифицированный LM endpoint доступен из LAN, overlay-сети или публичного
+Интернета.
 
-Exit status `0` means every target named by `--require` passed; failures of
-targets that were checked but not required are informational. Status `1` means
-one or more required targets failed, and status `2` reports invalid CLI
-arguments. Archive the applicable passive and active smoke reports with the
-release evidence when the external tools form part of the supported
-distribution.
+Код завершения `0` означает, что все targets, указанные в `--require`, прошли
+проверку; сбои проверенных, но не обязательных targets носят информационный
+характер. Код `1` означает, что один или несколько обязательных targets не
+прошли проверку, а код `2` сообщает о некорректных аргументах командной строки.
+Архивируйте соответствующие отчёты пассивного и активного smoke вместе с
+evidence релиза, если внешние инструменты входят в поддерживаемый дистрибутив.
 
-Run the isolated Windows golden acceptance:
+Запустите изолированную golden-приёмку для Windows:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\golden_e2e.py
 ```
 
-This uses only configured FFmpeg/Whisper plus a synthetic System.Speech fixture.
-It starts a loopback-only backend with separate settings, projects, jobs and
-instance lock, forces the production offline LM fallbacks, and proceeds through
-Master/delivery. Accept the run only when `golden-report.json` records all seven
-stages as `completed`, exactly four durable jobs as `succeeded`, zero validation
-errors, successful technical QC, matching download hashes, one immutable asset
-variant and a verified Master index/contract fingerprint. Archive the entire
-reported run directory as RC evidence.
+Она использует только настроенные FFmpeg/Whisper и синтетическую фикстуру
+System.Speech. Запускается backend, слушающий только loopback, с отдельными
+настройками, проектами, задачами и instance lock; принудительно включаются
+production offline-фолбэки LM, и прогон проходит до Master/delivery. Принимайте
+прогон, только если `golden-report.json` фиксирует все семь этапов как
+`completed`, ровно четыре durable-задачи как `succeeded`, ноль ошибок валидации,
+успешный технический QC, совпадающие хеши загрузок, один неизменяемый вариант
+материала и проверенный отпечаток индекса/контракта Master. Архивируйте весь
+указанный в отчёте каталог прогона как evidence для RC.
 
-Run the full local release gate:
+Запустите полный локальный релизный gate:
 
 ```powershell
 check.bat
 ```
 
-This verifies `uv.lock`, regenerates the SBOM, runs the Python test suite and
-builds/lints the frontend. CI publishes `pipeline-studio-sbom` as a workflow
-artifact from the Python 3.12 job. Attach that JSON document, required notices,
-the external/model inventory and checksums of distributed binaries to the
-release. Do not publish a commercial package while any non-commercial model or
-asset is enabled.
+Он проверяет `uv.lock`, заново генерирует SBOM, запускает набор тестов Python, а
+также собирает фронтенд и прогоняет его линтер. CI публикует
+`pipeline-studio-sbom` как артефакт workflow из job для Python 3.12. Приложите к
+релизу этот JSON-документ, обязательные уведомления, инвентаризацию внешних
+компонентов и моделей, а также контрольные суммы распространяемых бинарных
+файлов. Не публикуйте коммерческий пакет, пока включена хотя бы одна
+некоммерческая модель или материал.
