@@ -15,15 +15,13 @@ echo   Kombain Studio
 echo ==================================================
 echo.
 echo [1/3] Building frontend...
-cd frontend
-call npm run build
+uv run python tools\frontend_build.py
 if %errorlevel% neq 0 (
     echo.
     echo Frontend build FAILED. See the error above.
     pause
     exit /b %errorlevel%
 )
-cd ..
 
 echo.
 echo [2/3] Opening browser at http://localhost:8000 ...

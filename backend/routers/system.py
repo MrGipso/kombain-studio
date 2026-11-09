@@ -4,11 +4,12 @@ import platform
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel
 
 from core.config import load_settings
 from core.project import CURRENT_MANIFEST_SCHEMA_VERSION, CURRENT_PROJECT_SCHEMA_VERSION
+from core.updates import check_for_updates
 from core.version import __version__
 from backend.services.comfy_watchdog import watchdog_status
 
@@ -80,6 +81,17 @@ async def build_info() -> BuildInfoResponse:
         manifest_schema=CURRENT_MANIFEST_SCHEMA_VERSION,
         runtime_mode="local-single-process",
     )
+
+
+@router.get("/updates")
+def updates(force: bool = Query(False, description="ignore the daily cache")) -> dict:
+    """Whether a newer release is published on GitHub.
+
+    Plain ``def``: the (cached, at most daily) GitHub request blocks, so it
+    runs in FastAPI's threadpool. Disabled by the ``check_updates`` setting.
+    """
+
+    return check_for_updates(enabled=load_settings().check_updates, force=force).to_dict()
 
 
 @router.get("/system/comfy-watchdog")
