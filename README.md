@@ -1,51 +1,54 @@
 # Комбайн Studio
 
-Local-first AI video production pipeline: script or voice recording → transcript
-→ scenes → shot plan → stock/AI assets → timeline → quality control → export.
+> English version: [README.en.md](README.en.md).
 
-The FastAPI + React application is the only interface. It can run in a
-browser or in the native window provided by `launch.py`; both modes use the
-same backend, settings and orchestration. Every shipped launcher (including the
-older `start_content_pipeline*.bat` and `start_pipeline_studio.bat` aliases of
-`start_desktop.bat`) and `main.py` open this interface.
+Локальный (local-first) AI-конвейер видеопроизводства: сценарий или запись голоса → транскрипт
+→ сцены → план кадров → стоковые/AI-материалы → монтаж → контроль качества → экспорт.
 
-## Requirements
+Приложение на FastAPI + React — единственный интерфейс. Его можно запускать в
+браузере или в нативном окне, которое открывает `launch.py`; оба режима используют
+один и тот же бэкенд, настройки и оркестрацию. Все поставляемые лаунчеры (включая
+старые `start_content_pipeline*.bat` и `start_pipeline_studio.bat` — алиасы
+`start_desktop.bat`) и `main.py` открывают именно этот интерфейс.
+
+## Требования
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
-- Node.js and npm
+- Node.js и npm
 - FFmpeg / FFprobe
-- whisper.cpp and a compatible model
-- LM Studio (scene and shot planning)
-- yt-dlp (subtitle-only YouTube intake for the Script → Rewrite workflow)
-- OmniVoice (`omnivoice-infer`) for chunked local narration from saved or cloned voices
-- ComfyUI (image, video, and optional music generation)
-- Woosh API (optional SFX generation)
+- whisper.cpp и совместимая модель
+- LM Studio (планирование сцен и кадров)
+- yt-dlp (загрузка с YouTube только субтитров для workflow «Сценарий» → «Рерайт»)
+- OmniVoice (`omnivoice-infer`) для локальной озвучки по частям сохранёнными или клонированными голосами
+- ComfyUI (генерация изображений, видео и, опционально, музыки)
+- Woosh API (опциональная генерация SFX)
 
-External services are not installed or started automatically. Configure their
-URLs and executable paths on the Settings page after the first launch.
+Внешние сервисы не устанавливаются и не запускаются автоматически. Укажите их
+URL и пути к исполняемым файлам на странице «Настройки» после первого запуска.
 
-The primary **Создать все материалы** action is a server-owned unattended run:
-it freezes the approved plan, skips ready media, validates generated files,
-retries each failed provider operation once, then fills the slot with a
-Ken Burns or still fallback. The browser may be closed and a checkpoint is
-resumed on the next application start. See
+Основное действие **Создать все материалы** — это автономный прогон, которым управляет
+сервер: он фиксирует утверждённый план, пропускает готовые медиафайлы, проверяет
+сгенерированные файлы, повторяет каждую неудачную операцию провайдера один раз, а затем
+заполняет слот запасным вариантом — эффектом Ken Burns или статичным кадром. Браузер
+можно закрыть: checkpoint возобновляется при следующем запуске приложения. См.
 [`docs/UNATTENDED_MATERIALS.md`](docs/UNATTENDED_MATERIALS.md).
 
-Legacy generated-media QA remains API-compatible and is documented in
-[`docs/ASSET_QA.md`](docs/ASSET_QA.md), but it is not invoked by generation
-from the current interface and cannot block the unattended queue.
+Устаревший QA сгенерированных медиафайлов по-прежнему совместим на уровне API и описан в
+[`docs/ASSET_QA.md`](docs/ASSET_QA.md), но генерация из текущего интерфейса его не
+вызывает, и он не может заблокировать автономную очередь.
 
-> Licensing: the optional Woosh model weights are non-commercial. See
-> `docs/THIRD_PARTY.md` before distributing or monetizing generated work.
+> Лицензирование: веса опциональной модели Woosh предназначены только для некоммерческого
+> использования. Прочитайте `docs/THIRD_PARTY.md`, прежде чем распространять или
+> монетизировать созданные материалы.
 
-The Windows launchers keep mutable application state in
-`%LOCALAPPDATA%\PipelineStudio` (`settings.json` and `jobs.sqlite3`). Override
-`PIPELINE_DATA_DIR`, `PIPELINE_SETTINGS_PATH` or `PIPELINE_JOBS_DB` for a
-portable or managed installation. A legacy root settings file is copied once
-on first launch; it is not deleted automatically.
+Лаунчеры для Windows хранят изменяемое состояние приложения в
+`%LOCALAPPDATA%\PipelineStudio` (`settings.json` и `jobs.sqlite3`). Для
+портативной или управляемой установки переопределите `PIPELINE_DATA_DIR`,
+`PIPELINE_SETTINGS_PATH` или `PIPELINE_JOBS_DB`. Устаревший файл настроек в корне
+копируется один раз при первом запуске; автоматически он не удаляется.
 
-## Install
+## Установка
 
 ```powershell
 uv sync --locked --extra dev --extra local-ai
@@ -54,41 +57,43 @@ npm ci
 cd ..
 ```
 
-`local-ai` installs the scoped LM Studio Python SDK used for native structured
-text calls. It may be omitted on a minimal headless install; the validated
-OpenAI-compatible HTTP fallback remains available.
+`local-ai` устанавливает Python SDK LM Studio (в ограниченном объёме), который
+используется для нативных вызовов со структурированным текстовым выводом. На
+минимальной headless-установке его можно не ставить: проверенный HTTP-фолбэк,
+совместимый с OpenAI, остаётся доступен.
 
-## Run the web application
+## Запуск веб-приложения
 
-Build the frontend and start the local server:
+Соберите фронтенд и запустите локальный сервер:
 
 ```powershell
 .\start_web_server.bat
 ```
 
-For subsequent starts without rebuilding the frontend:
+Для последующих запусков без пересборки фронтенда:
 
 ```powershell
 .\start_fast.bat
 ```
 
-Operational probes are available at `/api/health`, `/api/readiness` and
+Эндпоинты для эксплуатационных проверок: `/api/health`, `/api/readiness` и
 `/api/build-info`.
 
-The API intentionally binds to `127.0.0.1`. There is no multi-user
-authentication layer yet; do not expose it to a LAN or the public Internet.
-The server also rejects untrusted `Host` headers and cross-origin browser
-mutations. `PIPELINE_TRUSTED_HOSTS` is an explicit deployment escape hatch, not
-a substitute for authentication.
+API намеренно слушает только `127.0.0.1`. Слоя многопользовательской
+аутентификации пока нет; не открывайте доступ к нему из локальной сети или интернета.
+Сервер также отклоняет недоверенные заголовки `Host` и изменяющие запросы браузера
+с других источников (cross-origin). `PIPELINE_TRUSTED_HOSTS` — явный обходной
+механизм для развёртывания, а не замена аутентификации.
 
-The local runtime deliberately permits one API process per settings directory
-and canonical `output_base`. Cross-process instance locks make a second Uvicorn
-worker/server fail closed even if it uses another settings file but points at
-the same projects, because project locks are process-local. A future LAN/SaaS
-deployment must use a durable worker queue and distributed leases rather than
-disabling this guard.
+Локальная среда выполнения сознательно допускает только один процесс API на каталог
+настроек и канонический `output_base`. Межпроцессные блокировки экземпляра приводят к
+безопасному отказу (fail closed) второго воркера/сервера Uvicorn, даже если он
+использует другой файл настроек, но указывает на те же проекты, — потому что блокировки
+проектов действуют только внутри процесса. Будущее развёртывание в LAN/SaaS должно
+использовать надёжную очередь воркеров и распределённые аренды (leases), а не
+отключать эту защиту.
 
-## Development checks
+## Проверки при разработке
 
 ```powershell
 uv run --extra dev pytest
@@ -97,143 +102,145 @@ npm run lint
 npm run build
 ```
 
-## Local integration preflight
+## Локальная предварительная проверка интеграций
 
-Run the passive dependency smoke before a production session or release:
+Перед рабочей сессией или релизом запустите пассивный smoke-тест зависимостей:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\integration_smoke.py --targets ffmpeg whisper comfy --require ffmpeg whisper comfy
 ```
 
-The available targets are `ffmpeg`, `whisper`, `comfy`, `lm`, `embed`, and
-`woosh`. Passive mode is the default. Checks run concurrently against the paths
-and endpoints in local settings; they do not start services, submit inference
-requests, trigger LM Studio JIT model loading, modify projects, or queue
-generation jobs. Passive `lm` and `embed` checks inspect `/v1/models`; they
-confirm reachability and that the configured models are loaded, but do not
-prove inference. The ComfyUI check reads `/object_info` and verifies that all
-configured workflows use node types supported by the connected instance and
-satisfy the engine's marker contract, without queueing a render.
+Доступные цели: `ffmpeg`, `whisper`, `comfy`, `lm`, `embed` и `woosh`.
+По умолчанию используется пассивный режим. Проверки выполняются параллельно по путям
+и эндпоинтам из локальных настроек; они не запускают сервисы, не отправляют запросы на
+инференс, не вызывают JIT-загрузку моделей в LM Studio, не изменяют проекты и не ставят
+задачи генерации в очередь. Пассивные проверки `lm` и `embed` обращаются к `/v1/models`;
+они подтверждают доступность и то, что настроенные модели загружены, но не доказывают
+работоспособность инференса. Проверка ComfyUI читает `/object_info` и убеждается, что все
+настроенные workflow используют типы нод, поддерживаемые подключённым экземпляром, и
+соблюдают контракт маркеров движка, — без постановки рендера в очередь.
 
-## Custom ComfyUI workflows
+## Собственные workflow ComfyUI
 
-Every ComfyUI workflow (Krea, Ideogram, LTX, LTX draft, MiniMax H3, ACE-Step,
-canonical reference) can be replaced by your own API-format export, including workflows
-built from ComfyUI's cloud API nodes, without code changes. Mark the nodes the
-engine fills by putting markers in their titles (`_meta.title`), for example
-`ENGINE_PROMPT`, `ENGINE_INPUT_IMAGE`, `ENGINE_DURATION` or `ENGINE_OUTPUT`.
-Workflows without markers fall back to the bundled node ids. Cloud
-(partner/API) nodes need a comfy.org API key: set it in Settings
-(`comfy_api_key`) and the engine sends it with every queued prompt as
-`extra_data.api_key_comfy_org`. The roles per workflow, the syntax and the
-notes on cloud nodes are documented in
+Любой workflow ComfyUI (Krea, Ideogram, LTX, LTX draft, MiniMax H3, ACE-Step,
+canonical reference) можно заменить собственным экспортом в API-формате, в том числе
+workflow, построенными на облачных API-нодах ComfyUI, без изменений в коде. Отметьте ноды,
+которые заполняет движок, маркерами в их заголовках (`_meta.title`), например
+`ENGINE_PROMPT`, `ENGINE_INPUT_IMAGE`, `ENGINE_DURATION` или `ENGINE_OUTPUT`.
+Workflow без маркеров используют id нод из поставляемых workflow. Облачным
+(partner/API) нодам нужен API-ключ comfy.org: укажите его в «Настройках»
+(`comfy_api_key`), и движок будет передавать его с каждым поставленным в очередь промптом
+как `extra_data.api_key_comfy_org`. Роли для каждого workflow, синтаксис и
+замечания об облачных нодах описаны в
 [docs/COMFY_WORKFLOWS.md](docs/COMFY_WORKFLOWS.md).
 
-AI shots are animated by LTX 2.3 by default. Settings → *Видео-движок* switches
-image-to-video to MiniMax H3 (open weights in the same local ComfyUI, 768p,
-5–15 s clips). For H3 the engine builds the prompt in the structured format of
-MiniMax's official prompt-writing guide, converts the slot length to H3's
-frame grid, picks the render size from the shot image and asks ComfyUI to free
-VRAM when switching to or from H3. The draft mode uses H3's 8-step turbo LoRA.
+По умолчанию AI-кадры анимирует LTX 2.3. «Настройки» → *Видео-движок* переключает
+image-to-video на MiniMax H3 (открытые веса в том же локальном ComfyUI, 768p,
+клипы по 5–15 с). Для H3 движок составляет промпт в структурированном формате из
+официального руководства MiniMax по написанию промптов, переводит длину слота в сетку
+кадров H3, выбирает размер рендера по изображению кадра и просит ComfyUI освободить
+VRAM при переключении на H3 или с него. Черновой режим использует 8-шаговую turbo-LoRA для H3.
 
-Use active mode only when chat and embedding inference must be verified:
+Активный режим используйте только тогда, когда нужно проверить инференс чата и эмбеддингов:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\integration_smoke.py --targets lm embed --require lm embed --active
 ```
 
-`--active` sends small `/chat/completions` and `/embeddings` requests. LM Studio
-may JIT-load the configured models, allocate substantial VRAM, and contend with
-ComfyUI; free enough VRAM first and do not run this probe during a render. The
-requests carry a short TTL, but operators should still verify model residency
-after the probe when GPU memory is release-critical.
+`--active` отправляет небольшие запросы `/chat/completions` и `/embeddings`. LM Studio
+может выполнить JIT-загрузку настроенных моделей, занять значительный объём VRAM и
+конкурировать с ComfyUI; заранее освободите достаточно видеопамяти и не запускайте эту
+проверку во время рендера. Запросы несут короткий TTL, но если память GPU критична для
+релиза, операторам всё равно стоит проверить после проверки, какие модели остались загружены.
 
-For an RC, the LM Studio endpoint is local-only: bind it to `127.0.0.1`, use
-`http://127.0.0.1:1234/v1` in application settings, and disable CORS and
-sensitive request/prompt logging. Do not expose the unauthenticated endpoint to
-a LAN, overlay network, or the public Internet.
+Для RC эндпоинт LM Studio должен быть только локальным: привяжите его к `127.0.0.1`,
+укажите `http://127.0.0.1:1234/v1` в настройках приложения и отключите CORS и
+логирование чувствительных запросов/промптов. Не открывайте этот эндпоинт без
+аутентификации для локальной сети, overlay-сети или интернета.
 
-A cloud LLM is an explicit opt-in: set **Провайдер LLM** to *OpenAI-совместимый
-API*, point the URL at the provider's `/v1` base (for example
-`https://api.openai.com/v1` or `https://openrouter.ai/api/v1`) and save the API
-key. The key is stored like the stock keys (never returned by the settings API)
-and is sent as a Bearer token only to the configured URL's origin, only in that
-mode. Cloud mode skips LM Studio's TTL, model load/unload and SDK transport and
-requests non-strict JSON Schema output, which the client validates and repairs
-locally. Script text, scenes and stock previews then leave the machine, and an
-unattended run makes hundreds of billable requests; scene segmentation also
-needs a provider with an `/embeddings` endpoint.
+Облачная LLM включается только явно: выберите в поле **Провайдер LLM** вариант
+*OpenAI-совместимый API*, укажите в URL базовый адрес провайдера `/v1` (например,
+`https://api.openai.com/v1` или `https://openrouter.ai/api/v1`) и сохраните API-ключ.
+Ключ хранится так же, как ключи стоков (API настроек никогда его не возвращает), и
+отправляется как Bearer-токен только на origin настроенного URL и только в этом
+режиме. В облачном режиме не используются TTL LM Studio, загрузка/выгрузка моделей и
+транспорт через SDK, а запрашивается нестрогий вывод по JSON Schema, который клиент
+проверяет и исправляет локально. При этом текст сценария, сцены и превью стоков
+покидают машину, а автономный прогон делает сотни платных запросов; для сегментации
+сцен также нужен провайдер с эндпоинтом `/embeddings`.
 
-Use `--output artifacts\integration-smoke.json` to atomically save the same
-structured report printed to stdout.
+Используйте `--output artifacts\integration-smoke.json`, чтобы атомарно сохранить тот же
+структурированный отчёт, который выводится в stdout.
 
-Exit status `0` means every target listed in `--require` is available (failures
-of non-required targets remain informational), `1` means at least one required
-target failed, and `2` means the command-line arguments are invalid.
+Код выхода `0` означает, что доступны все цели из `--require` (сбои
+необязательных целей носят информационный характер), `1` — что хотя бы одна обязательная
+цель не прошла проверку, а `2` — что аргументы командной строки некорректны.
 
-## Golden release acceptance
+## Эталонная приёмка релиза
 
-On Windows, run the isolated end-to-end acceptance before cutting an RC:
+В Windows перед выпуском RC запустите изолированную сквозную (end-to-end) приёмку:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\golden_e2e.py
 ```
 
-It creates a fresh evidence directory under `.pytest-tmp`, a separate settings
-file, project root, jobs database and instance lock, then exercises the public
-HTTP/SSE workflow from a synthetic voice fixture through a verified
-Master/delivery export. It requires the configured Whisper and FFmpeg tools but
-does not require LM Studio, ComfyUI, stock providers or Woosh. Existing settings
-and projects are read-only. Successful evidence includes `golden-report.json`,
-SSE transcripts, validation/job snapshots, server logs and downloaded Master
-artifacts with independently checked hashes.
+Она создаёт новый каталог с доказательствами в `.pytest-tmp`, отдельный файл
+настроек, корень проектов, базу задач и блокировку экземпляра, а затем прогоняет
+публичный HTTP/SSE-workflow — от синтетической голосовой фикстуры до проверенного
+экспорта Master/delivery. Ей нужны настроенные Whisper и FFmpeg, но не нужны
+LM Studio, ComfyUI, стоковые провайдеры или Woosh. Существующие настройки
+и проекты используются только для чтения. Успешный набор доказательств включает
+`golden-report.json`, записи SSE, снимки валидации и задач, логи сервера и скачанные
+артефакты Master с независимо проверенными хешами.
 
-## Project artifacts
+## Артефакты проекта
 
-Projects live under the configured `output_base` directory. Each project keeps
-human-readable JSON artifacts for its pipeline stages and a versioned pipeline
-manifest for freshness/dependency state. Generated media is stored inside the
-project so media serving remains confined to the projects root.
+Проекты хранятся в каталоге, заданном в `output_base`. Каждый проект содержит
+человекочитаемые JSON-артефакты для этапов конвейера и версионированный манифест
+конвейера с состоянием актуальности и зависимостей. Сгенерированные медиафайлы хранятся
+внутри проекта, поэтому раздача медиа не выходит за пределы корня проектов.
 
-The principal stages are:
+Основные этапы:
 
-1. script / voice input
-2. transcription
-3. scene analysis
-4. shot planning
-5. asset generation and review
-6. timeline, music, and SFX
-7. validation
-8. draft or master export
+1. ввод сценария / голоса
+2. транскрипция
+3. анализ сцен
+4. планирование кадров
+5. генерация и проверка материалов
+6. монтаж, музыка и SFX
+7. валидация
+8. черновой экспорт или экспорт Master
 
-Shot planning also compiles `03_context_bible.json`: a versioned map of story
-threads, recurring subjects, locations, continuity groups and per-shot
-`before → action → after` state. The Material preflight freezes and validates
-that context before any expensive generation. See
+При планировании кадров также собирается `03_context_bible.json`: версионированная карта
+сюжетных линий, повторяющихся персонажей и объектов, локаций, групп непрерывности и
+состояния каждого кадра в виде `before → action → after`. «Проверка плана перед
+производством» на вкладке «Материалы» фиксирует и проверяет этот контекст до любой
+дорогостоящей генерации. См.
 [`docs/CONTEXT_STORYBOARD.md`](docs/CONTEXT_STORYBOARD.md).
 
-Draft exports are intended for iteration. Master exports apply stricter quality
-gates and should contain only reviewed, final media. Every successful Master
-also receives an immutable `*.mp4.manifest.json` with the output/profile/QC
-contract, selected asset hashes, stock rights metadata, and voice/music/SFX
-input hashes. An append-only chained integrity index anchors every sidecar hash;
-tampered MP4 or manifest files are not offered as verified downloads. The audit
-record can be downloaded from Preview alongside the MP4.
+Черновые экспорты предназначены для итераций. Экспорт Master применяет более строгие
+критерии качества и должен содержать только проверенные финальные медиафайлы. Каждый
+успешный Master также получает неизменяемый `*.mp4.manifest.json` с контрактом
+вывода/профиля/QC, хешами выбранных материалов, метаданными прав на стоки и хешами
+входных данных озвучки, музыки и SFX. Цепочечный индекс целостности, пополняемый только
+добавлением (append-only), фиксирует хеш каждого sidecar-файла; изменённые MP4 или
+манифесты не предлагаются для скачивания как проверенные. Запись аудита можно скачать
+на вкладке «Экспорт» вместе с MP4.
 
-## Repository layout
+## Структура репозитория
 
-- `backend/` — FastAPI application and job orchestration
-- `frontend/` — React + TypeScript web client
-- `core/` — domain models, project storage, validation, and export engine
-- `tests/` — offline unit and API-oriented tests
-- `workflows/` — ComfyUI API workflows
+- `backend/` — приложение FastAPI и оркестрация задач
+- `frontend/` — веб-клиент на React + TypeScript
+- `core/` — доменные модели, хранилище проектов, валидация и движок экспорта
+- `tests/` — офлайн-тесты: модульные и для API
+- `workflows/` — API-workflow для ComfyUI
 
-Machine-specific settings, generated projects, models, logs, and built frontend
-assets are intentionally ignored by Git.
+Настройки конкретной машины, сгенерированные проекты, модели, логи и собранные
+ресурсы фронтенда намеренно игнорируются Git.
 
-## License
+## Лицензия
 
-Pipeline Studio is released under the [MIT License](LICENSE). External tools
-and models it drives (LM Studio, ComfyUI and its models, whisper.cpp, FFmpeg,
-OmniVoice, Woosh, stock providers) are installed separately and keep their own
-licenses and terms of use.
+Pipeline Studio распространяется под [лицензией MIT](LICENSE). Внешние инструменты
+и модели, которыми он управляет (LM Studio, ComfyUI и его модели, whisper.cpp, FFmpeg,
+OmniVoice, Woosh, стоковые провайдеры), устанавливаются отдельно и распространяются
+на собственных условиях лицензирования и использования.

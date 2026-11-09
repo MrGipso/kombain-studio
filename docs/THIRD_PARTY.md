@@ -1,53 +1,60 @@
-# Third-party and model licensing notes
+# Сторонние компоненты и лицензии моделей
 
-This file is an engineering inventory, not legal advice. A release owner must
-verify the exact code, model and media licences used by a deliverable.
+Этот файл — инженерная опись, а не юридическая консультация. Ответственный за
+релиз должен проверить точные лицензии кода, моделей и медиа, которые входят в
+поставку. Юридическую силу имеют только сами тексты лицензий на языке
+оригинала; переводы и пояснения здесь носят справочный характер.
 
 ## Woosh SFX
 
-`start_woosh.bat` only starts an already provisioned Sony Research Woosh sibling
-runtime. It deliberately does not clone code, install packages, or download
-weights. Known Hugging Face loaders are forced offline so an incomplete cache
-fails closed. The release owner must pin, acquire, hash and review the source,
-environment and models separately.
+`start_woosh.bat` только запускает уже подготовленную соседнюю среду
+Sony Research Woosh. Он намеренно не клонирует код, не устанавливает пакеты и
+не скачивает веса. Известные загрузчики Hugging Face принудительно переводятся
+в офлайн-режим, поэтому при неполном кэше запуск завершается отказом
+(fail-closed). Исходный код, окружение и модели ответственный за релиз должен
+отдельно зафиксировать по версиям, получить, захешировать и проверить.
 
-The launcher requires the explicit `--accept-noncommercial` flag because the
-open model weights are [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
-This flag is only a local launcher
-acknowledgement; it is not a commercial-clearance control and cannot govern a
-Woosh service started by other means. The weights must not be enabled in a
-commercial production/release. Required attribution, a licence link and change
-indications must accompany permitted uses. A commercial build should either
-disable this integration or configure a separately licensed SFX source.
+Лаунчер требует явного флага `--accept-noncommercial`, потому что открытые
+веса модели распространяются под [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
+Этот флаг — лишь локальное подтверждение для лаунчера: он не является
+механизмом допуска к коммерческому использованию и не может управлять
+сервисом Woosh, запущенным другим способом. Веса нельзя включать в
+коммерческом производстве или релизе. При допустимом использовании
+обязательны указание авторства, ссылка на лицензию и отметка о внесённых
+изменениях. Коммерческая сборка должна либо отключить эту интеграцию, либо
+использовать отдельно лицензированный источник SFX.
 
-The upstream repository contains mostly MIT code plus Apache-2.0 components.
-Downloaded samples carry individual terms. Preserve the applicable upstream
-notices and record exact source/model revisions and SHA-256 hashes in the
-external release inventory.
+Upstream-репозиторий содержит в основном код под MIT, а также компоненты под
+Apache-2.0. Скачанные сэмплы имеют собственные условия. Сохраняйте применимые
+уведомления upstream, а точные ревизии исходников и моделей и их хеши SHA-256
+записывайте во внешнюю опись релиза.
 
-The `Woosh/` checkout, virtual environment and multi-gigabyte weights are local
-runtime data and are intentionally ignored by the Комбайн Studio repository.
+Checkout `Woosh/`, виртуальное окружение и многогигабайтные веса — это
+локальные данные среды выполнения, и репозиторий Комбайн Studio намеренно их
+игнорирует.
 
-## Stock and references
+## Стоки и референсы
 
-Pexels, Pixabay, Wikimedia Commons, NASA, Internet Archive, Wikipedia and arXiv
-have different terms and attribution requirements. Source URL, author/provider,
-licence identifier and required credit are retained in immutable asset variants
-and the final Master manifest. Master export blocks stock variants that have no
-source URL or licence record. A successful download is still not itself evidence
-that an asset is cleared for every commercial use.
+У Pexels, Pixabay, Wikimedia Commons, NASA, Internet Archive, Wikipedia и arXiv
+разные условия использования и требования к указанию авторства. URL источника,
+автор или поставщик, идентификатор лицензии и обязательная подпись (credit)
+сохраняются в неизменяемых вариантах материалов и в итоговом манифесте Master.
+Экспорт Master блокирует стоковые варианты, у которых нет URL источника или
+записи о лицензии. При этом успешное скачивание само по себе ещё не
+доказывает, что материал разрешён для любого коммерческого использования.
 
-## Release checklist
+## Чек-лист релиза
 
-- Select a licence for Комбайн Studio itself and add a root `LICENSE` file.
-- Generate the locked Python/npm SBOM with
+- Выбрать лицензию для самого Комбайн Studio и добавить в корень файл `LICENSE`.
+- Сгенерировать SBOM по зафиксированным зависимостям Python/npm командой
   `python tools/generate_sbom.py --output artifacts/pipeline-studio.cdx.json`
-  and attach it to the release.
-- Maintain a separate signed inventory for external binaries and model weights;
-  package lockfiles cannot describe FFmpeg, whisper.cpp, ComfyUI or local models.
-- Include notices required by code, fonts, models, stock and reference assets.
-- Disable all non-commercial integrations in commercial release profiles.
-## Script and voice intake
+  и приложить его к релизу.
+- Вести отдельную подписанную опись внешних бинарников и весов моделей:
+  lock-файлы пакетов не описывают FFmpeg, whisper.cpp, ComfyUI и локальные модели.
+- Включить уведомления, которых требуют код, шрифты, модели, стоковые и
+  референсные материалы.
+- Отключить все некоммерческие интеграции в профилях коммерческого релиза.
+## Импорт сценария и голоса
 
-- **yt-dlp** — downloads subtitle tracks and metadata only; video/audio download is disabled by the application.
-- **OmniVoice** — optional local TTS runtime invoked through `omnivoice-infer`. On Python 3.13+ its environment also needs `audioop-lts>=0.2.2`, because `audioop` was removed from the Python standard library. Комбайн sends narration as one batch so the model is loaded once per track, not once per fragment.
+- **yt-dlp** — скачивает только дорожки субтитров и метаданные; скачивание видео и аудио в приложении отключено.
+- **OmniVoice** — необязательная локальная среда TTS, вызываемая через `omnivoice-infer`. На Python 3.13+ её окружению также нужен `audioop-lts>=0.2.2`, потому что `audioop` удалён из стандартной библиотеки Python. Комбайн отправляет закадровый текст одним пакетом, чтобы модель загружалась один раз на дорожку, а не на каждый фрагмент.
