@@ -526,6 +526,7 @@ export interface Settings {
   comfy_h3_workflow: string
   ltx_resolution: string
   setup_completed: boolean
+  check_updates: boolean
   ai_frame_qa: boolean
   ai_qa_mode: 'shadow' | 'review'
   ai_qa_timing: 'per_card' | 'after_queue'

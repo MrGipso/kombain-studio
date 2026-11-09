@@ -27,6 +27,7 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [diag, setDiag] = useState<Record<string, api.DiagnosticResult & { loading?: boolean }>>({})
+  const [update, setUpdate] = useState<(api.UpdateStatus & { loading?: boolean }) | null>(null)
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch((e) => toast.error(`Не удалось загрузить настройки: ${(e as Error).message}`))
@@ -53,6 +54,19 @@ export default function Settings() {
       setDiag((prev) => ({ ...prev, [target]: { ...res, loading: false } }))
     } catch (e) {
       setDiag((prev) => ({ ...prev, [target]: { target, ok: false, message: (e as Error).message, loading: false } }))
+    }
+  }
+
+  const checkUpdates = async () => {
+    if (!settings) return
+    setUpdate((prev) => (prev ? { ...prev, loading: true } : null))
+    try {
+      // Save the switch first: a disabled check makes no request at all.
+      await api.updateSettings({ check_updates: settings.check_updates })
+      setUpdate(await api.getUpdates(true))
+    } catch (e) {
+      toast.error(`Не удалось проверить обновления: ${(e as Error).message}`)
+      setUpdate(null)
     }
   }
 
@@ -618,6 +632,43 @@ export default function Settings() {
             </p>
           </section>
         </div>
+
+        {/* Updates */}
+        <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-7">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-white">Обновления</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Раз в сутки приложение спрашивает GitHub, не вышла ли новая версия. О вас и ваших проектах ничего не передаётся.
+              </p>
+            </div>
+            <button
+              onClick={checkUpdates}
+              disabled={!settings.check_updates || update?.loading}
+              className="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              {update?.loading ? 'Проверка…' : 'Проверить сейчас'}
+            </button>
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings.check_updates}
+              onChange={(e) => setSettings({ ...settings, check_updates: e.target.checked })}
+              className="w-4 h-4"
+            />
+            <span className="text-sm text-slate-300">Проверять обновления</span>
+          </label>
+          {update && !update.loading && (
+            <p className={`text-sm ${update.error ? 'text-red-300' : update.update_available ? 'text-emerald-300' : 'text-slate-400'}`}>
+              {update.error
+                ? update.error
+                : update.update_available
+                  ? <>Вышла версия {update.latest} (у вас {update.current}). <a href={update.release_url} target="_blank" rel="noreferrer" className="underline">Что нового</a></>
+                  : `Установлена последняя версия (${update.current}).`}
+            </p>
+          )}
+        </section>
 
         {/* Connection diagnostics */}
         <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-7">

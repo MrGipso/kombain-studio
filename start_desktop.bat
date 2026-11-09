@@ -10,17 +10,8 @@ rem This file keeps a console window open, which is useful for diagnostics.
 rem For everyday use start start_desktop.vbs instead: it runs this script
 rem hidden, so only the application window remains on screen.
 
-if not exist "backend\static\index.html" (
-    echo First run - building frontend once...
-    cd frontend
-    call npm run build
-    if %errorlevel% neq 0 (
-        echo Frontend build FAILED.
-        if not "%PIPELINE_DESKTOP_SILENT%"=="1" pause
-        exit /b %errorlevel%
-    )
-    cd ..
-)
+rem launch.py rebuilds the frontend itself when its sources changed (first run,
+rem git pull, a newer release unpacked over this folder).
 
 uv run --extra desktop-app python launch.py
 if %errorlevel% neq 0 (

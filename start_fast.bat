@@ -8,18 +8,13 @@ if not defined PIPELINE_SETTINGS_PATH set "PIPELINE_SETTINGS_PATH=%PIPELINE_DATA
 if not defined PIPELINE_JOBS_DB set "PIPELINE_JOBS_DB=%PIPELINE_DATA_DIR%\jobs.sqlite3"
 if not exist "%PIPELINE_SETTINGS_PATH%" if exist "content_pipeline_settings.json" copy /y "content_pipeline_settings.json" "%PIPELINE_SETTINGS_PATH%" >nul
 
-rem Fast launch: skips the frontend rebuild. Use this for a normal start when
-rem the code hasn't changed. If the app was never built yet, it builds once.
-if not exist "backend\static\index.html" (
-    echo First run - building frontend once...
-    cd frontend
-    call npm run build
-    if %errorlevel% neq 0 (
-        echo Frontend build FAILED.
-        pause
-        exit /b %errorlevel%
-    )
-    cd ..
+rem Fast launch: rebuilds the frontend only when its sources changed since the
+rem last build (first run, git pull, a newer release unpacked over this folder).
+uv run python tools\frontend_build.py --if-stale
+if %errorlevel% neq 0 (
+    echo Frontend build FAILED.
+    pause
+    exit /b %errorlevel%
 )
 
 echo Opening browser at http://localhost:8000 ...

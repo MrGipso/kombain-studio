@@ -308,10 +308,14 @@ def main() -> int:
             "  Или запустите обычную веб-версию:  start_fast.bat"
         )
 
-    if not frontend_is_built():
+    # Пересобираем интерфейс, если его исходники изменились (git pull, новая
+    # версия поверх старой) — иначе окно показало бы прежний интерфейс.
+    from tools.frontend_build import ensure_built
+
+    if not ensure_built() or not frontend_is_built():
         return fail(
             "интерфейс не собран (нет backend/static/index.html).\n"
-            "  Соберите один раз:  cd frontend && npm run build"
+            "  Установите Node.js и соберите:  python tools/frontend_build.py"
         )
 
     host = os.environ.get("PIPELINE_HOST", "127.0.0.1")

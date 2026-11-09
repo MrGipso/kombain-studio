@@ -33,6 +33,8 @@ remotion_graphics/node_modules/
 frontend/dist/
 backend/static/assets/
 backend/static/index.html
+backend/static/.build-stamp.json
+.update-check.json
 /artifacts/
 
 # Heavy local models and bundled tools

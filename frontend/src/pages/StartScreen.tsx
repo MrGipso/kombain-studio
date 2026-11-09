@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import * as api from '../api/client'
 import { useToast } from '../components/toast-context'
 import ThemeToggle from '../components/ThemeToggle'
+import UpdateBanner from '../components/UpdateBanner'
 import type { ProjectInfo } from '../api/types'
 
 function BrandMark() {
@@ -198,6 +199,7 @@ export default function StartScreen() {
       </header>
 
       <main className="mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 sm:py-14 lg:px-8">
+        <UpdateBanner />
         <section className="relative overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/60 px-6 py-8 shadow-2xl shadow-black/20 sm:px-8 sm:py-10">
           <div aria-hidden="true" className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-indigo-500/10 blur-3xl" />
           <div className="relative flex flex-col items-start justify-between gap-6 lg:flex-row lg:items-center">

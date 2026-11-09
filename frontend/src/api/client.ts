@@ -299,6 +299,22 @@ export interface SetupDetection {
 }
 export const detectSetup = () => r<SetupDetection>('/setup/detect')
 
+export interface UpdateStatus {
+  enabled: boolean
+  current: string
+  latest: string
+  update_available: boolean
+  release_url: string
+  published_at: string
+  checked_at: number
+  error: string
+  /** "git": update with update.bat / update.sh; "archive": download a new copy. */
+  install: 'git' | 'archive'
+  platform: string
+}
+
+export const getUpdates = (force = false) => r<UpdateStatus>(`/updates${force ? '?force=true' : ''}`)
+
 // Validation
 export const validateProject = (id: string) => r<ValidationReport>(`/projects/${encodeURIComponent(id)}/validate`, { method: 'POST' })
 

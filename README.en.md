@@ -71,11 +71,15 @@ Build the frontend and start the local server:
 .\start_web_server.bat
 ```
 
-For subsequent starts without rebuilding the frontend:
+For later starts:
 
 ```powershell
 .\start_fast.bat
 ```
+
+`start_fast.bat` and the native window (`start_desktop.bat`, `launch.py`) rebuild
+the frontend themselves only when its sources changed since the last build — for
+example after an update. The build stamp lives in `backend/static/.build-stamp.json`.
 
 Operational probes are available at `/api/health`, `/api/readiness` and
 `/api/build-info`.
@@ -92,6 +96,34 @@ worker/server fail closed even if it uses another settings file but points at
 the same projects, because project locks are process-local. A future LAN/SaaS
 deployment must use a durable worker queue and distributed leases rather than
 disabling this guard.
+
+## Updating
+
+Once a day the app asks GitHub whether a newer release exists and shows a notice
+on the start screen. The check can be switched off in «Настройки» → «Обновления»;
+the request is anonymous and says nothing about your projects. Pre-release installs
+are offered pre-releases; stable installs only stable releases.
+
+For a `git clone` install, close the app and run in its folder:
+
+```powershell
+.\update.bat
+```
+
+```bash
+./update.sh
+```
+
+The script refuses to run while the app is running or when program files have
+local edits. It pulls the current branch (`git pull --ff-only`), updates Python
+packages (`uv sync --inexact`) and rebuilds the frontend if it changed. Settings
+and job history live outside the program folder (`%LOCALAPPDATA%\PipelineStudio`
+on Windows, `~/.local/share/PipelineStudio` on Linux) and are not touched.
+
+For an archive downloaded from the [releases page](https://github.com/MrGipso/kombain-studio/releases),
+unpack the new version into a new folder and move the `projects` folder over (if
+projects live there rather than in a custom `output_base`). Do not unpack over the
+old folder: files removed in the new version would stay behind.
 
 ## Development checks
 

@@ -155,6 +155,8 @@ class Settings:
     # yet); an existing settings file written before the wizard existed is
     # treated as already set up, see _read_settings.
     setup_completed: bool = False
+    # Ask GitHub once a day whether a newer release exists (core/updates.py).
+    check_updates: bool = True
 
     @classmethod
     def from_dict(cls, data: dict) -> "Settings":
