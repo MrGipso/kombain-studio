@@ -24,8 +24,11 @@ older `start_content_pipeline*.bat` and `start_pipeline_studio.bat` aliases of
 - ComfyUI (image, video, and optional music generation)
 - Woosh API (optional SFX generation)
 
-External services are not installed or started automatically. Configure their
-URLs and executable paths on the Settings page after the first launch.
+External services are not installed or started automatically. On the first
+launch a setup wizard opens: it looks for FFmpeg, whisper.cpp, models, LM Studio
+and ComfyUI on Windows and Linux, fills in what it finds and checks each tool.
+Anything skipped can be set later on the «Настройки» page, which also reopens
+the wizard with the «Мастер настройки» button.
 
 The primary **Создать все материалы** action is a server-owned unattended run:
 it freezes the approved plan, skips ready media, validates generated files,
