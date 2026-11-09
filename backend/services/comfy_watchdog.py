@@ -349,7 +349,9 @@ class ComfyWatchdog:
         for pid in pids:
             self._terminate_pid(pid)
 
-        log_dir = ROOT / "logs" / "comfy-watchdog"
+        # The installed app's folder is read-only; its data dir is not.
+        data_dir = os.environ.get("PIPELINE_DATA_DIR", "").strip()
+        log_dir = (Path(data_dir) if data_dir else ROOT) / "logs" / "comfy-watchdog"
         log_dir.mkdir(parents=True, exist_ok=True)
         stdout = (log_dir / "comfy.stdout.log").open(
             "a",

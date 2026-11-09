@@ -109,3 +109,29 @@ check.bat
 компонентов и моделей, а также контрольные суммы распространяемых бинарных
 файлов. Не публикуйте коммерческий пакет, пока включена хотя бы одна
 некоммерческая модель или материал.
+
+## 4. Установщик для Windows
+
+Workflow `.github/workflows/windows-installer.yml` собирает установщик на
+`windows-latest`: фронтенд, PyInstaller по `packaging/kombain-studio.spec`
+(папка `dist/KombainStudio`), Inno Setup по `packaging/installer.iss`. Собранная
+программа и программа после тихой установки проверяются запуском с `--smoke`
+(`packaging/smoke.ps1`): сервер должен ответить на `/api/build-info`,
+`/api/readiness` и отдать интерфейс, а проекты — создаться в рабочей папке, а не в
+каталоге установки. Затем установщик удаляется.
+
+Workflow запускается на тегах `v*` (и прикладывает
+`KombainStudio-<версия>-Setup.exe` к релизу этого тега), на PR, меняющих упаковку,
+и вручную. Тег обязан совпадать с `core/version.py`. Поэтому порядок выпуска такой:
+создать релиз с тегом, дождаться workflow, проверить, что установщик приложен.
+
+Проверить упакованную программу без Windows можно на Linux тем же spec-файлом:
+
+```bash
+uv sync --extra desktop-app --extra local-ai --extra bundle
+uv run pyinstaller packaging/kombain-studio.spec --noconfirm
+PIPELINE_DATA_DIR=/tmp/ks/data PIPELINE_WORKSPACE_DIR=/tmp/ks/ws dist/KombainStudio/KombainStudio --smoke
+```
+
+`AppId` в `installer.iss` менять нельзя: по нему новая версия находит и обновляет
+установленную.

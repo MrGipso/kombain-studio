@@ -308,8 +308,8 @@ export interface UpdateStatus {
   published_at: string
   checked_at: number
   error: string
-  /** "git": update with update.bat / update.sh; "archive": download a new copy. */
-  install: 'git' | 'archive'
+  /** "git": update.bat / update.sh; "installer": run the new installer; "archive": download a new copy. */
+  install: 'git' | 'installer' | 'archive'
   platform: string
 }
 

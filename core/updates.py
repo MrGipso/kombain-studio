@@ -65,7 +65,8 @@ class UpdateStatus:
     published_at: str = ""
     checked_at: float = 0.0
     error: str = ""
-    # "git": update with update.bat / update.sh; "archive": download a new copy.
+    # "git": update with update.bat / update.sh; "installer": run the new
+    # installer over this one; "archive": download a new copy.
     install: str = "archive"
     platform: str = sys.platform
 
@@ -80,10 +81,12 @@ def pick_latest(releases: list[dict], current: str) -> dict | None:
     for release in releases:
         if not isinstance(release, dict) or release.get("draft"):
             continue
-        if release.get("prerelease") and not allow_pre:
-            continue
         parsed = parse_version(str(release.get("tag_name") or ""))
         if parsed is None:
+            continue
+        # A release candidate counts as a pre-release even when it is
+        # published as the repository's "Latest" release.
+        if (release.get("prerelease") or parsed[3] != _FINAL) and not allow_pre:
             continue
         if best is None or parsed > best[0]:
             best = (parsed, release)
@@ -112,6 +115,8 @@ def _data_dir() -> Path:
 
 
 def _install_kind(root: Path = ROOT) -> str:
+    if getattr(sys, "frozen", False):
+        return "installer"
     return "git" if (root / ".git").exists() else "archive"
 
 

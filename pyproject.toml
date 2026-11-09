@@ -30,6 +30,8 @@ desktop-app = ["pywebview>=5.0"]
 # API summary (needs only Pillow, already a core dep). Install for real page
 # screenshots, then run `playwright install chromium` once.
 reference = ["playwright>=1.40"]
+# Windows installer build (packaging/). Only CI and release builders need it.
+bundle = ["pyinstaller>=6.11"]
 # Development / testing.
 dev = [
     "httpx2>=2.0.0",  # Starlette TestClient transport; avoids deprecated httpx fallback

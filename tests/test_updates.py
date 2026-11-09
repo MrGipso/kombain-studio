@@ -43,6 +43,11 @@ def test_stable_install_is_never_offered_a_prerelease():
     assert updates.pick_latest(RELEASES, "1.0.0")["html_url"] == "u-100"
 
 
+def test_rc_published_as_latest_is_still_a_prerelease():
+    releases = [{"tag_name": "v1.0.0", "html_url": "u-100"}, {"tag_name": "v1.1.0-rc.1", "prerelease": False, "html_url": "u-rc"}]
+    assert updates.pick_latest(releases, "1.0.0")["html_url"] == "u-100"
+
+
 def test_prerelease_install_follows_prereleases():
     assert updates.pick_latest(RELEASES, "1.0.0-rc.1")["html_url"] == "u-110rc1"
 

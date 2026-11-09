@@ -1,0 +1,107 @@
+name: Windows installer
+
+# Builds the Windows installer, checks that the built app and the installed
+# app both start, and attaches the installer to the GitHub release of a tag.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "launch.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/windows-installer.yml"
+  workflow_dispatch:
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write  # gh release upload on tags
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Python dependencies
+        run: uv sync --locked --extra desktop-app --extra local-ai --extra bundle
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          version=$(uv run --no-sync python -c "from core.version import __version__; print(__version__)")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match core/version.py ($version)" >&2
+            exit 1
+          fi
+
+      - name: Build app (PyInstaller)
+        run: uv run --no-sync pyinstaller packaging/kombain-studio.spec --noconfirm
+
+      - name: Smoke test the built app
+        shell: pwsh
+        run: ./packaging/smoke.ps1 -Exe dist/KombainStudio/KombainStudio.exe
+
+      - name: Install Inno Setup if missing
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.version.outputs.version }}" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install silently and smoke test the installed app
+        shell: pwsh
+        run: |
+          $setup = "dist/KombainStudio-${{ steps.version.outputs.version }}-Setup.exe"
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          ./packaging/smoke.ps1 -Exe "$env:LOCALAPPDATA\Programs\Kombain Studio\KombainStudio.exe"
+          $uninstall = "$env:LOCALAPPDATA\Programs\Kombain Studio\unins000.exe"
+          $u = Start-Process $uninstall -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "uninstaller exited with $($u.ExitCode)" }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: KombainStudio-${{ steps.version.outputs.version }}-Setup
+          path: dist/KombainStudio-${{ steps.version.outputs.version }}-Setup.exe
+          if-no-files-found: error
+
+      - name: Attach installer to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "dist/KombainStudio-${{ steps.version.outputs.version }}-Setup.exe" --clobber

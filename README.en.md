@@ -11,6 +11,26 @@ same backend, settings and orchestration. Every shipped launcher (including the
 older `start_content_pipeline*.bat` and `start_pipeline_studio.bat` aliases of
 `start_desktop.bat`) and `main.py` open this interface.
 
+## Windows install (for users)
+
+Download `KombainStudio-<version>-Setup.exe` from the [releases page](https://github.com/MrGipso/kombain-studio/releases)
+and run it. No administrator rights are needed: the app installs for the
+current user into `%LOCALAPPDATA%\Programs\Kombain Studio` and appears in the
+Start menu. Python, Node.js and git are not needed. The setup wizard opens on
+the first start.
+
+- Projects live in `Documents\Комбайн Studio\projects`, settings and job history in
+  `%LOCALAPPDATA%\PipelineStudio`. Installing a newer version over an older one, or
+  uninstalling, keeps them.
+- The window uses Microsoft Edge WebView2, already present on Windows 11 and an
+  updated Windows 10; otherwise the installer offers to download it.
+- The installer is not signed yet, so on the first start Windows SmartScreen
+  warns about it: «More info» → «Run anyway».
+- FFmpeg, whisper.cpp with a model, LM Studio and ComfyUI are installed separately —
+  the setup wizard finds them and says where to get them.
+
+Below is the from-source install for development.
+
 ## Requirements
 
 - Python 3.12+
